@@ -556,6 +556,9 @@ are zeroed explicitly.
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
 | `test:dates`    | 18          | no       | Two-day range and per-day headings, timezone-safe          |
 
+There is also a one-off administrative tool for removing a single attendee — see
+[Removing an attendee](#removing-an-attendee).
+
 ```bash
 $env:TEST_BASE_URL="http://localhost:3000"; npm run test:api
 npm run test:errors        # no database needed
@@ -585,6 +588,42 @@ It is scoped rather than global because a blanket `delete from attendees` is
 exactly how a real registration gets destroyed by a test run — and it did, once.
 Suites therefore register under recognisable names; any suite adding a fixture
 must either reuse an existing name or pick a prefix listed in `TEST_PREFIXES`.
+
+**Sessions are deleted first, and that ordering is load-bearing.**
+`sessions.subject_id` carries no foreign key — one column serves both attendee
+and admin sessions — so deleting an attendee does *not* take its sessions with it.
+Deleting only the attendee rows leaves a live session pointing at an account that
+no longer exists.
+
+It is not a security hole: `GET /attendee/session` resolves the subject and
+returns `null` when it is gone, so the holder is treated as anonymous. But the
+rows are never reclaimed, because the cold-start purge only removes sessions that
+have **expired**, and a test session's lifetime has not run out. Every run against
+a live database therefore leaks a few more, and they accumulate indefinitely —
+54 had built up before this was found. The cleanup script now reports
+`orphan_sessions` in its summary so the count cannot quietly climb again.
+
+### Removing an attendee
+
+```bash
+node scripts/remove-attendee.mjs "Name" --dry-run   # inspect only
+node scripts/remove-attendee.mjs "Name"             # remove
+```
+
+Removes the attendee, their attendance row and their sessions in one transaction,
+so a partial delete — attendance gone, attendee still present, sessions stranded —
+cannot happen. It prints ready-to-run `INSERT` statements afterwards, so a
+mistaken removal is recoverable without a backup.
+
+It **refuses to guess** when a name matches more than one account. Ambiguity is a
+stop rather than a coin flip: deleting the wrong person's registration is not
+recoverable from here, and two people at an event can share a name.
+
+Note that attendance is append-only by design, and this is the documented
+exception — `db/schema.sql` states that the only way to undo a record is to delete
+the row out of band. Removing an attendee therefore removes real attendance
+history, and the person can be scanned and marked again afterwards, since the
+unique index goes with the row.
 
 ### Rate limits and tests
 
