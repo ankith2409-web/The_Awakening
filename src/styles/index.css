@@ -1,0 +1,725 @@
+@import 'tailwindcss';
+
+/* ==========================================================================
+   SWISS INTERNATIONAL — DESIGN TOKENS
+   The single source of truth. Components consume these via utilities
+   (bg-swiss-muted, text-swiss-accent) and never hardcode raw values.
+   ========================================================================== */
+
+@theme {
+  /* --- Colour: a strict, non-negotiable palette ------------------------ */
+  --color-swiss-paper: #ffffff; /* The canvas must be neutral. */
+  --color-swiss-ink: #000000; /* Text is absolute. */
+  --color-swiss-muted: #f2f2f2; /* Secondary surfaces, rhythm. */
+  --color-swiss-accent: #ff3000; /* The ONLY signal colour. */
+
+  /* --- Accent, text-safe variants -------------------------------------
+     One red cannot serve every surface. The palette needs a value per
+     background, and using the wrong one is a silent contrast failure:
+
+       swiss-accent          #FF3000  3.70:1 white   5.67:1 black
+       swiss-accent-text     #D62500  5.09:1 white   4.12:1 black  <- fails
+       swiss-accent-on-dark  #FF5C36  5.10:1 white   6.84:1 black
+
+     RULE:
+       - `swiss-accent`         fills, borders, rules, geometric marks
+       - `swiss-accent-text`    red glyphs on WHITE or MUTED surfaces
+       - `swiss-accent-on-dark` red glyphs on BLACK surfaces
+
+     Dark panel headers are the common trap: their numbers and labels look
+     correct and are readable, but sit just under 4.5:1 with the white-surface
+     value. */
+  --color-swiss-accent-text: #d62500;
+  --color-swiss-accent-on-dark: #ff5c36;
+
+  /* Semantic aliases so components never name a "colour", they name a role. */
+  --color-surface: var(--color-swiss-paper);
+  --color-surface-raised: var(--color-swiss-muted);
+  --color-content: var(--color-swiss-ink);
+  --color-content-muted: #555555; /* 7.46:1 on paper. */
+  --color-content-inverted: var(--color-swiss-paper);
+  --color-signal: var(--color-swiss-accent);
+  --color-signal-text: var(--color-swiss-accent-text);
+  --color-rule: var(--color-swiss-ink); /* Structure is visible. */
+
+  /* --- Typography: grotesque sans, the interface itself ----------------- */
+  --font-sans:
+    'Inter', 'Helvetica Neue', Helvetica, 'Akzidenz-Grotesk', Arial,
+    system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* Modular scale, 1.25 (major third) at the small end flaring to display
+     sizes. Fluid via clamp() so headlines scale mobile -> desktop without
+     a single media query. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.625rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.875rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.125rem;
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: 2.25rem;
+  --text-5xl: 3rem;
+  --text-5xl--line-height: 0.95;
+  --text-6xl: clamp(3.25rem, 8.5vw, 5rem);
+  --text-6xl--line-height: 0.9;
+  --text-7xl: clamp(4rem, 11vw, 7rem);
+  --text-7xl--line-height: 0.86;
+  --text-8xl: clamp(4.75rem, 13.5vw, 9rem);
+  --text-8xl--line-height: 0.84;
+  --text-9xl: clamp(5.5rem, 17vw, 12rem);
+  --text-9xl--line-height: 0.8;
+
+  /* --- Geometry: strictly rectangular, 0px. Never softened. ------------- */
+  --radius-none: 0px;
+
+  /* --- Motion: instant, mechanical, snappy. No springs, no elastic. ---- */
+  --ease-swiss: cubic-bezier(0.2, 0, 0, 1);
+  --duration-swiss-fast: 150ms;
+  --duration-swiss: 200ms;
+
+  /* No custom breakpoints are declared here.
+   Adding a single `--breakpoint-*` key to this block replaces Tailwind's
+   entire breakpoint namespace, which silently strips the media query off
+   every `sm:` / `lg:` variant so they apply at all widths. If a custom
+   breakpoint is ever needed it belongs in its own `@theme` block. */
+}
+
+/* ==========================================================================
+   TEXTURE — depth through pattern, never shadow.
+   Flat surfaces that still feel tactile, like screen-printed paper.
+   ========================================================================== */
+
+@layer utilities {
+  /* 24x24 grid lines @ 3% — makes the grid skeleton visible. */
+  .swiss-grid-pattern {
+    background-image:
+      linear-gradient(to right, rgb(0 0 0 / 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(0 0 0 / 0.03) 1px, transparent 1px);
+    background-size:
+      24px 24px,
+      24px 24px;
+  }
+
+  /* 16x16 dot matrix @ 4% — evokes halftone print. */
+  .swiss-dots {
+    background-image: radial-gradient(
+      circle at center,
+      rgb(0 0 0 / 0.04) 1px,
+      transparent 1px
+    );
+    background-size: 16px 16px;
+  }
+
+  /* Fractal noise @ 1.5% — paper grain warmth over stark white. */
+  .swiss-noise {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 140px 140px;
+    opacity: 0.015;
+  }
+}
+
+/* ==========================================================================
+   GDG LOGO - the one decorative exception
+   A 2s cycle: the supplied DevFest asset held still, a short datamosh on the
+   seam, then the monochrome mark held still, then back.
+
+   The monochrome state is a CSS filter on the SAME asset rather than a second
+   file, so there is only ever one artwork to keep in sync.
+   ========================================================================== */
+
+/* OFFICIAL holds 0-42%, SWISS holds 50-92%. */
+@keyframes gdg-official-fade {
+  0%, 42%   { opacity: 1; }
+  43%, 99%  { opacity: 0; }
+  100%      { opacity: 1; }
+}
+
+@keyframes gdg-swiss-fade {
+  0%, 49%   { opacity: 0; }
+  50%, 99%  { opacity: 1; }
+  100%      { opacity: 0; }
+}
+
+/*
+  Tear: horizontal slice displacement with a skew. Many small stops inside the
+  42-50% window is what reads as a datamosh rather than as a wobble; two stops
+  just looks like a jump cut. `steps(1, end)` is deliberately NOT used here.
+*/
+@keyframes gdg-tear {
+  0%, 41%    { transform: none; }
+  42%        { transform: translate(-5px, 1px) skewX(-5deg); }
+  43%        { transform: translate(6px, -1px) skewX(6deg); }
+  44%        { transform: translate(-3px, 0) skewX(-3deg); }
+  45.5%      { transform: translate(4px, 1px) skewX(4deg); }
+  47%        { transform: translate(-6px, -1px) skewX(-6deg); }
+  48.5%      { transform: translate(2px, 0) skewX(2deg); }
+  50%        { transform: none; }
+  50%, 91%   { transform: none; }
+  92%        { transform: translate(-5px, -1px) skewX(5deg); }
+  93%        { transform: translate(6px, 1px) skewX(-6deg); }
+  94%        { transform: translate(-4px, 0) skewX(4deg); }
+  95.5%      { transform: translate(3px, -1px) skewX(-3deg); }
+  97%        { transform: translate(-6px, 1px) skewX(-6deg); }
+  98.5%      { transform: translate(2px, 0) skewX(2deg); }
+  100%       { transform: none; }
+}
+
+/*
+  Chromatic aberration. Applied to the STAGE, not to the layers, because the
+  swiss layer already owns a filter and two filters cannot be combined from
+  two places. drop-shadow on a wrapper applies to the composited result.
+*/
+@keyframes gdg-chroma {
+  0%, 41%    { filter: none; }
+  42%        { filter: drop-shadow(5px 0 0 rgb(255 0 60 / 0.95)) drop-shadow(-5px 0 0 rgb(0 229 255 / 0.95)); }
+  43%        { filter: drop-shadow(-7px 0 0 rgb(0 229 255 / 0.95)) drop-shadow(7px 0 0 rgb(255 0 60 / 0.95)); }
+  44%        { filter: drop-shadow(3px 0 0 rgb(255 0 60 / 0.7)) drop-shadow(-3px 0 0 rgb(0 229 255 / 0.7)); }
+  45.5%      { filter: drop-shadow(6px 0 0 rgb(0 229 255 / 0.9)) drop-shadow(-6px 0 0 rgb(255 0 60 / 0.9)); }
+  47%        { filter: drop-shadow(-4px 0 0 rgb(255 0 60 / 0.8)) drop-shadow(4px 0 0 rgb(0 229 255 / 0.8)); }
+  48.5%      { filter: drop-shadow(2px 0 0 rgb(0 229 255 / 0.5)) drop-shadow(-2px 0 0 rgb(255 0 60 / 0.5)); }
+  50%, 91%   { filter: none; }
+  92%        { filter: drop-shadow(5px 0 0 rgb(0 229 255 / 0.95)) drop-shadow(-5px 0 0 rgb(255 0 60 / 0.95)); }
+  93%        { filter: drop-shadow(-7px 0 0 rgb(255 0 60 / 0.95)) drop-shadow(7px 0 0 rgb(0 229 255 / 0.95)); }
+  94%        { filter: drop-shadow(3px 0 0 rgb(0 229 255 / 0.7)) drop-shadow(-3px 0 0 rgb(255 0 60 / 0.7)); }
+  95.5%      { filter: drop-shadow(6px 0 0 rgb(255 0 60 / 0.9)) drop-shadow(-6px 0 0 rgb(0 229 255 / 0.9)); }
+  97%        { filter: drop-shadow(-4px 0 0 rgb(0 229 255 / 0.8)) drop-shadow(4px 0 0 rgb(255 0 60 / 0.8)); }
+  98.5%      { filter: drop-shadow(2px 0 0 rgb(255 0 60 / 0.5)) drop-shadow(-2px 0 0 rgb(0 229 255 / 0.5)); }
+  100%       { filter: none; }
+}
+
+/*
+  Wordmark tint follows the same phase as the mark.
+
+  The blue is deliberately NOT Google's #4285F4: that measures 3.56:1 on white
+  and fails AA for the 14px wordmark. #1558B0 is the same hue darkened to
+  6.87:1, which still reads as the official identity.
+*/
+@keyframes gdg-tint {
+  0%, 49%    { color: #1558b0; }
+  50%, 100%  { color: #d62500; }
+}
+
+.gdg-glitch-cycle {
+  animation: gdg-tear 2s linear infinite;
+}
+.gdg-glitch-cycle .gdg-stage {
+  animation: gdg-chroma 2s linear infinite;
+}
+.gdg-glitch-cycle .gdg-official {
+  animation: gdg-official-fade 2s linear infinite;
+}
+.gdg-glitch-cycle .gdg-swiss {
+  animation: gdg-swiss-fade 2s linear infinite;
+}
+.gdg-glitch-cycle .gdg-wordmark {
+  animation: gdg-tint 2s linear infinite;
+}
+/* The subtitle cross-fades in the same phase as its mark. */
+.gdg-glitch-cycle .gdg-official-text {
+  animation: gdg-official-fade 2s linear infinite;
+}
+.gdg-glitch-cycle .gdg-swiss-text {
+  animation: gdg-swiss-fade 2s linear infinite;
+}
+
+/*
+  Reduced motion: one clean state, held. The mark still reads as the brand; it
+  simply stops moving. This is a WCAG 2.3.3 concern - the animation is purely
+  decorative and repeated for over 5s, so it must be suppressible.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .gdg-glitch-cycle,
+  .gdg-glitch-cycle .gdg-stage,
+  .gdg-glitch-cycle .gdg-official,
+  .gdg-glitch-cycle .gdg-swiss,
+  .gdg-glitch-cycle .gdg-wordmark,
+  .gdg-glitch-cycle .gdg-official-text,
+  .gdg-glitch-cycle .gdg-swiss-text {
+    animation: none;
+  }
+  .gdg-glitch-cycle .gdg-official,
+  .gdg-glitch-cycle .gdg-official-text {
+    opacity: 0;
+  }
+  .gdg-glitch-cycle .gdg-swiss,
+  .gdg-glitch-cycle .gdg-swiss-text {
+    opacity: 1;
+  }
+  .gdg-glitch-cycle .gdg-wordmark {
+    color: #d62500;
+  }
+}
+/* ==========================================================================
+   LANDING HERO
+
+   A one-shot entrance, not a loop.
+
+   It plays once on arrival and then settles into a static composition. A
+   looping hero on a public page is an attention tax on someone deciding whether
+   to register, and it drains a phone battery for as long as the tab stays open.
+   Everything here is pure CSS, so there is no JavaScript to fail and no
+   JS-disabled case to handle.
+
+   The trade-off being made: each element HIDES itself in its `from` block and
+   depends on the animation running to reveal it. That is what produces the
+   staggered sequence, and it means a context where animations do not run would
+   otherwise show an empty hero. Two such contexts are handled explicitly below —
+   `prefers-reduced-motion` and `print`. A browser that pauses animations because
+   the tab is backgrounded resumes them on return, so that case self-heals.
+
+   The motion is typographic and geometric, which is what keeps it Swiss: the
+   grid assembles, the headline is revealed line by line from behind a mask, the
+   red signal wipes once. Nothing bounces, nothing spins, nothing loops.
+   ========================================================================== */
+
+/* The vertical red rule that opens the page. */
+@keyframes hero-rule {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* Grid columns draw downward from the top edge. */
+@keyframes hero-column {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* Grid rows draw across from the left edge. */
+@keyframes hero-row {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Headline lines rise out from behind their own mask. */
+@keyframes hero-line {
+  from {
+    transform: translateY(105%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+/* Everything else settles in: a short rise plus a fade. */
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* The red signal bar wipes in from the left. */
+@keyframes hero-wipe {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* The geometric mark settles into place. */
+@keyframes hero-mark {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Masks the line reveal so type appears to rise from behind its own baseline. */
+.hero-stage {
+  overflow: hidden;
+  padding-bottom: 0.12em; /* keeps descenders clear of the mask edge */
+}
+
+.hero-anim-rule {
+  transform-origin: top;
+  animation: hero-rule 520ms cubic-bezier(0.16, 1, 0.3, 1) 60ms both;
+}
+
+.hero-anim-column {
+  transform-origin: top;
+  animation: hero-column 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-anim-row {
+  transform-origin: left;
+  animation: hero-row 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-anim-line {
+  animation: hero-line 760ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-anim-rise {
+  animation: hero-rise 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-anim-wipe {
+  transform-origin: left;
+  animation: hero-wipe 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-anim-mark {
+  animation: hero-mark 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/*
+  Reduced motion: no entrance at all.
+
+  Cancelling the animation alone is not enough. These rules only ever set
+  `transform` and `opacity` inside their `from` block, so removing the animation
+  leaves elements at their natural resting values — which is correct, but stated
+  explicitly below so the resting state never depends on reading the keyframes.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .hero-anim-rule,
+  .hero-anim-column,
+  .hero-anim-row,
+  .hero-anim-line,
+  .hero-anim-rise,
+  .hero-anim-wipe,
+  .hero-anim-mark {
+    animation: none;
+    opacity: 1;
+  }
+  .hero-anim-rule,
+  .hero-anim-column {
+    transform: scaleY(1);
+  }
+  .hero-anim-row,
+  .hero-anim-wipe {
+    transform: scaleX(1);
+  }
+  .hero-anim-line,
+  .hero-anim-rise,
+  .hero-anim-mark {
+    transform: none;
+  }
+}
+
+/*
+  Print: force the settled state.
+
+  The same failure mode as reduced motion, for the same reason. Every animated
+  element hides itself in its `from` block and depends on the animation running
+  to reveal it. Browsers do not run CSS animations when printing, so without this
+  the printed page would show the hero's grid and an empty headline.
+*/
+@media print {
+  .hero-anim-rule,
+  .hero-anim-column,
+  .hero-anim-row,
+  .hero-anim-line,
+  .hero-anim-rise,
+  .hero-anim-wipe,
+  .hero-anim-mark {
+    animation: none !important;
+    opacity: 1 !important;
+  }
+  .hero-anim-rule,
+  .hero-anim-column {
+    transform: scaleY(1) !important;
+  }
+  .hero-anim-row,
+  .hero-anim-wipe {
+    transform: scaleX(1) !important;
+  }
+  .hero-anim-line,
+  .hero-anim-rise,
+  .hero-anim-mark {
+    transform: none !important;
+  }
+}
+
+/* ==========================================================================
+   GLOBAL
+   ========================================================================== */
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-content);
+    font-family: var(--font-sans);
+    font-feature-settings:
+      'cv11' 1,
+      'ss01' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Noise is fixed so it reads as paper grain over the whole viewport
+       rather than a texture that slides with scroll. */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 140px 140px;
+  }
+
+  /* A second grain layer above the content, fixed and inert: adds tactile
+     warmth to the whole page without swallowing clicks. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 140px 140px;
+    opacity: 0.02;
+  }
+
+  /* The focus ring is the accessibility contract for the whole system:
+     sharp 2px red with an offset. No glows, no softness. */
+  :focus-visible {
+    outline: 2px solid var(--color-signal-text);
+    outline-offset: 2px;
+  }
+
+  /* Inputs inherit the grid voice: square, black-bordered, no ring. */
+  input,
+  button,
+  textarea,
+  select {
+    border-radius: 0;
+  }
+}
+
+/* Respect reduced-motion: kill transforms, keep instant colour swaps
+   (they carry meaning, not decoration). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   MOTION LAYER
+
+   Interface motion, not decoration. Every animation here does one of three
+   jobs, and an animation that does none of them does not belong:
+
+     1. FEEDBACK     — something responded to you (a button pressed, a panel
+                       swapped, a row appeared)
+     2. ORIENTATION   — you can tell where you just came from
+     3. LATENCY      — motion covers a wait that is real but short, so the
+                       interface feels instant rather than slow
+
+   Four rules, each of which exists because breaking it causes a specific
+   failure:
+
+   TRANSFORM AND OPACITY ONLY. Animating width, height, top or margin forces
+   layout on every frame, which drops frames on a mid-range phone — the exact
+   device an attendee uses on venue wifi. Nothing here animates layout.
+
+   SHORT. 180–360ms. Motion slower than ~400ms on a transition stops reading as
+   responsive and starts reading as lag.
+
+   ONE-SHOT. Nothing here loops except the loading skeleton, and that stops the
+   moment content arrives. A looping animation is a permanent battery tax on
+   someone holding a page open, and an attention tax on someone deciding whether
+   to register.
+
+   NO MOTION ON THE GATE. The admin scan panel deliberately has none. It is what
+   a volunteer uses at a busy door, usually on a phone, with a camera preview and
+   an on-screen keyboard in play. Motion there competes with the one interaction
+   that must be fast and reliable.
+
+   Reduced motion is handled by the blanket rule at the end of this file. These
+   animations are written to survive it: none hides content in a way that only
+   the animation can undo, so collapsing the duration to ~0 reveals the same
+   resting state instantly.
+   ========================================================================== */
+
+/* Fast-out decelerate. Starts immediately — a transition that eases IN reads as
+   slow, because the first thing the user sees is barely any movement. */
+@theme {
+  --motion-dur-fast: 180ms;
+  --motion-dur: 260ms;
+  --motion-dur-slow: 360ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes motion-rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes motion-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes motion-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translate3d(0, -6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+
+/* Horizontal rule drawing itself, used where a divider separates two states. */
+@keyframes motion-wipe-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@layer components {
+  /* -- The workhorse: a panel arriving. ------------------------------- */
+  .motion-rise {
+    animation: motion-rise var(--motion-dur-slow) var(--motion-ease) both;
+  }
+
+  .motion-fade {
+    animation: motion-fade var(--motion-dur) var(--motion-ease) both;
+  }
+
+  /* Something that confirms an action appeared — a banner, a receipt. */
+  .motion-scale-in {
+    animation: motion-scale-in var(--motion-dur) var(--motion-ease) both;
+  }
+
+  .motion-wipe-x {
+    transform-origin: left center;
+    animation: motion-wipe-x var(--motion-dur-slow) var(--motion-ease) both;
+  }
+
+  /*
+    Staggered list reveal.
+
+    The index arrives as `--i` from the component, capped there — a 500-row
+    attendance log must not take twenty seconds to finish animating. Past the cap
+    everything appears together, which is correct: the point is to show the eye
+    where a list begins, not to make anyone wait for it.
+
+    Delay is a transition-level concern, not a keyframe one, so it survives the
+    reduced-motion blanket without needing an override.
+  */
+  .motion-stagger {
+    animation: motion-rise var(--motion-dur) var(--motion-ease) both;
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+
+  /*
+    Loading skeleton.
+
+    The one permitted loop, and only while something is genuinely loading. It
+    exists to cover a real wait — without it a blank panel reads as a broken
+    page. `prefers-reduced-motion` collapses it to a static tint, which still
+    communicates "loading" without movement.
+  */
+  .motion-skeleton {
+    background-image: linear-gradient(
+      90deg,
+      var(--color-swiss-muted) 0%,
+      #ffffff 50%,
+      var(--color-swiss-muted) 100%
+    );
+    background-size: 200% 100%;
+    animation: motion-shimmer 1.4s linear infinite;
+  }
+
+  /*
+    Press feedback.
+
+    A 1px settle rather than a scale: scale changes the element's rendered box,
+    which nudges neighbours and reads as a layout change on a list. `translate`
+    composites on the GPU and moves nothing else.
+  */
+  .motion-press {
+    transition:
+      transform var(--motion-dur-fast) var(--motion-ease),
+      background-color var(--motion-dur-fast) var(--motion-ease),
+      border-color var(--motion-dur-fast) var(--motion-ease),
+      color var(--motion-dur-fast) var(--motion-ease);
+  }
+
+  .motion-press:active {
+    transform: translate3d(0, 1px, 0);
+  }
+
+  /* Tab panel swap: content cross-fades so the change of section is legible. */
+  .motion-tab-panel {
+    animation: motion-rise var(--motion-dur) var(--motion-ease) both;
+  }
+}
+
+@keyframes motion-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/*
+  Reduced motion, stated rather than inherited.
+
+  The blanket rule above collapses durations, which leaves these elements at
+  their `to` state — visible and correct. Stagger DELAYS are a separate property
+  and survive it, so they are zeroed explicitly here; otherwise a reduced-motion
+  visitor would still sit through the full accumulated wait before anything
+  appeared, which is the exact opposite of what they asked for.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .motion-stagger {
+    animation-delay: 0ms !important;
+  }
+  .motion-skeleton {
+    animation: none !important;
+  }
+}

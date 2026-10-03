@@ -1,0 +1,46 @@
+{
+  "name": "gdg",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && node scripts/build-vercel.mjs",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "db:setup": "node scripts/setup-db.mjs",
+    "test:api": "node scripts/test-api.mjs",
+    "test:gate": "node scripts/test-gate-and-reset.mjs",
+    "test:scan": "node --experimental-strip-types --no-warnings scripts/test-scan-confirmation.mjs",
+    "test:landing": "node --experimental-strip-types --no-warnings scripts/test-landing-entry.mjs",
+    "test:motion": "node --experimental-strip-types --no-warnings scripts/test-motion.mjs",
+    "test:phone": "node --experimental-strip-types --no-warnings scripts/test-phone.mjs",
+    "test:dates": "node --experimental-strip-types --no-warnings scripts/test-event-dates.mjs",
+    "test:errors": "esbuild scripts/error-matrix.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/error-matrix.mjs --log-level=error && node node_modules/.tmp/error-matrix.mjs",
+    "test:copy": "esbuild scripts/test-api-error-copy.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/test-api-error-copy.mjs --log-level=error && node node_modules/.tmp/test-api-error-copy.mjs",
+    "load:test": "node scripts/load-test.mjs",
+    "prepublish": "node scripts/prepublish-scan.mjs"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@zxing/browser": "^0.2.1",
+    "bcryptjs": "^3.0.3",
+    "pg": "^8.23.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-qr-code": "^2.2.0",
+    "react-router-dom": "^7.18.4",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vercel/node": "^17.0.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}

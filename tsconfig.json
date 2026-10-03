@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    /*
+      Needed by Vercel's build of `api/`, which compiles against the ROOT
+      tsconfig rather than tsconfig.api.json. The serverless imports use
+      explicit `.ts` extensions so they resolve identically under Vercel's
+      bundler and under Node's native type stripping.
+    */
+    "allowImportingTsExtensions": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.api.json" }
+  ]
+}

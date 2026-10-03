@@ -1,0 +1,36 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+.vercel
+
+# Secrets. `.env.example` is committed; every other env file holds the Neon
+# connection string and the ticket-signing key and must never be.
+.env
+.env.*
+!.env.example
+*.pem
+
+scripts/export-sample.csv
+scripts/error-matrix.csv

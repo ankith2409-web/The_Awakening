@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <title>PLACEHOLDER — replace with the official Fetch AI asset</title>
+  <!--
+    TEMPORARY PLACEHOLDER. An approximation, not the official artwork.
+    To use the real mark: overwrite this file, keeping the filename.
+
+    Two capsules crossing at the centre, each split at its midpoint:
+      upper-left  RED      lower-left   BLUE
+      upper-right GREEN    lower-right  YELLOW
+  -->
+  <defs>
+    <path id="cap" d="M -88,-31 A 31,31 0 0 1 88,-31 L 88,31 A 31,31 0 0 1 -88,31 Z"/>
+    <!-- Split each capsule at its midpoint with an 8px gap, so the dividing
+         rule reads as a real separation rather than a colour change. -->
+    <clipPath id="capStart"><rect x="-96" y="-40" width="84" height="80"/></clipPath>
+    <clipPath id="capEnd"><rect x="12" y="-40" width="84" height="80"/></clipPath>
+  </defs>
+
+  <g stroke="#000000" stroke-width="10" stroke-linejoin="round">
+    <!-- "/" capsule: capStart renders lower-left, capEnd renders upper-right -->
+    <g transform="translate(100,100) rotate(-45)">
+      <use href="#cap" fill="#2196F3" clip-path="url(#capStart)"/>
+      <use href="#cap" fill="#4CAF50" clip-path="url(#capEnd)"/>
+    </g>
+    <!-- "\" capsule: capStart renders upper-left, capEnd renders lower-right -->
+    <g transform="translate(100,100) rotate(45)">
+      <use href="#cap" fill="#F44336" clip-path="url(#capStart)"/>
+      <use href="#cap" fill="#FFC107" clip-path="url(#capEnd)"/>
+    </g>
+  </g>
+</svg>

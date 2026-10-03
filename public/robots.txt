@@ -1,0 +1,5 @@
+# An authentication portal should never appear in search results.
+User-agent: *
+Disallow: /
+
+# No sitemap: nothing here is meant to be discovered.

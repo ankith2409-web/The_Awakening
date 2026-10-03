@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "jsx-a11y"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn",
+
+    "react/jsx-key": "error",
+    "react/no-array-index-key": "warn",
+    "react/no-danger": "error",
+
+    "jsx-a11y/alt-text": "error",
+    "jsx-a11y/anchor-is-valid": "error",
+
+    "react/react-in-jsx-scope": "off",
+
+    "jsx-a11y/prefer-tag-over-role": "off",
+
+    "react/set-state-in-effect": "off"
+  }
+}

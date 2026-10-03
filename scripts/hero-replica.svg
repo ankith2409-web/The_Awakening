@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="785" height="823" viewBox="0 0 785 823" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <rect width="785" height="823" fill="#ffffff"/>
+
+  <!-- animated grid, drawn on: 5 columns, 3 rows -->
+  <rect x="126" y="86" width="1" height="677" fill="rgba(0,0,0,0.10)"/>
+  <rect x="259" y="86" width="1" height="677" fill="rgba(0,0,0,0.10)"/>
+  <rect x="392" y="86" width="1" height="677" fill="rgba(0,0,0,0.10)"/>
+  <rect x="518" y="86" width="1" height="677" fill="rgba(0,0,0,0.10)"/>
+  <rect x="651" y="86" width="1" height="677" fill="rgba(0,0,0,0.10)"/>
+  <rect x="0" y="262" width="785" height="1" fill="rgba(0,0,0,0.10)"/>
+  <rect x="0" y="437" width="785" height="1" fill="rgba(0,0,0,0.10)"/>
+  <rect x="0" y="613" width="785" height="1" fill="rgba(0,0,0,0.10)"/>
+
+  <!-- masthead -->
+  <rect x="0" y="0" width="785" height="86" fill="#ffffff"/>
+  <line x1="0" y1="86" x2="785" y2="86" stroke="#000000" stroke-width="2"/>
+  <text x="40" y="52" font-size="19" font-weight="900" fill="#d62500" letter-spacing="-0.6">THE AWAKENING</text>
+  <text x="40" y="70" font-size="10" font-weight="500" fill="#555555" letter-spacing="2.4">FETCH AI · GDG</text>
+  <text x="745" y="58" font-size="10" font-weight="500" fill="#555555"
+        letter-spacing="2.4" text-anchor="end">FETCH AI</text>
+
+  <!-- section frame -->
+  <line x1="0" y1="763" x2="785" y2="763" stroke="#000000" stroke-width="2"/>
+
+  <!-- opening red rule -->
+  <rect x="40" y="150" width="96" height="4" fill="#ff3000"/>
+
+  <!-- eyebrow -->
+  <text x="40" y="189" font-size="11" font-weight="700"
+        fill="#d62500" letter-spacing="2.75">01 · ENTRY</text>
+
+  <!-- headline: two masked lines, 88px / 900 / -4.4px tracking -->
+  <text x="40" y="271.76" font-size="88" font-weight="900" fill="#000000" letter-spacing="-4.4">THE</text>
+  <text x="40" y="357.76" font-size="88" font-weight="900" fill="#000000" letter-spacing="-4.4">AWAKENING</text>
+
+  <!-- tagline -->
+  <text x="40" y="430" font-size="14" font-weight="500"
+        fill="#555555" letter-spacing="2.1">AI AGENTS — BUILT BY YOU</text>
+
+  <!-- red signal wipe -->
+  <rect x="40" y="469" width="384" height="4" fill="#ff3000"/>
+
+  <!-- facts: three cells separated by 1px black gaps -->
+  <rect x="42" y="507" width="174" height="84" fill="#ffffff"/>
+  <rect x="216" y="507" width="1" height="84" fill="#000000"/>
+  <rect x="42" y="591" width="175" height="1" fill="#000000"/>
+  <text x="58" y="531" font-size="10" font-weight="500" fill="#555555" letter-spacing="2">WHEN</text>
+  <text x="58" y="555" font-size="14" font-weight="900" fill="#000000" letter-spacing="-0.4">14–15 October 2026</text>
+  <rect x="217" y="507" width="174" height="84" fill="#ffffff"/>
+  <rect x="391" y="507" width="1" height="84" fill="#000000"/>
+  <rect x="217" y="591" width="175" height="1" fill="#000000"/>
+  <text x="233" y="531" font-size="10" font-weight="500" fill="#555555" letter-spacing="2">WHERE</text>
+  <text x="233" y="555" font-size="14" font-weight="900" fill="#000000" letter-spacing="-0.4">Seminar Hall, Bengaluru</text>
+  <rect x="393" y="507" width="174" height="84" fill="#ffffff"/>
+  <rect x="567" y="507" width="1" height="84" fill="#000000"/>
+  <rect x="393" y="591" width="175" height="1" fill="#000000"/>
+  <text x="409" y="531" font-size="10" font-weight="500" fill="#555555" letter-spacing="2">HOST</text>
+  <text x="409" y="555" font-size="14" font-weight="900" fill="#000000" letter-spacing="-0.4">Amity University Bengaluru</text>
+  <rect x="42" y="507" width="1" height="84" fill="#000000"/>
+  <rect x="42" y="507" width="175" height="1" fill="#000000"/>
+
+  <!-- actions -->
+  <rect x="40" y="633" width="153" height="64" fill="#d62500" stroke="#d62500" stroke-width="2"/>
+  <text x="116.5" y="670" font-size="14" font-weight="700"
+        fill="#ffffff" letter-spacing="2.1" text-anchor="middle">REGISTER</text>
+  <rect x="209" y="633" width="135" height="64" fill="#ffffff" stroke="#ffffff" stroke-width="2"/>
+  <text x="276.5" y="670" font-size="14" font-weight="700"
+        fill="#000000" letter-spacing="2.1" text-anchor="middle">SIGN IN</text>
+  <rect x="209" y="633" width="135" height="64"
+        fill="none" stroke="#000000" stroke-width="2"/>
+
+  <!-- geometric composition: circle, square, rules -->
+  <g>
+    <rect x="617" y="150" width="128" height="160" fill="#ffffff" stroke="#000000" stroke-width="2"/>
+    <line x1="681" y1="150" x2="681" y2="310" stroke="rgba(0,0,0,0.10)" stroke-width="1"/>
+    <line x1="617" y1="242.8" x2="745" y2="242.8" stroke="rgba(0,0,0,0.10)" stroke-width="1"/>
+    <circle cx="657.96" cy="198" r="24.32"
+            fill="#ff3000" stroke="#000000" stroke-width="2"/>
+    <rect x="683.56" y="249.2" width="38.4" height="32"
+          fill="#ffffff" stroke="#000000" stroke-width="2"/>
+    <rect x="617" y="302" width="48.64" height="8" fill="#ff3000"/>
+  </g>
+
+  <!-- caption -->
+  <text x="0" y="801" font-size="10" font-weight="500" fill="#555555" letter-spacing="1.4">
+    MEASURED FROM THE LIVE PAGE — layout and colour are exact; font rendering is approximate.
+  </text>
+</svg>
