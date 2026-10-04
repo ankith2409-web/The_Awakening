@@ -9,7 +9,6 @@ import { Alert, SectionLabel } from '@/components/Typography'
 import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
-import { StaffPanel } from './StaffPanel'
 import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
 
 /**
@@ -33,14 +32,14 @@ const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   printed: 'Bare SEN with no signature — typed by staff or read from a printed barcode.',
 }
 
-type Tab = 'scan' | 'attendance' | 'desk' | 'staff' | 'teams' | 'programme'
+type Tab = 'scan' | 'attendance' | 'desk' | 'teams' | 'programme'
 
 /**
  * The tabs, and who may see each one.
  *
- * `gate` is a volunteer at the door: scan a badge, look at the log, look at
- * teams. Nothing else. `owner` additionally gets the Desk (changing somebody's
- * credential is not a door-side job), the Staff panel, and the Programme.
+ * `gate` is whoever is on the door: scan a badge, look at the log, look at teams.
+ * Nothing else. `owner` additionally gets the Desk (changing somebody's
+ * credential is not a door-side job) and the Programme.
  *
  * The role is read from the session to decide what to DRAW. It is not what
  * decides what is ALLOWED — every one of these routes checks the role again on
@@ -55,7 +54,6 @@ const TABS: { id: Tab; label: string; ownerOnly: boolean }[] = [
   { id: 'scan', label: 'Scan', ownerOnly: false },
   { id: 'attendance', label: 'Attendance', ownerOnly: false },
   { id: 'desk', label: 'Desk', ownerOnly: true },
-  { id: 'staff', label: 'Staff', ownerOnly: true },
   { id: 'teams', label: 'Teams', ownerOnly: false },
   { id: 'programme', label: 'Programme', ownerOnly: true },
 ]
@@ -229,8 +227,6 @@ export function AdminPortalView() {
             ) : null}
 
             {activeTab === 'desk' ? <AttendeeDirectory /> : null}
-
-            {activeTab === 'staff' ? <StaffPanel /> : null}
 
             {activeTab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
 

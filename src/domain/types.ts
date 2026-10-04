@@ -43,9 +43,8 @@ export interface AttendeeSession {
 /**
  * Staff access levels.
  *
- * `owner` runs the event — the roster, credentials, the programme, staff
- * accounts. `gate` is a volunteer at the door: mark attendance, read the log,
- * read teams.
+ * `owner` runs the event — the roster, credentials, the programme. `gate` is
+ * whoever is on the door: mark attendance, read the log, read teams.
  *
  * Mirrors the server's list. It is here so the UI can hide what a `gate` account
  * cannot use — never to decide whether it is allowed. The server checks the role
@@ -62,24 +61,6 @@ export interface AdminUser {
   readonly displayName: string
   readonly role: AdminRole
 }
-
-/**
- * A staff account as the admin portal sees it. Never carries a hash.
- *
- * `active: false` is a disabled account rather than a deleted one, so the name
- * stays attached to audit rows the account already produced.
- */
-export interface StaffAccount {
-  readonly id: string
-  readonly username: string
-  readonly displayName: string
-  readonly role: AdminRole
-  readonly active: boolean
-  readonly createdAt: string | null
-}
-
-/** The change made to a staff account, for the audit line in the Staff panel. */
-export type StaffAction = 'created' | 'role_changed' | 'reset' | 'deactivated' | 'reactivated'
 
 export interface AdminSession {
   readonly admin: AdminUser

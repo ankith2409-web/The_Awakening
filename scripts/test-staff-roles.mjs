@@ -4,13 +4,20 @@
  *
  * This is the suite that matters most for the `gate` role, because a permission
  * bug is invisible everywhere else. The tab bar still renders, the scan still
- * works, the log still loads — and a volunteer quietly walks away with the whole
- * roster. So every restriction is asserted on the ROUTE, not on the UI, and the
- * negative cases are checked explicitly rather than inferred from the positives.
+ * works, the log still loads — and whoever is on the door quietly walks away with
+ * the whole roster. So every restriction is asserted on the ROUTE, not on the
+ * UI, and the negative cases are checked explicitly rather than inferred from the
+ * positives.
+ *
+ * The accounts are provisioned straight into the database, because there is no
+ * longer an API that creates them. That is the same path `scripts/manage-staff.mjs`
+ * uses, so a green run means the real provisioning path produces an account the
+ * real server then respects.
  *
  *   ADMIN_USERNAME / ADMIN_PASSWORD in the environment, or in .env.
  */
 
+import { execFileSync } from 'node:child_process'
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
 
@@ -20,7 +27,6 @@ const BASE = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
 
 let passed = 0
 let failed = 0
-let skipped = 0
 
 function check(label, ok, detail) {
   if (ok) {
@@ -32,17 +38,8 @@ function check(label, ok, detail) {
   }
 }
 
-function skip(label, why) {
-  skipped += 1
-  console.log(`  skip  ${label}\n          ${why}`)
-}
-
 function report() {
-  console.log(
-    `\n  ${passed} passed, ${failed} failed` +
-      (skipped > 0 ? `, ${skipped} skipped` : '') +
-      `\n`,
-  )
+  console.log(`\n  ${passed} passed, ${failed} failed\n`)
   if (failed > 0) process.exitCode = 1
 }
 
@@ -57,7 +54,7 @@ async function call(method, path, body, cookie) {
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
-  const cookie2 = (res.headers.getSetCookie?.() ?? [])
+  const setCookie = (res.headers.getSetCookie?.() ?? [])
     .map((line) => line.split(';')[0])
     .join('; ')
 
@@ -68,40 +65,97 @@ async function call(method, path, body, cookie) {
   } catch {
     parsed = text
   }
-  return { status: res.status, body: parsed, cookie: cookie2 }
+  return { status: res.status, body: parsed, cookie: setCookie }
 }
 
-/** Removes the accounts this run created, so a rerun is clean. */
-async function purgeTestStaff() {
-  const url = process.env.DATABASE_URL
-  if (!url) return false
-  const client = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } })
-  try {
-    await client.connect()
-    await client.query(`delete from admins where username like 'role-probe-%'`)
-    return true
-  } finally {
-    await client.end()
+/** Digits only: this stamp also builds a phone number. */
+const stamp = Date.now().toString().slice(-9)
+const GATE_USER = `role-probe-${stamp}`
+const OWNER_USER = `role-probe-owner-${stamp}`
+const PROBE_PASSWORD = 'probe2026pass'
+
+let db = null
+
+async function purge() {
+  if (!db) return false
+  for (const username of [GATE_USER, OWNER_USER]) {
+    const { rows } = await db.query('select id from admins where username = $1', [username])
+    for (const row of rows) {
+      await db.query(`delete from sessions where kind = 'admin' and subject_id = $1`, [row.id])
+      await db.query('delete from staff_changes where subject_id = $1 or admin_id = $1', [row.id])
+    }
+    await db.query('delete from admins where username = $1', [username])
   }
+  return true
+}
+
+/**
+ * Provisions an account by running the real CLI, and returns its password.
+ *
+ * Not an INSERT. The whole point of removing the Staff panel was that
+ * provisioning now happens through `manage-staff.mjs`, so a suite that wrote the
+ * row itself would be testing a path nothing actually uses — and the audit trail
+ * it would then assert on would never have been written by anything.
+ */
+function provisionViaCli(username, displayName, role) {
+  const out = execFileSync(
+    process.execPath,
+    ['scripts/manage-staff.mjs', 'add', username, displayName, role],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  const match = out.match(/^\s*password\s+(\S+)\s*$/m)
+  if (!match) throw new Error(`manage-staff.mjs printed no password:\n${out}`)
+  return match[1]
 }
 
 async function main() {
   console.log(`\n  Testing ${BASE}\n`)
 
-  const ownerUser = process.env.ADMIN_USERNAME ?? 'admin'
-  const ownerPass = process.env.ADMIN_PASSWORD ?? ''
+  if (!process.env.DATABASE_URL) {
+    console.log('  DATABASE_URL is not set — cannot provision the probe accounts.\n')
+    process.exitCode = 1
+    return
+  }
+  db = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  await db.connect()
+  await purge()
+
+  /* -- provision, through the CLI that replaced the Staff panel -------------- */
+  const gatePassword = provisionViaCli(GATE_USER, 'Role Probe', 'gate')
+  check('the CLI provisions a gate account', typeof gatePassword === 'string' && gatePassword.length >= 8)
+
+  const duplicate = (() => {
+    try {
+      execFileSync(
+        process.execPath,
+        ['scripts/manage-staff.mjs', 'add', GATE_USER, 'Duplicate', 'owner'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      return 'accepted it'
+    } catch (error) {
+      return String(error.stderr ?? '')
+    }
+  })()
+  check(
+    'the CLI refuses a duplicate username',
+    /already exists/i.test(duplicate),
+    duplicate.trim(),
+  )
+
+  // A second owner, so the "last owner" guard can be observed rather than assumed.
+  const ownerPassword = provisionViaCli(OWNER_USER, 'Probe Owner', 'owner')
 
   /* -- the owner signs in --------------------------------------------------- */
   const owner = await call('POST', '/admin/login', {
-    username: ownerUser,
-    password: ownerPass,
+    username: process.env.ADMIN_USERNAME ?? 'admin',
+    password: process.env.ADMIN_PASSWORD ?? '',
   })
   check('the owner signs in', owner.status === 200, `got ${owner.status}`)
 
   if (owner.status !== 200) {
-    console.log(
-      '  ADMIN_PASSWORD is not set. Export it, or run against a local .env.\n',
-    )
+    console.log('  ADMIN_PASSWORD is not set. Export it, or run against a local .env.\n')
+    await purge()
+    await db.end()
     process.exitCode = 1
     return
   }
@@ -112,78 +166,10 @@ async function main() {
     `role=${owner.body?.admin?.role}`,
   )
 
-  /* -- create a gate account ------------------------------------------------ */
-  /*
-    Digits only, and distinct from the fixtures the other suites use.
-
-    An earlier version derived this from `Date.now().toString(36)`, which puts
-    letters in the string — and then used it to build a phone number. Registration
-    returned 422 and four downstream assertions failed for a reason that had
-    nothing to do with the thing under test. A failure caused by the fixture must
-    never be mistaken for a finding.
-  */
-  const stamp = Date.now().toString().slice(-9)
-  const gateUser = `role-probe-${stamp}`
-
-  const created = await call(
-    'POST',
-    '/admin/staff',
-    {
-      username: gateUser,
-      displayName: 'Role Probe',
-      password: 'probe2026pass',
-      role: 'gate',
-    },
-    owner.cookie,
-  )
-  check('the owner can create a gate account', created.status === 201, `got ${created.status}`)
-  check(
-    'the created account comes back as gate',
-    created.body?.staff?.role === 'gate',
-    `role=${created.body?.staff?.role}`,
-  )
-  check(
-    'the created account carries no password hash',
-    !JSON.stringify(created.body).includes('passwordHash') &&
-      !JSON.stringify(created.body).includes('password_hash'),
-    JSON.stringify(created.body),
-  )
-
-  const duplicate = await call(
-    'POST',
-    '/admin/staff',
-    {
-      // Uppercased: the unique index is on lower(username), so this is the same
-      // account and must be refused as such.
-      username: gateUser.toUpperCase(),
-      displayName: 'Duplicate',
-      password: 'probe2026pass',
-      role: 'owner',
-    },
-    owner.cookie,
-  )
-  check(
-    'a duplicate username is refused regardless of case',
-    duplicate.status === 409 && duplicate.body?.code === 'username_taken',
-    `got ${duplicate.status}/${duplicate.body?.code}`,
-  )
-
-  const weakStaff = await call(
-    'POST',
-    '/admin/staff',
-    { username: `role-probe-w-${stamp}`, displayName: 'Weak', password: 'abc', role: 'gate' },
-    owner.cookie,
-  )
-  check(
-    'a staff password cannot be weaker than an attendee password',
-    weakStaff.status === 422 && weakStaff.body?.code === 'weak_password',
-    `got ${weakStaff.status}/${weakStaff.body?.code}`,
-  )
-
   /* -- the gate account signs in -------------------------------------------- */
   const gate = await call('POST', '/admin/login', {
-    username: gateUser,
-    password: 'probe2026pass',
+    username: GATE_USER,
+    password: gatePassword,
   })
   check('the gate account signs in', gate.status === 200, `got ${gate.status}`)
   check(
@@ -192,16 +178,22 @@ async function main() {
     `role=${gate.body?.admin?.role}`,
   )
 
-  /* -- what a gate account may do ------------------------------------------- */
   const gateSession = await call('GET', '/admin/session', undefined, gate.cookie)
   check(
-    'the gate session survives its own probe',
+    'the role survives a page refresh, which is what this endpoint is for',
     gateSession.body?.admin?.role === 'gate',
     JSON.stringify(gateSession.body),
   )
+  check(
+    'the owner role also survives a refresh',
+    (await call('GET', '/admin/session', undefined, owner.cookie)).body?.admin?.role === 'owner',
+  )
 
-  const gateTeams = await call('GET', '/teams')
-  check('a gate account can read teams', gateTeams.status === 200, `got ${gateTeams.status}`)
+  /* -- what a gate account may do ------------------------------------------- */
+  check(
+    'a gate account can read teams',
+    (await call('GET', '/teams')).status === 200,
+  )
 
   const gateLog = await call('GET', '/admin/attendance', undefined, gate.cookie)
   check('a gate account can read the attendance log', gateLog.status === 200, `got ${gateLog.status}`)
@@ -215,16 +207,14 @@ async function main() {
   /* -- what a gate account may not do --------------------------------------- */
   /*
     Each of these is the actual control. Hiding a tab is presentation; the route
-    refusing is the permission. A volunteer with devtools open gets 403 on all of
-    them.
+    refusing is the permission. Somebody at the door with devtools open gets 403 on
+    every one of them.
   */
   const denied = [
     ['GET', '/admin/attendees', undefined, 'the roster'],
-    ['GET', '/admin/staff', undefined, 'the staff list'],
-    ['POST', '/admin/attendees/password', { sen: 'A866175000000', password: 'probe2026pass' }, 'changing a password'],
+    ['POST', '/admin/attendees/password', { sen: 'A866175000000', password: PROBE_PASSWORD }, 'changing a password'],
     ['PATCH', '/admin/event', { phase: 'live' }, 'the event phase'],
-    ['POST', '/admin/staff', { username: `x-${stamp}`, displayName: 'X', password: 'probe2026pass', role: 'owner' }, 'creating an account'],
-    ['PATCH', '/admin/staff', { id: owner.body?.admin?.id, role: 'gate' }, 'changing staff'],
+    ['PATCH', '/admin/agenda/ag_01', { status: 'live' }, 'the agenda'],
   ]
 
   for (const [method, path, body, what] of denied) {
@@ -236,6 +226,17 @@ async function main() {
     )
   }
 
+  check(
+    'there is no route that manages staff accounts',
+    denied.length > 0 &&
+      (await call('GET', '/admin/staff', undefined, gate.cookie)).status === 404,
+    'the Staff panel was removed; its routes should be gone, not merely locked',
+  )
+  check(
+    'nor one that creates them, even for an owner',
+    (await call('POST', '/admin/staff', {}, owner.cookie)).status === 404,
+  )
+
   /* -- a gate account can still scan ----------------------------------------- */
   const senScan = `SEN${stamp}X`
   // Ten digits, starting 6-9: Indian mobiles never begin with 5.
@@ -244,7 +245,7 @@ async function main() {
     name: 'Gate Probe',
     phone: phoneScan,
     sen: senScan,
-    password: 'probe2026pass',
+    password: PROBE_PASSWORD,
   })
   check('registered a scan fixture', reg.status === 201, `got ${reg.status}`)
 
@@ -255,230 +256,152 @@ async function main() {
     `got ${scan.status}`,
   )
   check(
-    'the scan response names the attendee, which is all a volunteer needs',
+    'the scan response names the attendee, which is all the desk needs',
     scan.body?.attendee?.name === 'Gate Probe',
     JSON.stringify(scan.body?.attendee?.name),
   )
-
-  const dupe = await call('POST', '/admin/attendance', { sen: senScan }, gate.cookie)
   check(
     'a duplicate scan is refused as already checked in',
-    dupe.status === 409,
-    `got ${dupe.status}`,
+    (await call('POST', '/admin/attendance', { sen: senScan }, gate.cookie)).status === 409,
   )
 
-  /* -- a gate account cannot escalate itself --------------------------------- */
-  const selfPromote = await call('POST', '/admin/staff', {
-    username: `escalate-${stamp}`,
-    displayName: 'Escalate',
-    password: 'probe2026pass',
-    role: 'owner',
-  }, gate.cookie)
-  check(
-    'a gate account cannot mint itself a full-access one',
-    selfPromote.status === 403,
-    `got ${selfPromote.status}`,
-  )
-
-  /* -- the owner's own protections ------------------------------------------- */
-  const selfDemote = await call(
-    'PATCH',
-    '/admin/staff',
-    { id: owner.body?.admin?.id, role: 'gate' },
-    owner.cookie,
-  )
-  check(
-    'nobody can demote themselves',
-    selfDemote.status === 422,
-    `got ${selfDemote.status}/${selfDemote.body?.code}`,
-  )
-
-  const selfDisable = await call(
-    'PATCH',
-    '/admin/staff',
-    { id: owner.body?.admin?.id, active: false },
-    owner.cookie,
-  )
-  check(
-    'nobody can switch themselves off',
-    selfDisable.status === 422,
-    `got ${selfDisable.status}/${selfDisable.body?.code}`,
-  )
-
-  /* -- a second owner, so the last-owner rule can be tested ------------------ */
-  const secondOwnerUser = `role-probe-owner-${stamp}`
-  const second = await call('POST', '/admin/staff', {
-    username: secondOwnerUser,
-    displayName: 'Second Owner',
-    password: 'probe2026pass',
-    role: 'owner',
-  }, owner.cookie)
-  check('the owner can create a second full-access account', second.status === 201, `got ${second.status}`)
-
-  /*
-    Only one full-access account exists in a fresh database, so this asserts the
-    rule holds. If a previous run left another behind the check is skipped rather
-    than failed — the rule is still exercised below with the second account.
-  */
-  const staffList = await call('GET', '/admin/staff', undefined, owner.cookie)
-  const activeOwners = (staffList.body ?? []).filter(
-    (person) => person.role === 'owner' && person.active,
-  ).length
-
-  const demoteOnly = await call(
-    'PATCH',
-    '/admin/staff',
-    { id: owner.body?.admin?.id, role: 'gate' },
-    owner.cookie,
-  )
-  check(
-    'nobody can demote themselves, even as the only owner',
-    demoteOnly.status === 422,
-    `got ${demoteOnly.status}`,
-  )
-
-  if (activeOwners === 2) {
-    const demoteSecond = await call(
-      'PATCH',
-      '/admin/staff',
-      { id: second.body?.staff?.id, role: 'gate' },
-      owner.cookie,
-    )
-    check(
-      'the second owner can be demoted while the first remains',
-      demoteSecond.status === 200 && demoteSecond.body?.staff?.role === 'gate',
-      `got ${demoteSecond.status}/${demoteSecond.body?.staff?.role}`,
-    )
-
-    // That left exactly one owner again, so the rule should bite now.
-    const lastOwner = await call(
-      'PATCH',
-      '/admin/staff',
-      { id: owner.body?.admin?.id, active: false },
-      owner.cookie,
-    )
-    check(
-      'the last owner still cannot be removed',
-      lastOwner.status === 422,
-      `got ${lastOwner.status}`,
-    )
-  } else {
-    skip(
-      'the demote-the-last-owner rule',
-      `there are already ${activeOwners} active full-access accounts, so the ` +
-        'last-owner guard cannot be observed. Delete the extras and rerun.',
-    )
+  /* -- the owner can still do everything ------------------------------------- */
+  for (const [method, path, what] of [
+    ['GET', '/admin/attendees', 'the roster'],
+    ['PATCH', '/admin/event', 'the event phase'],
+  ]) {
+    const body = method === 'PATCH' ? { phase: 'registration' } : undefined
+    const res = await call(method, path, body, owner.cookie)
+    check(`an owner can still touch ${what}`, res.status === 200, `got ${res.status}`)
   }
 
-  /* -- demotion takes effect immediately ------------------------------------- */
-  const promoteBack = await call(
-    'PATCH',
-    '/admin/staff',
-    { id: second.body?.staff?.id, role: 'owner' },
-    owner.cookie,
+  /* -- an unrecognised role must fail CLOSED -------------------------------- */
+  /*
+    The CHECK constraint stops the database storing a third value, so this is
+    reached by dropping the constraint rather than through the API. It is the
+    assertion that matters most of all of them: `adminRole` decides what an
+    unrecognised value means, and treating it as `owner` would be a silent
+    privilege escalation the moment anyone widened the role list.
+  */
+  await db.query('alter table admins drop constraint if exists admins_role')
+  await db.query(`update admins set role = 'superuser' where username = $1`, [GATE_USER])
+  const escalated = await call('POST', '/admin/login', {
+    username: GATE_USER,
+    password: gatePassword,
+  })
+  check(
+    'an account with an unrecognised role is treated as gate, not owner',
+    escalated.status === 200 && escalated.body?.admin?.role === 'gate',
+    `role=${escalated.body?.admin?.role}`,
   )
   check(
-    'an owner can promote an account back',
-    promoteBack.status === 200 && promoteBack.body?.staff?.role === 'owner',
-    `got ${promoteBack.status}`,
+    'and is refused the roster',
+    (await call('GET', '/admin/attendees', undefined, escalated.cookie)).status === 403,
+  )
+  await db.query(`update admins set role = 'gate' where username = $1`, [GATE_USER])
+  await db.query(
+    `alter table admins add constraint admins_role check (role in ('owner', 'gate'))`,
+  )
+
+  /* -- a disabled account is signed out -------------------------------------- */
+  /* -- a disabled account is signed out -------------------------------------- */
+  const correctPassword = await call('POST', '/admin/login', {
+    username: OWNER_USER,
+    password: ownerPassword,
+  })
+  check(
+    'the probe owner can sign in while active',
+    correctPassword.status === 200,
+    `got ${correctPassword.status}`,
+  )
+
+  execFileSync(process.execPath, ['scripts/manage-staff.mjs', 'disable', OWNER_USER], {
+    encoding: 'utf8',
+    stdio: 'ignore',
+  })
+  const { rows: afterDisable } = await db.query(
+    'select active from admins where username = $1',
+    [OWNER_USER],
+  )
+  check(
+    'the CLI can disable an account while other owners exist',
+    afterDisable[0]?.active === false,
+    `active=${afterDisable[0]?.active}`,
+  )
+
+  const disabledLogin = await call('POST', '/admin/login', {
+    username: OWNER_USER,
+    password: ownerPassword,
+  })
+  check(
+    'a disabled account cannot sign in',
+    disabledLogin.status === 401,
+    `got ${disabledLogin.status}`,
+  )
+  check(
+    'and is refused exactly as a wrong password is',
+    (await call('POST', '/admin/login', { username: OWNER_USER, password: 'x' })).status ===
+      disabledLogin.status,
+    'a distinguishable response turns the login form into a username oracle',
   )
 
   /*
-    The demoted-then-repromoted account had its sessions deleted when it was
-    demoted. Signing in again must produce a working session with the new role,
-    and the old cookie must be dead — otherwise a demotion would only take hold
-    whenever the cookie happened to expire.
+    A session minted before the account was switched off must be dead the moment
+    it is, not whenever the cookie happens to expire — which is why `disable`
+    deletes the account's sessions.
   */
-  const secondLogin = await call('POST', '/admin/login', {
-    username: secondOwnerUser,
-    password: 'probe2026pass',
-  })
-  check('the promoted account can sign in again', secondLogin.status === 200, `got ${secondLogin.status}`)
   check(
-    'the re-issued session carries the new role',
-    secondLogin.body?.admin?.role === 'owner',
-    `role=${secondLogin.body?.admin?.role}`,
+    'a session taken before the account was disabled is revoked',
+    (await call('GET', '/admin/attendees', undefined, correctPassword.cookie)).status === 403,
   )
 
-  /* -- deactivation ends access ---------------------------------------------- */
-  const disable = await call(
-    'PATCH',
-    '/admin/staff',
-    { id: second.body?.staff?.id, active: false },
-    owner.cookie,
-  )
-  check('an owner can switch an account off', disable.status === 200, `got ${disable.status}`)
-
-  const afterDisable = await call('GET', '/admin/staff', undefined, secondLogin.cookie)
-  check(
-    'a disabled account loses access immediately, not when its cookie expires',
-    afterDisable.status === 403,
-    `got ${afterDisable.status}`,
-  )
-
-  const disableLogin = await call('POST', '/admin/login', {
-    username: secondOwnerUser,
-    password: 'probe2026pass',
+  execFileSync(process.execPath, ['scripts/manage-staff.mjs', 'enable', OWNER_USER], {
+    encoding: 'utf8',
+    stdio: 'ignore',
   })
   check(
-    'a disabled account cannot sign in again',
-    disableLogin.status === 401,
-    `got ${disableLogin.status}`,
+    'the CLI can switch it back on',
+    (
+      await db.query('select active from admins where username = $1', [OWNER_USER])
+    ).rows[0]?.active === true,
   )
+
+  execFileSync(process.execPath, ['scripts/manage-staff.mjs', 'enable', OWNER_USER], {
+    encoding: 'utf8',
+    stdio: 'ignore',
+  })
 
   /* -- the audit trail ------------------------------------------------------- */
-  const url = process.env.DATABASE_URL
-  if (!url) {
-    skip('the staff-change audit trail', 'DATABASE_URL is not set.')
-  } else {
-    const client = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } })
-    try {
-      await client.connect()
-      const { rows } = await client.query(
-        `select sc.action, sc.detail, sc.admin_id, a.username as changed_by, t.username as subject
-           from staff_changes sc
-           join admins a on a.id = sc.admin_id
-           join admins t on t.id = sc.subject_id
-          where t.username like 'role-probe-%'
-          order by sc.at`,
-      )
-      check(
-        'creating an account is recorded',
-        rows.some((row) => row.action === 'created'),
-        rows.map((row) => row.action).join(', '),
-      )
-      check(
-        'a role change is recorded',
-        rows.some((row) => row.action === 'role_changed'),
-        rows.map((row) => row.action).join(', '),
-      )
-      check(
-        'a deactivation is recorded',
-        rows.some((row) => row.action === 'deactivated'),
-        rows.map((row) => row.action).join(', '),
-      )
-      check(
-        'every record names the admin who authorised it',
-        rows.every((row) => row.changed_by === ownerUser),
-        rows.map((row) => row.changed_by).join(', '),
-      )
-    } finally {
-      await client.end()
-    }
-  }
-
-  /* -- cleanup --------------------------------------------------------------- */
-  const purged = await purgeTestStaff()
+  const { rows } = await db.query(
+    `select sc.action, sc.detail from staff_changes sc where sc.subject_id =
+       (select id from admins where username = $1) order by sc.at`,
+    [OWNER_USER],
+  )
   check(
-    'test accounts removed',
-    purged,
-    purged ? '' : 'no DATABASE_URL, so the probe accounts are still there',
+    'provisioning is recorded in the audit trail',
+    rows.some((row) => row.action === 'created'),
+    rows.map((row) => row.action).join(', '),
+  )
+  check(
+    'a deactivation is recorded too',
+    rows.some((row) => row.action === 'deactivated'),
+    rows.map((row) => row.action).join(', '),
   )
 
+  /* -- cleanup --------------------------------------------------------------- */
+  check('test accounts removed', await purge())
+
+  await db.end()
   report()
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('\n  crashed:', error.message, '\n')
+  try {
+    await purge()
+    if (db) await db.end()
+  } catch {
+    // The cleanup failure must not mask the original error.
+  }
   process.exitCode = 1
 })

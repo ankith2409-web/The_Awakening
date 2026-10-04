@@ -1,7 +1,6 @@
 import {
   PortalError,
   type AdminLoginInput,
-  type AdminRole,
   type AdminSession,
   type AgendaItem,
   type Attendee,
@@ -11,7 +10,6 @@ import {
   type CheckIn,
   type EventInfo,
   type PortalErrorCode,
-  type StaffAccount,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -164,28 +162,6 @@ export class HttpPortalApi implements PortalApi {
 
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
     return this.#request('PATCH', '/admin/event', { phase })
-  }
-
-  /* --------------------------------------------------------- staff (owner) */
-
-  listStaff(): Promise<readonly StaffAccount[]> {
-    return this.#request('GET', '/admin/staff')
-  }
-
-  createStaff(input: {
-    username: string
-    displayName: string
-    password: string
-    role: AdminRole
-  }): Promise<{ staff: StaffAccount }> {
-    return this.#request('POST', '/admin/staff', input)
-  }
-
-  updateStaff(
-    id: string,
-    patch: { role?: AdminRole; password?: string; active?: boolean },
-  ): Promise<{ staff: StaffAccount }> {
-    return this.#request('PATCH', '/admin/staff', { id, ...patch })
   }
 
   /* --------------------------------------------------------- transport */

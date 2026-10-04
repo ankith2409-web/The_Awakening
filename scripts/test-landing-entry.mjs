@@ -259,10 +259,22 @@ for (const [label, needle] of [
   check(`${label} is linked`, footer.includes(needle), `${needle} missing`)
 }
 
+/*
+  The footer and the password help both need this address, so it lives in
+  `src/domain/contact.ts` and both import it.
+
+  An earlier version of this assertion required the literal to appear in the
+  footer itself, which is what pushed the same address into two files — and two
+  literals is how one of them ends up pointing at an inbox nobody reads. The check
+  is now: the footer builds its mailto from the shared constant, and the constant
+  really is the organiser's address.
+*/
+const contact = readCode('src/domain/contact.ts')
+
 check(
   'contact us opens the organiser mail client',
   /mailto:\$\{CONTACT_EMAIL\}/.test(footer) &&
-    /CONTACT_EMAIL = 'ankith2409@gmail\.com'/.test(footer),
+    /CONTACT_EMAIL = 'ankith2409@gmail\.com'/.test(contact),
   'the mailto is not wired to the organiser address',
 )
 check(

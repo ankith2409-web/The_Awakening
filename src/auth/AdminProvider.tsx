@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { portalApi, PortalError, PORTAL_ERROR_MESSAGES } from '@/api'
 import type {
-  AdminRole,
   AdminUser,
   AgendaItem,
   Attendee,
   CheckIn,
   EventInfo,
-  StaffAccount,
   Team,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
@@ -33,8 +31,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     scan produced no confirmation at all.
   */
   const [lastScan, setLastScan] = useState<AdminContextValue['lastScan']>(null)
-  /** Staff accounts. Owner-only — never fetched for a `gate` session. */
-  const [staff, setStaff] = useState<readonly StaffAccount[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -262,64 +258,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), [])
   const clearLastScan = useCallback(() => setLastScan(null), [])
 
-  /*
-    Staff management.
-
-    Owner-only by construction: these are only ever reached from the Staff panel,
-    which an owner is the only role that can render. The server refuses them
-    regardless — this is convenience, not the control.
-
-    Every one returns null on failure rather than throwing, matching
-    `scanAttendance`: the panel stays mounted and shows the outcome inline, and
-    the reason goes to the banner.
-  */
-  const refreshStaff = useCallback(async () => {
-    if (admin?.role !== 'owner') return
-    try {
-      setStaff(await portalApi.listStaff())
-    } catch {
-      // A failed staff list must not break the portal; the panel shows what it
-      // has and the banner carries the reason.
-    }
-  }, [admin?.role])
-
-  const createStaff = useCallback(
-    async (input: {
-      username: string
-      displayName: string
-      password: string
-      role: AdminRole
-    }): Promise<StaffAccount | null> => {
-      setError(null)
-      try {
-        const result = await portalApi.createStaff(input)
-        setStaff((current) => [...current, result.staff])
-        return result.staff
-      } catch (cause) {
-        toError(cause)
-        return null
-      }
-    },
-    [toError],
-  )
-
-  const updateStaff = useCallback(
-    async (
-      id: string,
-      patch: { role?: AdminRole; password?: string; active?: boolean },
-    ): Promise<StaffAccount | null> => {
-      setError(null)
-      try {
-        const result = await portalApi.updateStaff(id, patch)
-        setStaff((current) => current.map((person) => (person.id === id ? result.staff : person)))
-        return result.staff
-      } catch (cause) {
-        toError(cause)
-        return null
-      }
-    },
-    [toError],
-  )
 
   const value = useMemo<AdminContextValue>(
     () => ({
@@ -329,7 +267,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       attendance,
       teams,
       event,
-      staff,
       loadingData,
       scanning,
       error,
@@ -341,9 +278,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setAttendeePassword,
       setEventPhase,
       setAgendaStatus,
-      refreshStaff,
-      createStaff,
-      updateStaff,
       clearError,
       clearLastScan,
     }),
@@ -354,7 +288,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       attendance,
       teams,
       event,
-      staff,
       loadingData,
       scanning,
       error,
@@ -366,9 +299,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setAttendeePassword,
       setEventPhase,
       setAgendaStatus,
-      refreshStaff,
-      createStaff,
-      updateStaff,
       clearError,
       clearLastScan,
     ],

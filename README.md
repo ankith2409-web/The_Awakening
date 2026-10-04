@@ -82,9 +82,8 @@ src/
     DashboardView.tsx      QR pass, attendance, event status
     admin/
       AdminLoginView.tsx   The separate staff door
-      AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Staff, Teams, Programme
+      AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Teams, Programme
       AttendeeDirectory.tsx  Find an attendee, set their password
-      StaffPanel.tsx      Create staff accounts, set roles, switch them off
 
 server/                The backend. Deliberately NOT named `api/` — see below.
   [...route].ts          All endpoints, one serverless function
@@ -100,7 +99,7 @@ db/
   schema.sql           Tables, unique indexes, CHECK constraints (idempotent)
   seed.sql             Event, agenda, teams (idempotent)
 
-scripts/               Build, database setup, test suites, load tooling
+scripts/               Build, database setup, staff accounts, test suites, load tooling
 ```
 
 ### Why the backend lives in `server/`, not `api/`
@@ -182,11 +181,12 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | `POST`  | `/admin/attendees/password`| `{ sen, password }`                   | **owner**       |
 | `GET`   | `/admin/attendance`        | —                                     | admin           |
 | `POST`  | `/admin/attendance`        | `{ sen }`                             | admin           |
-| `GET`   | `/admin/staff`             | —                                     | **owner**       |
-| `POST`  | `/admin/staff`             | `{ username, displayName, password, role }` | **owner** |
-| `PATCH` | `/admin/staff`             | `{ id, role?, password?, active? }`   | **owner**       |
 | `PATCH` | `/admin/agenda/:id`        | `{ status }`                          | **owner**       |
 | `PATCH` | `/admin/event`             | `{ phase }`                           | **owner**       |
+
+There is **no** `/admin/staff` route in either direction. Staff accounts are
+provisioned by `scripts/manage-staff.mjs`; see
+[one gate credential](#there-is-one-gate-credential-and-it-is-provisioned-from-the-command-line).
 
 There is deliberately **no** `/attendee/password/reset` route. See
 [Password recovery is admin-mediated](#password-recovery-is-admin-mediated).
@@ -357,11 +357,10 @@ different accounts.
 | The attendee roster | yes | **403** |
 | Change an attendee's password | yes | **403** |
 | Edit the programme or event phase | yes | **403** |
-| Create, demote or disable staff | yes | **403** |
 | Export SEN | yes | not shown |
 
-A volunteer at the door needs to scan a badge and nothing else. They get three
-tabs and a scan field.
+Whoever is on the door needs to scan a badge and nothing else. They get three tabs
+and a scan field.
 
 **The roster is refused, not merely hidden.** `GET /admin/attendees` returns every
 attendee's name, phone and SEN in one response — it is the SEN export with an
@@ -374,28 +373,47 @@ the server. It used to resolve names client-side against the roster, which would
 have rendered the log as a column of dashes for exactly the person who most needs
 to read it. The log's Phone column is gone for the same reason.
 
-### Three things that cannot be got wrong from inside
-
-Enforced on the server, surfaced in the Staff panel rather than reimplemented:
-
-1. **Nobody can change their own access.** Otherwise one misclick signs out the
-   person fixing it, and a self-demotion can remove the last owner.
-2. **The last active `owner` cannot be demoted or disabled.** The database is
-   seeded with one owner; if that account can be turned off there is no way back in
-   short of direct database access.
-3. **Role, password and `active` changes delete that account's live sessions.** A
-   volunteer demoted mid-shift stops being able to scan on the next request, not
-   whenever their cookie happens to expire. A disabled account holding a live
-   cookie reads as signed out.
-
-Creating a gate account, changing its role, resetting its password and switching it
-off are all in the **Staff** tab — no redeploy, so somebody can be given access on
-event day. Every one of those is written to `staff_changes`.
-
 Roles are read from the database on every admin request rather than baked into the
-session, so a demotion takes effect immediately. An unrecognised role is treated as
+session, so a change takes effect immediately. An unrecognised role is treated as
 the **narrower** one, in both the server and the client: widening by accident is
-unrecoverable, narrowing is merely annoying.
+unrecoverable, narrowing is merely annoying. `test:roles` asserts this by dropping
+the CHECK constraint, writing a third role, and confirming the account is refused.
+
+### There is one gate credential, and it is provisioned from the command line
+
+```bash
+node scripts/manage-staff.mjs list
+node scripts/manage-staff.mjs add <username> <name> <owner|gate>
+node scripts/manage-staff.mjs reset <username>
+node scripts/manage-staff.mjs role <username> <owner|gate>
+node scripts/manage-staff.mjs disable <username>
+node scripts/manage-staff.mjs enable <username>
+```
+
+There is exactly one `gate` account, shared by whoever is on the door, and a
+couple of `owner` accounts. That is four rows that change perhaps twice before the
+event.
+
+**The portal has no Staff panel, and deliberately so.** One existed — create, role
+change, password reset, deactivation — and it was removed. Managing four accounts is
+not worth a settings screen, and every route it needed was attack surface reachable
+by anything holding an owner session. Provisioning from a machine with database
+access is the better shape: it is a rare, deliberate act, and it cannot be
+triggered by a stolen cookie.
+
+The cost is honest and worth stating: **if the gate credential leaks, rotating it is
+a command on a machine with database access, not a button.** `reset` prints the new
+password once and signs out every existing session.
+
+`add` and `reset` generate the password rather than accepting one, so a credential
+cannot be chosen from a weak word or leaked through a shell history. Two invariants
+are enforced, because this is now the only place they can be:
+
+- the last active `owner` cannot be disabled or demoted
+- any change to an account deletes its live sessions, so a demotion bites on the
+  next request rather than at cookie expiry
+
+Every change is written to `staff_changes`.
 
 ### The export is a speed bump, not a wall
 
@@ -409,7 +427,7 @@ the full roster. Letting them see the log while forbidding the export is a
 convenience and a speed bump, not a security boundary. If the log has to be closed
 too, that is a deliberate decision and one line of change.
 
-### Password recovery is admin-mediated
+### Password recovery is by email
 
 There is no self-service password reset, and its absence is deliberate.
 
@@ -425,16 +443,28 @@ endpoint, not by tightening it.
 
 Recovery now works like this:
 
-1. An attendee asks an organiser at the registration desk.
-2. Staff open the **Desk** tab in the admin portal, search by name, SEN or phone,
-   and set a new password with that person watching.
+1. The attendee emails the organiser from the **Password help** panel on the login
+   page. The address is a real `mailto:` with the subject line pre-filled, so the
+   request arrives identifiable without them composing anything.
+2. An owner opens the **Desk** tab, searches by name, SEN or phone, and sets a new
+   password.
 3. Every existing session belonging to that attendee is revoked.
+
+The help lives in `src/components/PasswordHelp.tsx` as its own component rather
+than a paragraph inside the form. Two reasons, both from what it has to do: a
+locked-out path should not read as part of the sign-up flow, and a `mailto:` buried
+in a run of label text is easy to miss and easy to make unclickable.
+
+`src/domain/contact.ts` holds the address once. The footer contact link and the
+password help both read it, because two literals of the same address is how one of
+them ends up pointing at an inbox nobody reads — and on the password help that
+failure is invisible until somebody is locked out of their own event pass.
 
 | Property | Why |
 | --- | --- |
 | Requires an authenticated admin session | Nothing to probe — an attacker cannot reach the route |
 | Identified by **SEN**, not phone or name | The SEN is on the badge and is already the gate's identifier; names collide, phone numbers get misheard |
-| Server re-applies the registration password rules | An admin cannot set a weaker password than a self-registering attendee could choose |
+| Server re-applies the registration password rules | An owner cannot set a weaker password than a self-registering attendee could choose |
 | SEN matched case-insensitively after normalising | An organiser reading a badge aloud types it however they heard it |
 | Revokes all of that attendee's sessions | A password change that leaves old sessions alive has not locked anyone out |
 | The attendee portal has no such link | Recovery is a conversation with a person, and the login page says so |
@@ -649,8 +679,8 @@ are zeroed explicitly.
 | `test:api`      | 55          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards  |
 | `test:gate`     | 28          | yes      | Signature verification, the `printed` fallback, admin-mediated recovery and its audit trail |
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
-| `test:desk`     | 43          | no       | Roster search normalisation; the panel's structure; no self-service reset |
-| `test:roles`    | 41          | yes      | Every owner-only route refused to `gate`; the three lockout rules; staff audit trail |
+| `test:desk`     | 49          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
+| `test:roles`    | 34          | yes      | Every owner-only route refused to `gate`; an unrecognised role fails closed; the CLI's guards |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
 | `test:landing`  | 40          | no       | Entry points clear a phone; footer destinations; links open safely |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
@@ -681,9 +711,17 @@ Vite convention bare Node cannot resolve — bundling is what lets them exercise
 shipped code rather than a copy. `test:errors` writes its full verdict table to
 `scripts/error-matrix.csv` (git-ignored).
 
-`test:roles` creates the staff accounts it needs and deletes them afterwards, scoped
-to a `role-probe-` username prefix. It also asserts on the database directly, so it
-needs `DATABASE_URL`; without it the four audit-trail assertions **skip**.
+`test:roles` provisions its staff accounts by running `scripts/manage-staff.mjs`,
+the same path a human uses, and deletes them afterwards. So it asserts on the real
+provisioning route and on the real audit rows — not on an INSERT the suite wrote
+itself, which nothing else in the codebase would ever produce. It needs
+`DATABASE_URL`.
+
+It also drops the `admins_role` CHECK constraint to write a third role, checks that
+such an account is treated as `gate` rather than `owner`, and puts the constraint
+back. That is the assertion that matters most in the file: `adminRole` decides what
+an unrecognised value means, and treating it as `owner` would be a silent privilege
+escalation the moment anyone widened the role list.
 
 The static suites (`landing`, `motion`, `scan`, `desk`) read the source rather than
 driving a browser, because the defects they guard are structural: state written
@@ -818,10 +856,9 @@ exists, so `test:gate` no longer needs the workaround.
    update `DATABASE_URL` in Vercel.
 2. **Rotate the admin password**, which was likewise exposed. It is currently the
    only account, and it is a full-access one — see below.
-3. **Create a `gate` account per volunteer** from **Staff** in the admin portal.
-   Give them that, not the full-access one. Rotating the owner password first
-   matters, because until there are two owners you cannot test the demotion rules
-   without risking the account you would use to fix a mistake.
+3. **Share the gate credential, not the owner one.** There is exactly one, and it
+   is provisioned by `node scripts/manage-staff.mjs add gate "Registration Desk"
+   gate`. Whoever is on the door uses that; nobody else should be holding it.
 4. **Replace the placeholder logo** — `public/fetch-ai.svg`.
 5. **Replace the placeholder agenda speakers and teams** in `db/seed.sql`, then
    re-run `npm run db:setup`.

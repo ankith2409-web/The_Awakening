@@ -18,14 +18,14 @@
  * not used — a footer is not a signal.
  */
 
+import { CONTACT_EMAIL } from '@/domain/contact'
+
 const HOST = {
   name: 'Amity University',
   campus: 'Bengaluru Campus',
   address: ['NH 207, Devanahalli', 'Bengaluru, Karnataka 562110'],
   website: 'https://amity.edu/bengaluru/',
 } as const
-
-const CONTACT_EMAIL = 'ankith2409@gmail.com'
 
 const LINKS = [
   {

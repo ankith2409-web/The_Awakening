@@ -5,6 +5,7 @@ import { Button } from '@/components/Button'
 import { Checkbox, Field, PasswordField } from '@/components/Field'
 import { Alert, SlideNavLink } from '@/components/Typography'
 import { AuthShell } from '@/components/AuthShell'
+import { PasswordHelp } from '@/components/PasswordHelp'
 import { EventMark } from '@/components/EventMark'
 import { isMockApi } from '@/api'
 
@@ -231,33 +232,18 @@ export function LoginView() {
         </Button>
 
         {/*
-          There is no self-service password reset, and this line is the reason
-          the portal has no "Forgot password?" link.
+          There is no self-service password reset, and this is where that is
+          explained. It used to be one, and it was unverified — no OTP, no email,
+          no security question — so knowing a phone number was enough to take over
+          that account and walk in with the attendee's pass. Recovery is now by
+          email to the organiser, who sets a new one by hand.
 
-          It used to be one, and it was unverified — no OTP, no email, no
-          security question — so knowing a phone number was enough to take over
-          that account and walk in with the attendee's pass. Recovery is now
-          admin-mediated: the attendee asks an organiser, who sets a new one.
-
-          Copy sits here rather than on a dead route because the person reading
-          it is, by definition, locked out and needs to know where to go. It
-          names the desk and says plainly that the desk can help, because
-          "contact support" without a location is not an instruction.
+          Rendered after the submit button, not above the form: someone who
+          reaches this has already tried to sign in and failed, so it belongs at
+          the end of the thing they just tried. Its own component, because a
+          locked-out path should not read as part of the sign-up flow.
         */}
-        <p className="flex items-start gap-3 border-l-4 border-swiss-ink bg-swiss-muted p-4 text-2xs font-medium leading-relaxed text-content-muted">
-          <span
-            aria-hidden="true"
-            className="mt-1 size-2.5 shrink-0 bg-swiss-ink"
-          />
-          <span>
-            <span className="font-bold uppercase tracking-[0.2em] text-swiss-ink">
-              Forgotten your password?
-            </span>{' '}
-            Passwords are reset by a person, not by this page. Ask any organiser
-            at the registration desk — they can set a new one for you on the
-            spot.
-          </span>
-        </p>
+        <PasswordHelp />
 
         {isMockApi ? (
           <p className="border-2 border-swiss-ink/20 bg-swiss-muted p-4 text-2xs font-medium leading-relaxed text-content-muted">

@@ -278,8 +278,55 @@ check(
 )
 
 check(
-  'the attendee is told to ask the desk',
-  auth.includes('Forgotten your password') && auth.includes('registration desk'),
+  'the attendee is told to email the organiser rather than use a dead link',
+  auth.includes('<PasswordHelp />') && !auth.includes('Ask any organiser'),
+  'the login form must not carry its own copy of the password-help text',
+)
+
+const passwordHelp = readCode('src/components/PasswordHelp.tsx')
+const contact = readCode('src/domain/contact.ts')
+
+check(
+  'the password help names the organiser address',
+  passwordHelp.includes('CONTACT_EMAIL') && contact.includes("CONTACT_EMAIL = 'ankith2409@gmail.com'"),
+)
+
+check(
+  'the address is a real mailto, not text to retype',
+  /href=\{`mailto:\$\{CONTACT_EMAIL\}/.test(passwordHelp),
+)
+
+check(
+  'the subject line is pre-filled so a request arrives identifiable',
+  passwordHelp.includes('PASSWORD_RESET_SUBJECT') &&
+    contact.includes('PASSWORD_RESET_SUBJECT'),
+)
+
+check(
+  'the address wraps on a narrow phone instead of overflowing',
+  passwordHelp.includes('wrap-anywhere'),
+)
+
+check(
+  'the help is labelled for assistive technology, not just styled',
+  passwordHelp.includes('aria-labelledby="password-help-heading"') &&
+    passwordHelp.includes('id="password-help-heading"'),
+)
+
+/*
+  One address, one home.
+
+  It is now used in two places — the footer contact link and this help — so a
+  second literal would be how one of them ends up pointing at an inbox nobody
+  reads. On the password help that failure is invisible until somebody is locked
+  out of their own event pass.
+*/
+check(
+  'the footer reads the same address from the same place',
+  readCode('src/components/SiteFooter.tsx').includes(
+    "import { CONTACT_EMAIL } from '@/domain/contact'",
+  ) &&
+    !readCode('src/components/SiteFooter.tsx').includes("= 'ankith2409@gmail.com'"),
 )
 
 /* -- the Desk panel is owner-only ------------------------------------------- */

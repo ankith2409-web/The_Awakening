@@ -5,7 +5,6 @@ import {
   PortalError,
   type AdmissionMethod,
   type AdminLoginInput,
-  type AdminRole,
   type AdminSession,
   type AdminUser,
   type AgendaItem,
@@ -16,7 +15,6 @@ import {
   type AttendeeWithSecret,
   type CheckIn,
   type EventInfo,
-  type StaffAccount,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -442,106 +440,6 @@ export class MockPortalApi implements PortalApi {
     return structuredClone(this.#store.event)
   }
 
-  /* ----------------------------------------------------- staff (owner only) */
-
-  async listStaff(): Promise<readonly StaffAccount[]> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
-    return this.#store.admins.map(toPublicStaff)
-  }
-
-  async createStaff(input: {
-    username: string
-    displayName: string
-    password: string
-    role: AdminRole
-  }): Promise<{ staff: StaffAccount }> {
-    this.#requireOwner()
-    await delay(LATENCY_MS)
-
-    const username = input.username.trim()
-    if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) {
-      throw new PortalError(
-        'unknown',
-        'Use 3 to 40 letters, numbers, dot, underscore or hyphen.',
-      )
-    }
-    if (username === '') throw new PortalError('unknown', 'Username is required.')
-    if (input.displayName.trim() === '') {
-      throw new PortalError('unknown', 'Name is required.')
-    }
-    if (
-      this.#store.admins.some((a) => a.username.toLowerCase() === username.toLowerCase())
-    ) {
-      throw new PortalError('username_taken')
-    }
-    const problem = passwordProblem(input.password)
-    if (problem) throw new PortalError('weak_password', problem)
-
-    const created: MockStaff = {
-      id: `adm_${Math.random().toString(36).slice(2, 10)}`,
-      username,
-      displayName: input.displayName.trim(),
-      passwordHash: hash(input.password),
-      role: input.role === 'gate' ? 'gate' : 'owner',
-      active: true,
-      createdAt: new Date().toISOString(),
-    }
-    this.#store.admins = [...this.#store.admins, created]
-    persist(this.#store)
-
-    return { staff: toPublicStaff(created) }
-  }
-
-  async updateStaff(
-    id: string,
-    patch: { role?: AdminRole; password?: string; active?: boolean },
-  ): Promise<{ staff: StaffAccount }> {
-    const adminId = this.#requireOwner()
-    await delay(LATENCY_MS)
-
-    const target = this.#store.admins.find((a) => a.id === id)
-    if (!target) throw new PortalError('not_found')
-    if (target.id === adminId) {
-      throw new PortalError('unknown', 'You cannot change your own access.')
-    }
-
-    const nextRole = patch.role ?? (target.role === 'gate' ? 'gate' : 'owner')
-    const nextActive = patch.active ?? target.active !== false
-
-    const losesOwner =
-      (target.role ?? 'owner') === 'owner' && (nextRole !== 'owner' || !nextActive)
-    if (losesOwner) {
-      const owners = this.#store.admins.filter(
-        (a) => (a.role ?? 'owner') === 'owner' && a.active !== false,
-      )
-      if (owners.length <= 1) {
-        throw new PortalError(
-          'unknown',
-          'This is the only full-access account. Create another before changing this one.',
-        )
-      }
-    }
-
-    if (patch.password !== undefined) {
-      const problem = passwordProblem(patch.password)
-      if (problem) throw new PortalError('weak_password', problem)
-    }
-
-    const updated: MockStaff = {
-      ...target,
-      role: nextRole,
-      active: nextActive,
-      passwordHash: patch.password === undefined ? target.passwordHash : hash(patch.password),
-    }
-    this.#store.admins = this.#store.admins.map((a) => (a.id === id ? updated : a))
-    // A demotion has to take effect now, not when the old cookie expires.
-    if (this.#adminSessionId === id) this.#adminSessionId = null
-    persist(this.#store)
-
-    return { staff: toPublicStaff(updated) }
-  }
-
   /* ------------------------------------------------------------- guards */
 
   #requireAttendee(): AttendeeWithSecret {
@@ -574,20 +472,6 @@ function toPublicAdmin(admin: {
     // mock that defaulted to `gate` would lock the demo account out of everything
     // and look like a broken permission model.
     role: admin.role === 'gate' ? 'gate' : 'owner',
-  }
-}
-
-/** Mirrors the server's projection: no hash, ever. */
-function toPublicStaff(admin: MockStaff): StaffAccount {
-  return {
-    id: admin.id,
-    username: admin.username,
-    displayName: admin.displayName,
-    role: admin.role === 'gate' ? 'gate' : 'owner',
-    // A store persisted before `active` existed reads as active, matching the
-    // database default rather than locking every existing mock account out.
-    active: admin.active !== false,
-    createdAt: admin.createdAt ?? null,
   }
 }
 
