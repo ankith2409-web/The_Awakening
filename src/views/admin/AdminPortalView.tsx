@@ -84,22 +84,30 @@ export function AdminPortalView() {
   const [tab, setTab] = useState<Tab>('scan')
 
   /*
-    Which day the SEN export covers.
+    Which day's attendance is being looked at — and exported.
 
-    Defaults to the active day and follows it, because on the evening of day one
-    "today" is what is wanted and picking it by hand every time is a chance to
-    pick wrong. An owner can still choose another day deliberately.
+    ONE control for both, deliberately. There were two: a Day / All days switch in
+    the log header and a separate select beside the export button, and they could
+    disagree. Reading the log for day one and then exporting "day two" because the
+    other control still said day two is precisely the silent mistake the per-day
+    work was meant to prevent.
 
-    Seeded from the event once it arrives rather than hard-coded to 1, so a
-    single-day event never grows a day selector it does not need.
+    So there is a single selection, always visible in the page's action row, and
+    both the log and the export follow it. No "all days": the question "who was
+    here" is asked about one day at a time, and a combined view invites reading it
+    as a total when it is two lists.
+
+    Defaults to the active day and follows it, so on the evening of day one
+    "today" is already selected and nothing has to be chosen by hand.
   */
-  const [exportDay, setExportDay] = useState<number | null>(null)
+  const [viewDay, setViewDay] = useState<number | null>(null)
   const totalDays = event?.totalDays ?? 1
   const activeDay = event?.activeDay ?? 1
-  const chosenExportDay = exportDay ?? activeDay
-  const exportCount = attendance.filter(
-    (record) => record.day === chosenExportDay,
-  ).length
+  const selectedDay = viewDay ?? activeDay
+  const dayRecords = useMemo(
+    () => attendance.filter((record) => record.day === selectedDay),
+    [attendance, selectedDay],
+  )
 
   /*
     Fails SAFE: an unknown or missing role is treated as the narrower one.
@@ -241,11 +249,11 @@ export function AdminPortalView() {
             */}
             {activeTab === 'attendance' ? (
               <AttendanceLog
-                records={attendance}
+                records={dayRecords}
                 loading={loadingData}
                 eventName={event?.name ?? 'event'}
                 canExport={isOwner}
-                activeDay={activeDay}
+                day={selectedDay}
                 totalDays={totalDays}
               />
             ) : null}
@@ -288,49 +296,65 @@ export function AdminPortalView() {
               `/admin/attendees` is refused, so the roster of everyone who has
               *not* arrived never reaches their device at all.
             */}
-            {isOwner ? (
-              <div className="flex flex-wrap items-center gap-3">
-                {/*
-                  Which day to export is an explicit choice, not a hidden default.
+            {/*
+              One day selector, governing the log above and the export beside it.
 
-                  Attendance is one record per person per day, so "Export SEN" has
-                  no single obvious meaning — and picking the wrong one silently is
-                  how a certificate list ends up with the wrong names on it. The
-                  selector sits next to the button so the day is always stated
-                  before the file is produced, and it is in the filename too.
-                */}
-                {totalDays > 1 ? (
-                  <label className="flex items-center gap-2 text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
-                    <span className="sr-only sm:not-sr-only">Export day</span>
-                    <select
-                      value={chosenExportDay}
-                      onChange={(e) => setExportDay(Number(e.target.value))}
-                      className="h-14 border-2 border-swiss-ink bg-swiss-paper px-3 text-sm font-bold tracking-tight text-swiss-ink focus:border-swiss-accent-text focus:outline-none"
-                    >
-                      {Array.from({ length: totalDays }, (_, index) => index + 1).map(
-                        (day) => (
-                          <option key={day} value={day}>
-                            Day {day}
-                          </option>
-                        ),
-                      )}
-                    </select>
-                  </label>
-                ) : null}
+              Placed here rather than inside the log header because it is visible
+              from every tab — an owner who wants day one exported without first
+              opening the log should not have to go and set it somewhere they
+              cannot see.
 
-                <Button
-                  variant="primary"
-                  size="md"
-                  disabled={exportCount === 0}
-                  onClick={() =>
-                    downloadAttendanceCsv(attendance, event?.name ?? 'event', chosenExportDay)
-                  }
-                >
-                  {totalDays > 1
-                    ? `Export SEN — day ${exportDay} (${exportCount})`
-                    : `Export SEN (${exportCount})`}
-                </Button>
+              Not a `<select>`. A segmented pair matches the switch controls used
+              everywhere else in this portal, and shows both days at once instead of
+              hiding the choice inside a dropdown.
+            */}
+            {totalDays > 1 ? (
+              <div
+                role="group"
+                aria-label="Which day's attendance to show and export"
+                className="flex items-center gap-3"
+              >
+                <span className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
+                  Day
+                </span>
+                <div className="flex gap-px border-2 border-swiss-ink bg-swiss-ink">
+                  {Array.from({ length: totalDays }, (_, index) => index + 1).map(
+                    (day) => (
+                      <button
+                        key={day}
+                        type="button"
+                        aria-pressed={selectedDay === day}
+                        onClick={() => setViewDay(day)}
+                        className={[
+                          'min-h-14 cursor-pointer px-5',
+                          'text-sm font-bold uppercase tracking-[0.15em]',
+                          'transition-colors duration-150 ease-linear',
+                          selectedDay === day
+                            ? 'bg-swiss-ink text-swiss-paper'
+                            : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
+                        ].join(' ')}
+                      >
+                        {day}
+                      </button>
+                    ),
+                  )}
+                </div>
               </div>
+            ) : null}
+
+            {isOwner ? (
+              <Button
+                variant="primary"
+                size="md"
+                disabled={dayRecords.length === 0}
+                onClick={() =>
+                  downloadAttendanceCsv(attendance, event?.name ?? 'event', selectedDay)
+                }
+              >
+                {totalDays > 1
+                  ? `Export SEN — day ${selectedDay} (${dayRecords.length})`
+                  : `Export SEN (${dayRecords.length})`}
+              </Button>
             ) : null}
           </div>
         </div>
@@ -590,50 +614,46 @@ function ScanConfirmation({
  * every volunteer who most needs it. Phone is owner-only too and is simply not
  * in the table for that reason.
  */
+/**
+ * The attendance log, for ONE day.
+ *
+ * Two days are two lists, not one long one. "Who came today" is the question at a
+ * gate, and interleaving both days by clock time buries the answer between
+ * yesterday's rows. There is deliberately no "all days" view: the count at the
+ * top would then read as a total for the event when it is two separate figures,
+ * which is how a number gets quoted that is wrong.
+ *
+ * Which day is chosen by the page, not here, so the log and the export can never
+ * disagree about what is on screen.
+ */
 function AttendanceLog({
   records,
   loading,
   eventName,
   canExport,
-  activeDay,
+  day,
   totalDays,
 }: {
   records: ReturnType<typeof useAdmin>['attendance']
   loading: boolean
   eventName: string
   canExport: boolean
-  activeDay: number
+  day: number
   totalDays: number
 }) {
   const [query, setQuery] = useState('')
 
-  /*
-    Filtered by day, defaulting to today.
-
-    Two days interleaved by clock time is a bad list to read at a gate: "who came
-    today" is the question being asked and the answer is buried between yesterday's
-    rows. Defaulting to the active day means the common case needs no interaction
-    at all, and "All days" is there when the whole event is wanted.
-  */
-  const [dayFilter, setDayFilter] = useState<'active' | 'all'>(totalDays > 1 ? 'active' : 'all')
-
-  const dayScoped = useMemo(
-    () =>
-      dayFilter === 'all' ? records : records.filter((record) => record.day === activeDay),
-    [records, dayFilter, activeDay],
-  )
-
   const filtered = useMemo(() => {
     const needle = normaliseSen(query).toLowerCase()
-    if (needle === '') return dayScoped
+    if (needle === '') return records
     // Matches the SEN or the name — a volunteer at the door knows one or the
     // other far more often than both.
-    return dayScoped.filter(
+    return records.filter(
       (record) =>
         record.sen.toLowerCase().includes(needle) ||
         record.attendeeName.toLowerCase().includes(needle),
     )
-  }, [dayScoped, query])
+  }, [records, query])
 
   if (loading) return <Skeleton className="h-64 w-full" />
 
@@ -642,41 +662,18 @@ function AttendanceLog({
       <div className="flex flex-col gap-4 border-b-2 border-swiss-ink bg-swiss-ink px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
           Attendance Log
+          {/*
+            The day is in the panel's own title rather than in a control here.
+
+            It is chosen by the page — the same choice that governs the export —
+            so the log cannot be showing day one while the export is set to day
+            two. Naming it here means nobody has to look away to know which list
+            they are reading.
+          */}
+          {totalDays > 1 ? (
+            <span className="ml-3 text-swiss-accent-on-dark">Day {day}</span>
+          ) : null}
         </h2>
-
-        {/*
-          Day switch. Two days are two lists, not one long one, and choosing
-          between them is a decision the log header should offer rather than a
-          column the reader has to scan past.
-
-          Hidden entirely for a single-day event: "Day 1 of 1" as a control is
-          clutter, and the filter would do nothing.
-        */}
-        {totalDays > 1 ? (
-          <div
-            role="group"
-            aria-label="Filter attendance by day"
-            className="flex gap-px border-2 border-swiss-paper"
-          >
-            {(['active', 'all'] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={dayFilter === option}
-                onClick={() => setDayFilter(option)}
-                className={[
-                  'min-h-10 cursor-pointer px-4 text-2xs font-bold uppercase tracking-[0.15em]',
-                  'transition-colors duration-150 ease-linear',
-                  dayFilter === option
-                    ? 'bg-swiss-paper text-swiss-ink'
-                    : 'bg-transparent text-swiss-paper hover:bg-swiss-paper/10',
-                ].join(' ')}
-              >
-                {option === 'active' ? `Day ${activeDay}` : 'All days'}
-              </button>
-            ))}
-          </div>
-        ) : null}
 
         <input
           type="search"
@@ -695,9 +692,9 @@ function AttendanceLog({
         >
           {query !== ''
             ? 'No match'
-            : dayFilter === 'all'
-              ? 'No attendance recorded yet'
-              : `Nobody marked for day ${activeDay} yet`}
+            : totalDays > 1
+              ? `Nobody marked for day ${day} yet`
+              : 'No attendance recorded yet'}
         </p>
       ) : (
         <>
@@ -705,7 +702,13 @@ function AttendanceLog({
             <table className="w-full border-collapse text-left">
               <thead>
                 <tr className="border-b-2 border-swiss-ink">
-                  {['#', 'SEN', 'Name', 'Time', 'Gate', 'Via'].map((head) => (
+                  {/*
+                    `Gate` is gone. The column held a hard-coded 'Gate A' for every
+                    row in the database — a door that does not exist, shown beside a
+                    real venue. There is one entrance, so there is nothing for the
+                    column to distinguish.
+                  */}
+                  {['#', 'SEN', 'Name', 'Time', 'Via'].map((head) => (
                     <th
                       key={head}
                       scope="col"
@@ -741,9 +744,6 @@ function AttendanceLog({
                           minute: '2-digit',
                         })}
                       </td>
-                      <td className="px-4 py-3 text-2xs font-bold uppercase tracking-[0.15em] text-swiss-accent-text">
-                        {record.gate}
-                      </td>
                       <td className="px-4 py-3 text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
                         {/*
                           `qr` = the pass's signature verified, so it was
@@ -778,8 +778,7 @@ function AttendanceLog({
                     {new Date(record.at).toLocaleTimeString('en-GB', {
                       hour: '2-digit',
                       minute: '2-digit',
-                    })}{' '}
-                    · {record.gate}
+                    })}
                   </p>
                   <p className="mt-1 text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
                     {ADMISSION_LABEL[record.method]}

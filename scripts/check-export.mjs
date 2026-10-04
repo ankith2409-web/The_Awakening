@@ -33,13 +33,25 @@ globalThis.document = {
   body: { append() {} },
 }
 
+/*
+  Three records, deliberately MIXED across two days.
+
+  The export takes the whole log plus the day it wants, so the only way to be
+  sure day two really does exclude day one is to hand it a log that contains
+  both. Records that all shared a day would let a filter that ignores the
+  argument entirely still pass every assertion below.
+
+  The SENs are synthetic and obviously so — `Z` and all zeros. They must never
+  be mistaken for attendance on the live roster, and a real-looking number in a
+  checked-in file is exactly how that mistake happens.
+*/
 const records = [
-  { id: '1', sen: 'A866175125186', attendeeId: 'a', at: '', gate: 'Gate A', method: 'printed' },
-  { id: '2', sen: 'B866175125999', attendeeId: 'b', at: '', gate: 'Gate A', method: 'qr' },
-  { id: '3', sen: 'A866175125187', attendeeId: 'c', at: '', gate: 'Gate A', method: 'qr' },
+  { id: '1', sen: 'Z000000000001', attendeeId: 'a', at: '', day: 1, method: 'printed' },
+  { id: '2', sen: 'Z000000000002', attendeeId: 'b', at: '', day: 2, method: 'qr' },
+  { id: '3', sen: 'Z000000000003', attendeeId: 'c', at: '', day: 1, method: 'qr' },
 ]
 
-downloadAttendanceCsv(records, 'The Awakening')
+downloadAttendanceCsv(records, 'The Awakening', 1)
 
 if (captured === null) {
   console.error('  nothing was passed to URL.createObjectURL')
@@ -69,10 +81,26 @@ const check = (label, ok, detail) => {
 }
 
 console.log('')
-check('one line per SEN, no header', lines.length === records.length, `got ${lines.length} lines`)
-check('first line is a SEN, not a header', lines[0] === '"A866175125186"', `got ${lines[0]}`)
+
+// Day one only. Day two's record must not appear — see the note above the data.
+const dayOne = records.filter((r) => r.day === 1)
+check(
+  'one line per SEN for that day, no header',
+  lines.length === dayOne.length,
+  `got ${lines.length} lines, expected ${dayOne.length}`,
+)
+check('first line is a SEN, not a header', lines[0] === `"${dayOne[0].sen}"`, `got ${lines[0]}`)
 check('no "SEN" header anywhere', !lines.includes('"SEN"'))
-check('values in scan order', lines.join('|') === records.map((r) => `"${r.sen}"`).join('|'))
+check(
+  'values in scan order',
+  lines.join('|') === dayOne.map((r) => `"${r.sen}"`).join('|'),
+)
+// The day-two SEN is present in the source log. Its absence from the file is the
+// assertion that the day argument is honoured rather than ignored.
+check(
+  'other days excluded',
+  !text.includes(records.find((r) => r.day === 2).sen),
+)
 // EF BB BF is the UTF-8 encoding of U+FEFF.
 check(
   'UTF-8 BOM present for Excel',
@@ -80,6 +108,7 @@ check(
   `got ${Array.from(raw.slice(0, 3)).map((b) => b.toString(16)).join(' ')}`,
 )
 check('CRLF line endings', text.includes('\r\n'))
+check('no "gate" anywhere in the file', !/gate/i.test(text))
 
 // Leave a copy on disk so it can be opened in Excel directly.
 writeFileSync('scripts/export-sample.csv', raw)

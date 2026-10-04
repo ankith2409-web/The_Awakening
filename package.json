@@ -17,13 +17,14 @@
     "test:phone": "node --experimental-strip-types --no-warnings scripts/test-phone.mjs",
     "test:dates": "node --experimental-strip-types --no-warnings scripts/test-event-dates.mjs",
     "test:errors": "esbuild scripts/error-matrix.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/error-matrix.mjs --log-level=error && node node_modules/.tmp/error-matrix.mjs",
-    "test:copy": "esbuild scripts/test-api-error-copy.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/test-api-error-copy.mjs --log-level=error && node node_modules/.tmp/test-api-error-copy.mjs",
+    "test:copy": "esbuild scripts/test-api-error-copy.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --external:pg --outfile=node_modules/.tmp/test-api-error-copy.mjs --log-level=error && node node_modules/.tmp/test-api-error-copy.mjs",
     "load:test": "node scripts/load-test.mjs",
     "test:desk": "esbuild scripts/test-desk-panel.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/test-desk-panel.mjs --log-level=error && node node_modules/.tmp/test-desk-panel.mjs",
     "scan:secrets": "node scripts/prepublish-scan.mjs",
     "test:roles": "node scripts/test-staff-roles.mjs",
     "test:day": "node --experimental-strip-types --no-warnings scripts/test-event-day.mjs",
-    "test:perday": "node scripts/test-per-day.mjs"
+    "test:perday": "node scripts/test-per-day.mjs",
+    "test:export": "node --experimental-strip-types --no-warnings scripts/check-export.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

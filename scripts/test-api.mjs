@@ -7,6 +7,13 @@
  *   npm run test:api
  */
 
+import { loadEnv } from './_env.mjs'
+import { testSen, purgeTestAttendeesOnce } from './_fixtures.mjs'
+
+// Read `.env` so the cleanup at the end can reach the database this suite just
+// wrote to. Harmless in production, where Vercel injects the real environment.
+loadEnv()
+
 const BASE = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
 
 let passed = 0
@@ -69,7 +76,8 @@ async function main() {
   // Unique suffix so repeated runs never collide on phone/SEN uniqueness.
   const runId = Date.now().toString().slice(-6)
   const phone = `9${runId}12345`.slice(0, 10)
-  const sen = `SENT${runId}`
+  // ZTEST-prefixed, so this run's attendee can be recognised and deleted afterwards.
+  const sen = testSen(`API${runId}`)
 
   const anon = makeJar()
 
@@ -386,11 +394,26 @@ async function main() {
   const afterLogout = await call(anon, 'GET', '/attendee/session')
   check('logout clears the session', afterLogout.body === null)
 
+  /*
+    Remove the attendee this suite registered.
+
+    These suites run against the live database, so without this the fixture sits on
+    the real roster — counted by the owner's dashboard and included in the SEN
+    export. Logout is not enough: that clears the cookie, not the row.
+  */
+  await purgeTestAttendeesOnce()
+
   console.log(`\n  ${passed} passed, ${failed} failed\n`)
   if (failed > 0) process.exitCode = 1
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('\n  Test run crashed:', error.message, '\n')
+  // A suite that throws halfway is precisely the one that must still clean up.
+  try {
+    await purgeTestAttendeesOnce()
+  } catch {
+    // Never let the cleanup failure mask the real error.
+  }
   process.exitCode = 1
 })

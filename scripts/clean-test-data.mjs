@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 /**
- * Removes fixtures written by `npm run test:api`.
+ * Removes test fixtures from the live database.
  *
- * The end-to-end suite deliberately exercises real registration and real scan
- * writes, so running it against the live database leaves rows behind. Those
- * rows would show up in the admin roster and attendance log — noise at an
- * event where every record is supposed to mean a real person.
+ * A BACKSTOP, not the normal path. The live suites now clean up after themselves
+ * through `scripts/_fixtures.mjs` — on success and on a crash — so running one
+ * against production should leave nothing behind. This exists for the two cases
+ * that script cannot cover:
  *
- * Scoped to the names the suite uses, never a blanket delete.
+ *   1. `npm run load:test`, which registers hundreds of attendees and does not
+ *      clean up itself.
+ *   2. A suite killed hard enough (Ctrl-C, a killed terminal) that its own cleanup
+ *      never ran.
+ *
+ * Scoped to recognisable names and prefixes, never a blanket delete.
  *
  *   node scripts/clean-test-data.mjs
  */
@@ -53,11 +58,12 @@ const TEST_NAMES = [
   heard of is a fixture that shows up on the admin roster at the event.
 */
 const TEST_PREFIXES = [
+  // The current convention: every live suite builds fixture SENs with
+  // `testSen()` from `_fixtures.mjs`, so they all start with ZTEST.
+  'ZTEST%',
   'COPYPROBE%',
   'LOADTEST%',
-  // scripts/test-per-day.mjs namespaces its SENs this way so its own cleanup can
-  // find them. Listed here as a second net: a fixture the cleanup script has never
-  // heard of is a fixture that shows up on the admin roster at the event.
+  // Legacy prefixes, still swept so stragglers from older runs disappear.
   'PDAY%',
 ]
 

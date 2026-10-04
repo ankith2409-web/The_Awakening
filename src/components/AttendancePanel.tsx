@@ -151,14 +151,6 @@ function DayRow({
                 </div>
                 <div>
                   <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-                    Gate
-                  </dt>
-                  <dd className="text-sm font-bold tracking-tight text-swiss-ink">
-                    {record.gate}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
                     Via
                   </dt>
                   <dd className="text-2xs font-bold uppercase tracking-[0.15em] text-swiss-ink">

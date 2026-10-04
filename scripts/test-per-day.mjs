@@ -20,6 +20,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
+import { testSen, purgeTestAttendees } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -70,7 +71,7 @@ async function call(method, path, body, cookie) {
 
 /* Digits only: this stamp also builds a phone number. */
 const stamp = Date.now().toString().slice(-9)
-const SEN = `PDAY${stamp}`
+const SEN = testSen(`PDAY${stamp}`)
 const PHONE = `7${stamp}`.slice(0, 10).padEnd(10, '4')
 const PASSWORD = 'probe2026pass'
 
@@ -81,23 +82,17 @@ async function cleanup() {
   if (!db) return
 
   /*
-    By PREFIX, not by this run's SEN.
+    By PREFIX, not by this run's SEN — the shared helper in `_fixtures.mjs`, which
+    every live suite now uses.
 
-    An earlier version deleted only `PDAY<this run's stamp>`, which left every
-    previous run's fixtures behind — four stale "Day One Only" attendees had
-    accumulated on the live roster, where a real organiser would have seen them as
-    people who never registered. Scoping to the suite's own prefix means a crashed
-    or interrupted run cleans up everything on the next one.
+    This started as a local fix. An earlier version deleted only
+    `PDAY<this run's stamp>`, which left every previous run's fixtures behind —
+    four stale "Day One Only" attendees had accumulated on the live roster, where a
+    real organiser would have seen them as people who never registered. Scoping to
+    a prefix means a crashed or interrupted run cleans up everything on the next
+    one, and doing it once per suite is how the same leak reappeared three times.
   */
-  const { rows } = await db.query(
-    `select id from attendees where upper(sen) like 'PDAY%'`,
-  )
-  for (const row of rows) {
-    await db.query(`delete from sessions where subject_id = $1`, [row.id])
-  }
-  if (rows.length > 0) {
-    await db.query(`delete from attendees where upper(sen) like 'PDAY%'`)
-  }
+  await purgeTestAttendees(db)
 
   // Always restore, whatever the run did. A leftover pin would misfile every
   // scan on the live site until somebody noticed.

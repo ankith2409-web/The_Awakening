@@ -135,7 +135,7 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | Table                      | Notes                                                        |
 | -------------------------- | ------------------------------------------------------------ |
 | `attendees`                | unique on `phone` and `sen`; both CHECK-constrained            |
-| `attendance`               | append-only; unique on `(attendee_id, day)`                     |
+| `attendance`               | append-only; unique on `(attendee_id, day)`; **no `gate` column** |
 | `sessions`                 | SHA-256 token hash, `kind`, `expires_at`; expired rows purged |
 | `admins`                   | bcrypt hashes, `role` (`owner` / `gate`), `active`             |
 | `staff_changes`            | append-only audit of who changed which staff account          |
@@ -237,10 +237,10 @@ was there yesterday and who is here today.
 The write is a single atomic statement guarded by a unique index:
 
 ```sql
-insert into attendance (sen, attendee_id, gate, method, day)
-select sen, id, 'Gate A', $2, $3 from attendees where id = $1
+insert into attendance (sen, attendee_id, method, day)
+select sen, id, $2, $3 from attendees where id = $1
 on conflict (attendee_id, day) do nothing
-returning id, sen, attendee_id as "attendeeId", gate, at, method, day
+returning id, sen, attendee_id as "attendeeId", at, method, day
 ```
 
 `create unique index one_attendance_per_attendee_day on attendance (attendee_id, day)`
@@ -253,6 +253,14 @@ in place and the old one would have silently kept rejecting every second-day sca
 
 A SEN matching no registered attendee is rejected, so the roll cannot fill with
 people who never registered.
+
+**There is no `gate` column, and there never should have been.** It was
+`text not null` with exactly one possible value, `Gate A`, written literally by the
+scan route and shown to attendees as though it were a real place. There is one
+venue — Seminar Hall — and a column whose every value is a door that does not exist
+is not data. It was displayed next to the real venue on the attendee dashboard, and
+in the admin log beside every row. If a second entrance is ever added, the column
+goes back then, with the value chosen per scan rather than hard-coded.
 
 #### Which day a scan belongs to
 
@@ -322,11 +330,30 @@ hidden the next mistake of the same shape.
 | Surface             | Day handling                                              |
 | ------------------- | --------------------------------------------------------- |
 | Scan panel          | "Recording for **Day 1 of 2**", always visible            |
-| Scan confirmation   | "Marked for day 1", plus time, gate and admission method  |
-| Attendance log      | A Day / All days switch, defaulting to the active day      |
+| Scan confirmation   | "Marked for day 1", plus time and admission method         |
+| Attendance log      | One day, named in the panel title — no "all days"          |
 | Desk roster         | A `D1` / `D2` badge per attendee                           |
 | Attendee dashboard  | One row per day, marked or not, with today called out      |
 | SEN export          | Per day, with the day in the filename                      |
+
+#### One day control, not two
+
+The log and the export were once separate: a **Day / All days** switch in the log
+header, and a `<select>` beside the export button. They could disagree, and reading
+the log for day one and then exporting day two because the other control still said
+day two is precisely the silent mistake per-day attendance was meant to prevent.
+
+So there is **one** selection — a segmented `1 / 2` pair in the page's action row —
+and both the log and the export follow it. It sits in the action row rather than
+inside the log header because that row is visible from every tab, so somebody who
+wants day one exported without opening the log does not have to go and set it
+somewhere they cannot see.
+
+There is no "all days" view either. Two days are two lists: interleaving them by
+clock time buries "who came today" between yesterday's rows, and a combined count at
+the top reads as a total for the event when it is two separate figures. The export
+label repeats the day — `Export SEN — day 2 (14)` — so the basis of the file is never
+unstated.
 
 The attendee dashboard changed most in meaning. It used to say "Attendance Marked"
 once. That told somebody who came on day two that they had been marked — full stop —
@@ -792,23 +819,50 @@ are zeroed explicitly.
 
 ## Testing
 
-228 assertions across 9 suites.
+386 assertions across 13 suites, plus a 250-input error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
-| `test:api`      | 55          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards  |
+| `test:api`      | 60          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards  |
 | `test:gate`     | 28          | yes      | Signature verification, the `printed` fallback, admin-mediated recovery and its audit trail |
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
-| `test:desk`     | 49          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
+| `test:desk`     | 57          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
 | `test:roles`    | 34          | yes      | Every owner-only route refused to `gate`; an unrecognised role fails closed; the CLI's guards |
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
 | `test:perday`   | 28          | yes      | One record per attendee per day; both days recorded; the lock on future days |
+| `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
 | `test:landing`  | 40          | no       | Entry points clear a phone; footer destinations; links open safely |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
 | `test:dates`    | 18          | no       | Two-day range and per-day headings, timezone-safe          |
+
+### Test fixtures must not outlive the run
+
+The suites marked "Database" above register real attendees against the live
+database, because the registration endpoint is what is under test. An attendee row
+is indistinguishable from a real one: it appears on the owner's roster, in the
+attendance log, and in the SEN export. Five such fixtures had accumulated before
+this was noticed, four carrying attendance marks — so the live log showed ten people
+on day one when five had actually arrived. The export is the artefact the event
+hands to whoever issues certificates, so junk in it is junk handed on.
+
+`scripts/_fixtures.mjs` is therefore the single convention:
+
+- every fixture SEN is built with `testSen(tag)` and starts with **`ZTEST`** — not an
+  Amity letter, digits all zeroes, so a fixture cannot be mistaken for a
+  registration in a screenshot or a log line;
+- every live suite calls `purgeTestAttendees` when it finishes, **on success and on
+  a crash**, because a suite that throws halfway is the one that most needs to clean
+  up;
+- the sweep is scoped **by prefix, not by the current run's SEN**, so a crashed or
+  interrupted run is still mopped up by the next one. Deleting only what this run
+  created is what let stale fixtures accumulate in the first place.
+
+`test:perday` had fixed this for itself with a private `PDAY%` rule; doing it once
+per suite is how the same leak came back three times. The legacy prefix is still
+swept, so stragglers from older runs disappear on the next run.
 
 There is also a one-off administrative tool for removing a single attendee — see
 [Removing an attendee](#removing-an-attendee).
@@ -832,6 +886,21 @@ the real modules through the real resolver, because the `@/` alias in `src/` is 
 Vite convention bare Node cannot resolve — bundling is what lets them exercise
 shipped code rather than a copy. `test:errors` writes its full verdict table to
 `scripts/error-matrix.csv` (git-ignored).
+
+`test:copy`'s esbuild invocation marks `pg` external, because it now imports
+`_fixtures.mjs` to clean up after itself and `pg` should be loaded at runtime rather
+than bundled. That in turn means the bundled suite cannot use `_env.mjs`'s
+module-relative `.env` lookup — the bundle lives in `node_modules/.tmp/`, so
+`import.meta.url` no longer points at the repository. `loadEnv` therefore takes an
+optional root, and `purgeTestAttendeesOnce` passes `process.cwd()`, which is the
+project root for anything run through an npm script. A `.env` lookup that silently
+finds nothing is how a cleanup step ends up quietly not running.
+
+`test:export` imports the real `downloadAttendanceCsv` and stubs only the two browser
+globals it touches, so the assertions are on shipping code rather than a copy that
+could drift. It hands the function a log containing **both** days on purpose: records
+that all shared a day would let a filter ignoring the day argument entirely still
+pass every check.
 
 `test:roles` provisions its staff accounts by running `scripts/manage-staff.mjs`,
 the same path a human uses, and deletes them afterwards. So it asserts on the real
@@ -865,14 +934,16 @@ The desk would have told someone their own number was unregistered.
 
 ### Cleaning up after a test run
 
-The suites register real attendees and write real attendance rows, so a run
-against a live database leaves records on the admin roster.
-`node scripts/clean-test-data.mjs` removes them, scoped by name and prefix.
+The suites now clean up after themselves — see
+[Test fixtures must not outlive the run](#test-fixtures-must-not-outlive-the-run).
+Running one against production should leave the roster exactly as it was, and that
+is asserted by running the full set and then counting.
 
-It is scoped rather than global because a blanket `delete from attendees` is
+`node scripts/clean-test-data.mjs` remains as a backstop, for `npm run load:test`
+(which registers hundreds of attendees and does not clean up itself) and for a suite
+killed hard enough that its own cleanup never ran. It is scoped to recognisable
+names and prefixes, never a blanket delete: a blanket `delete from attendees` is
 exactly how a real registration gets destroyed by a test run — and it did, once.
-Suites therefore register under recognisable names; any suite adding a fixture
-must either reuse an existing name or pick a prefix listed in `TEST_PREFIXES`.
 
 **Sessions are deleted first, and that ordering is load-bearing.**
 `sessions.subject_id` carries no foreign key — one column serves both attendee
@@ -887,6 +958,7 @@ have **expired**, and a test session's lifetime has not run out. Every run again
 a live database therefore leaks a few more, and they accumulate indefinitely —
 54 had built up before this was found. The cleanup script now reports
 `orphan_sessions` in its summary so the count cannot quietly climb again.
+`purgeTestAttendees` deletes sessions for the same reason.
 
 ### Removing an attendee
 

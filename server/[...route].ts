@@ -315,7 +315,7 @@ async function route(
           // Aliased to camelCase to match the `CheckIn` contract. The admin
           // log resolves each row to a person via `attendeeId`, so leaving it
           // snake_case renders every row without a name.
-          `select id, sen, attendee_id as "attendeeId", gate, at, method, day
+          `select id, sen, attendee_id as "attendeeId", at, method, day
              from attendance where attendee_id = $1 order by day`,
           [session.subject_id],
         )
@@ -600,7 +600,6 @@ async function route(
           `select t.id,
                   t.sen,
                   t.attendee_id as "attendeeId",
-                  t.gate,
                   t.at,
                   t.method,
                   t.day,
@@ -667,15 +666,14 @@ async function route(
           // `attendee_id` while the query aliases it to `attendeeId` compiles
           // cleanly and then reads `undefined` at runtime.
           attendeeId: string
-          gate: string
           at: string
           method: string
           day: number
         }>(
-          `insert into attendance (sen, attendee_id, gate, method, day)
-           select sen, id, 'Gate A', $2, $3 from attendees where id = $1
+          `insert into attendance (sen, attendee_id, method, day)
+           select sen, id, $2, $3 from attendees where id = $1
            on conflict (attendee_id, day) do nothing
-           returning id, sen, attendee_id as "attendeeId", gate, at, method, day`,
+           returning id, sen, attendee_id as "attendeeId", at, method, day`,
           [attendee.id, admission, day],
         )
 

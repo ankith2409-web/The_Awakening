@@ -76,7 +76,7 @@ try {
 
   const person = matches[0]
   const { rows: attendance } = await client.query(
-    'select id, sen, gate, method, at from attendance where attendee_id = $1',
+    'select id, sen, day, method, at from attendance where attendee_id = $1',
     [person.id],
   )
   const { rows: sessions } = await client.query(
@@ -92,7 +92,7 @@ try {
   console.log(`     registered ${person.created_at.toISOString()}`)
   console.log(`     attendance ${attendance.length} row(s)`)
   for (const a of attendance) {
-    console.log(`        ${a.sen}  ${a.gate}  ${a.method}  ${a.at.toISOString()}`)
+    console.log(`        ${a.sen}  day ${a.day}  ${a.method}  ${a.at.toISOString()}`)
   }
   console.log(`     sessions   ${sessions.length} active login(s)`)
 
@@ -150,8 +150,8 @@ try {
   console.log(`     insert into attendees (id, name, phone, sen) values`)
   console.log(`       ('${person.id}', '${person.name}', '${person.phone}', '${person.sen}');`)
   for (const a of attendance) {
-    console.log(`     insert into attendance (id, sen, attendee_id, gate, method, at) values`)
-    console.log(`       ('${a.id}', '${a.sen}', '${person.id}', '${a.gate}', '${a.method}', '${a.at.toISOString()}');`)
+    console.log(`     insert into attendance (id, sen, attendee_id, day, method, at) values`)
+    console.log(`       ('${a.id}', '${a.sen}', '${person.id}', ${a.day}, '${a.method}', '${a.at.toISOString()}');`)
   }
   console.log('')
 

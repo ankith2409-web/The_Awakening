@@ -20,6 +20,7 @@
 import { execFileSync } from 'node:child_process'
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
+import { testSen, purgeTestAttendees } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -86,6 +87,14 @@ async function purge() {
     }
     await db.query('delete from admins where username = $1', [username])
   }
+  /*
+    The scan fixture too, not just the staff accounts.
+
+    This purge originally handled admins only, so the "Gate Probe" attendee it
+    registered survived every run — on the real roster, with an attendance mark
+    beside a name nobody recognised.
+  */
+  await purgeTestAttendees(db)
   return true
 }
 
@@ -238,7 +247,7 @@ async function main() {
   )
 
   /* -- a gate account can still scan ----------------------------------------- */
-  const senScan = `SEN${stamp}X`
+  const senScan = testSen(`SCAN${stamp}`)
   // Ten digits, starting 6-9: Indian mobiles never begin with 5.
   const phoneScan = `7${stamp}`.slice(0, 10).padEnd(10, '4')
   const reg = await call('POST', '/attendee/register', {

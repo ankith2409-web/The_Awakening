@@ -335,6 +335,6 @@ function stripAttendee(record: CheckIn & { attendee: Attendee }): CheckIn {
   // attendee was admitted. `attendeeName` comes from the record rather than from
   // the joined row so the log renders for a `gate` account, which is never sent
   // the roster.
-  const { id, sen, attendeeId, at, gate, method, day, attendeeName } = record
-  return { id, sen, attendeeId, at, gate, method, day, attendeeName }
+  const { id, sen, attendeeId, at, method, day, attendeeName } = record
+  return { id, sen, attendeeId, at, method, day, attendeeName }
 }

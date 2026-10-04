@@ -12,6 +12,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
+import { testSen, purgeTestAttendeesOnce } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -99,11 +100,13 @@ async function main() {
   const runId = Date.now().toString().slice(-5)
   /*
     Per-run identifiers, so back-to-back runs do not collide on the unique index
-    on phone and SEN. Nothing here needs to look like a real registration: these
-    are fixtures the cleanup script recognises by name.
+    on phone and SEN. The ZTEST prefix is what lets the cleanup at the end find
+    them again — the previous convention ("fixtures the cleanup script
+    recognises by name") relied on somebody running that script by hand, which is
+    why these two ended up on the live roster.
   */
-  const senQr = `SEN${runId}Q`
-  const senBare = `SEN${runId}B`
+  const senQr = testSen(`Q${runId}`)
+  const senBare = testSen(`B${runId}`)
   const phoneQr = `9${runId}11111`.slice(0, 10)
   const phoneBare = `8${runId}22222`.slice(0, 10)
 
@@ -292,6 +295,10 @@ async function main() {
   check('no admin password-reset route exists',
     adminReset.status === 404, `got ${adminReset.status}`)
 
+  // Both fixtures are removed, on every exit path. They were registered against
+  // the live database and marked present by the scan tests below.
+  await purgeTestAttendeesOnce()
+
   console.log(
     `\n  ${passed} passed, ${failed} failed` +
       (skipped > 0 ? `, ${skipped} skipped` : "") + `\n`,
@@ -299,8 +306,13 @@ async function main() {
   if (failed > 0) process.exitCode = 1
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('\n  crashed:', error.message, '\n')
+  try {
+    await purgeTestAttendeesOnce()
+  } catch {
+    // Never let the cleanup failure mask the real error.
+  }
   process.exitCode = 1
 })
 

@@ -9,17 +9,24 @@
  *
  * Existing process.env values always win, so an explicitly-set variable is
  * never clobbered by the file.
+ *
+ * `root` defaults to the directory above this file, which is right for scripts run
+ * directly. It is overridable because some suites are esbuild-bundled into
+ * `node_modules/.tmp/` first, where `import.meta.url` points at the bundle rather
+ * than the repository — and a `.env` lookup that silently finds nothing is how a
+ * cleanup step ends up quietly not running. `process.cwd()` is the project root for
+ * anything run through an npm script.
  */
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export function loadEnv() {
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+export function loadEnv(root) {
+  const base = root ?? join(dirname(fileURLToPath(import.meta.url)), '..')
   let raw
   try {
-    raw = readFileSync(join(root, '.env'), 'utf8')
+    raw = readFileSync(join(base, '.env'), 'utf8')
   } catch {
     return // no .env; rely on the real environment
   }

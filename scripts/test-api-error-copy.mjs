@@ -11,6 +11,7 @@
  */
 
 import { PortalError, PORTAL_ERROR_MESSAGES } from '../src/domain/types.ts'
+import { testSen, purgeTestAttendeesOnce } from './_fixtures.mjs'
 
 const BASE = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
 
@@ -73,18 +74,15 @@ async function main() {
   /* -- register one attendee to collide with ------------------------------- */
   const stamp = Date.now().toString().slice(-7)
   const phone = `9${stamp}`.padEnd(10, '0').slice(0, 10)
-  const sen = `A866175${stamp}`.slice(0, 24)
+  // ZTEST-prefixed so the cleanup at the end can find and remove it. This used to
+  // be `A866175<stamp>` — a SEN shaped exactly like a real Amity one, which is
+  // both unrecognisable to any cleanup rule and dangerous to leave lying about.
+  const sen = testSen(`COPY${stamp}`)
 
   const first = await call('POST', '/api/attendee/register', {
     name: 'COPYPROBE One', phone, sen, password: 'grid2026',
   })
   check('registers the probe attendee', first.status === 201, `got ${first.status}`)
-
-  /*
-    Named with a `COPYPROBE` prefix so `clean-test-data.mjs` recognises them.
-    A fixture the cleanup script has never heard of is a fixture that appears on
-    the admin roster at the event.
-  */
 
   /* -- the codes that previously leaked ------------------------------------ */
 
@@ -185,11 +183,20 @@ async function main() {
     typeof badPassword.json.message === 'string' && badPassword.json.message.length > 0,
     `message=${JSON.stringify(badPassword.json.message)}`)
 
+  // The probe attendee was registered against the live database. Remove it, or it
+  // sits on the real roster for the owner to wonder about.
+  await purgeTestAttendeesOnce()
+
   console.log(`\n  ${passed} passed, ${failed} failed\n`)
   if (failed > 0) process.exitCode = 1
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('\n  crashed:', error.message, '\n')
+  try {
+    await purgeTestAttendeesOnce()
+  } catch {
+    // Never let the cleanup failure mask the real error.
+  }
   process.exitCode = 1
 })

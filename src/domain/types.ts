@@ -197,8 +197,6 @@ export interface CheckIn {
    * attend both days.
    */
   readonly day: number
-  /** Which door it was scanned at. */
-  readonly gate: string
   /**
    * The attendee's name, joined in by the server.
    *

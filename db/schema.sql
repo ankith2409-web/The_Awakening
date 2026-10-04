@@ -128,7 +128,6 @@ create table if not exists attendance (
   id          uuid primary key default gen_random_uuid(),
   sen         text        not null,
   attendee_id uuid        not null references attendees (id) on delete cascade,
-  gate        text        not null,
   at          timestamptz not null default now(),
 
   -- Which day of the event. 1-based, matching `agenda.day`. Existing rows are
@@ -148,6 +147,23 @@ create table if not exists attendance (
   constraint attendance_method check (method in ('qr', 'printed')),
   constraint attendance_day check (day >= 1)
 );
+
+/*
+  `gate` is DROPPED, and it held nothing but a fiction.
+
+  It was `text not null` with a single possible value, 'Gate A', written literally
+  by the scan endpoint and shown to attendees as though it were a real place. There
+  is one venue: Seminar Hall, Bengaluru. A column whose every value is a door that
+  does not exist is not data, and it produced a visible "GATE A" on the attendee
+  dashboard next to a real venue — which is the kind of thing that gets a bug
+  report three weeks out.
+
+  If a second entrance is ever added, add the column back then, with the value
+  chosen per scan rather than hard-coded.
+
+  Nothing of value is lost: every row held the same string.
+*/
+alter table attendance drop column if exists gate;
 
 -- `create table if not exists` is a no-op when the table already exists, so a
 -- database created before `method` or `day` was introduced would silently keep the

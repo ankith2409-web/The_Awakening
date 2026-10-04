@@ -418,7 +418,6 @@ export class MockPortalApi implements PortalApi {
       sen: attendee.sen,
       attendeeId: attendee.id,
       at: new Date().toISOString(),
-      gate: 'Gate A',
       method,
       day,
       // Set here as well as in `listAttendance`. The scan response is the one
