@@ -90,6 +90,22 @@ export interface AdminContextValue {
   scanAttendance: (
     sen: string,
   ) => Promise<{ name: string; sen: string; at: string; method: AdmissionMethod } | null>
+  /**
+   * Sets an attendee's password. The only password-change path in the portal.
+   *
+   * Resolves to the attendee it acted on, or `null` if the change was refused
+   * (unregistered SEN, weak password, lost admin session). It does not throw,
+   * matching `scanAttendance` — the desk panel wants to stay usable and render
+   * the outcome inline rather than unmount.
+   *
+   * Takes the SEN, not a phone number or a name. The SEN is printed on the
+   * badge, it is already the gate's identifier, and unlike a name it is not
+   * shared between two people on the roster.
+   */
+  setAttendeePassword: (
+    sen: string,
+    password: string,
+  ) => Promise<{ name: string; sen: string } | null>
   setEventPhase: (phase: EventInfo['phase']) => Promise<void>
   setAgendaStatus: (id: string, status: AgendaItem['status']) => Promise<void>
   /** Clears the current error banner. */

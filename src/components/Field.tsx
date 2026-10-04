@@ -7,7 +7,7 @@ export interface FieldProps
   error?: string | undefined
   /** Static hint shown below the control, hidden while an error is shown. */
   hint?: string
-  /** Right-aligned control in the label row, e.g. a "Forgot?" link. */
+  /** Right-aligned control in the label row, e.g. a password "Show" toggle. */
   labelAction?: ReactNode
   /**
    * Forwarded to the underlying `<input>` through the rest spread.

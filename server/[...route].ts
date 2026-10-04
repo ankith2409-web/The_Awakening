@@ -29,13 +29,9 @@ import {
   phoneProblem,
 } from './_lib/identifiers.ts'
 import { readTicket, signSen } from './_lib/ticket.ts'
-import {
-  RateLimited,
-  consumeResetAttempt,
-  dummyPasswordWork,
-  purgeOldResetAttempts,
-  setRetryAfter,
-} from './_lib/reset.ts'
+// Only the reset-attempt ledger purge survives; the limiter itself went with the
+// endpoint it protected. See `_lib/reset.ts`.
+import { purgeOldResetAttempts } from './_lib/reset.ts'
 
 /**
  * The whole API as one serverless function.
@@ -140,16 +136,6 @@ const publicAttendee = (row: AttendeeRow) => ({
   sen: row.sen,
   createdAt: row.created_at,
 })
-
-/**
- * The one message a password reset ever returns.
- *
- * Shared by both outcomes on purpose. Any wording that differs between "that
- * number exists" and "it does not" turns the endpoint into a roster oracle,
- * which matters because the reset itself is unverified.
- */
-const RESET_DONE =
-  'If that number is registered, its password has been reset. Log in with your new password.'
 
 async function route(
   req: VercelRequest,
@@ -305,77 +291,18 @@ async function route(
       }
 
       /*
-        Password reset — UNVERIFIED, by the organiser's explicit decision.
+        There is deliberately no self-service password reset.
 
-        There is no OTP, no email and no security question: knowing the phone
-        number is enough. That is a real account-takeover path and is documented
-        as such in the README. What this endpoint does do is refuse to be
-        scripted:
+        One existed and was UNVERIFIED — no OTP, no email, no security question,
+        so knowing a phone number was enough to take over that account and
+        present its pass. It was the single most serious weakness in the portal,
+        and rate limiting was the only thing between it and a script walking the
+        roster. It was also under active probing in production.
 
-          - every attempt is rate limited per number AND per caller IP
-          - the response is identical whether or not the number is registered,
-            so it cannot be used to enumerate the roster
-          - a failed lookup burns comparable CPU, so response time does not
-            leak existence either
-          - a successful reset kills that attendee's existing sessions, so a
-            takeover is visible to the person it displaced
-
-        Attendee-only. There is deliberately no admin equivalent: staff
-        credentials are reset out of band, not over the public API.
+        Recovery is now admin-mediated: an attendee asks an organiser at the desk,
+        and `POST /admin/attendees/password` below sets a new one. That removes
+        the unauthenticated path entirely rather than tightening it.
       */
-      case 'POST /attendee/password/reset': {
-        const body = await readJson<Record<string, unknown>>(req)
-        const phone = normalisePhone(requireString(body, 'phone'))
-        const password = requireString(body, 'password')
-
-        const phoneProblemMessage = phoneProblem(phone)
-        if (phoneProblemMessage !== null) {
-          throw unprocessable('unknown', phoneProblemMessage)
-        }
-        const problem = passwordProblem(password)
-        if (problem) throw unprocessable('weak_password', problem)
-
-        try {
-          await consumeResetAttempt(req, phone)
-        } catch (cause) {
-          if (cause instanceof RateLimited) {
-            setRetryAfter(res, cause.retryAfterSeconds)
-            throw new ApiError(429, 'rate_limited', cause.message)
-          }
-          throw cause
-        }
-
-        const { rows } = await db().query<{
-          id: string
-          password_hash: string
-        }>('select id, password_hash from attendees where phone = $1', [phone])
-
-        const row = rows[0]
-
-        if (!row) {
-          // Uniform response, comparable cost. The caller learns nothing about
-          // whether this number exists.
-          await dummyPasswordWork()
-          return json(res, 200, { ok: true, message: RESET_DONE })
-        }
-
-        await db().query('update attendees set password_hash = $2 where id = $1', [
-          row.id,
-          await hashPassword(password),
-        ])
-
-        // Any session the previous password minted is now worthless.
-        await db().query(`delete from sessions where kind = 'attendee' and subject_id = $1`, [
-          row.id,
-        ])
-
-        // Deliberately NOT clearing this number's attempt history here. An
-        // earlier version did, which meant every successful reset wiped its own
-        // counter — so the rate limit never engaged and a caller could reset the
-        // same account indefinitely. Counting the successful attempt is the
-        // whole point: guessing right must not buy unlimited attempts.
-        return json(res, 200, { ok: true, message: RESET_DONE })
-      }
     }
   }
 
@@ -440,6 +367,87 @@ async function route(
           'select id, name, phone, sen, password_hash, created_at from attendees order by created_at',
         )
         return json(res, 200, rows.map(publicAttendee))
+      }
+
+      /*
+        Set an attendee's password. The ONLY password-change path in the portal.
+
+        Identified by SEN rather than phone or name: SEN is printed on the badge
+        and is already the gate's identifier, so an organiser holding a pass does
+        not have to ask someone to spell out a phone number or hope they are the
+        only "Ankith" on the roster.
+
+        Three writes, in one transaction. A partial commit here is the failure
+        that matters:
+
+          - the new hash lands but sessions survive, so whoever prompted this
+            change keeps access and the attendee still cannot get in
+          - sessions die but the audit row is lost, so a privileged password
+            change leaves no trace
+
+        So either all three happen or none do.
+      */
+      case 'POST /admin/attendees/password': {
+        const adminId = requireAdmin()
+        const body = await readJson<Record<string, unknown>>(req)
+        const sen = normaliseSen(requireString(body, 'sen'))
+        const password = requireString(body, 'password')
+
+        if (!isValidSen(sen)) {
+          throw unprocessable('unknown_sen', 'That does not look like a SEN.')
+        }
+
+        // Same rule as registration, so an admin cannot set a password weaker
+        // than a self-registering attendee could choose.
+        const problem = passwordProblem(password)
+        if (problem) throw unprocessable('weak_password', problem)
+
+        const { rows: found } = await db().query<{ id: string; name: string; sen: string }>(
+          'select id, name, sen from attendees where upper(sen) = $1',
+          [sen],
+        )
+        const attendee = found[0]
+
+        // The admin already knows the roster, so this does not need to be an
+        // enumeration oracle the way the old public endpoint's 404 was.
+        if (!attendee) {
+          throw unprocessable('unknown_sen', 'No registered attendee matches that SEN.')
+        }
+
+        const client = await db().connect()
+        try {
+          await client.query('begin')
+
+          await client.query('update attendees set password_hash = $2 where id = $1', [
+            attendee.id,
+            await hashPassword(password),
+          ])
+
+          // Revoke every existing session. A password change that leaves old
+          // sessions alive has not actually locked anyone out, which defeats
+          // the point of changing a password at all. It also makes a takeover
+          // visible: the previous holder is logged out and notices.
+          await client.query(`delete from sessions where kind = 'attendee' and subject_id = $1`, [
+            attendee.id,
+          ])
+
+          await client.query(
+            'insert into password_changes (attendee_id, admin_id) values ($1, $2)',
+            [attendee.id, adminId],
+          )
+
+          await client.query('commit')
+        } catch (cause) {
+          await client.query('rollback')
+          throw cause
+        } finally {
+          client.release()
+        }
+
+        return json(res, 200, {
+          attendee: { id: attendee.id, name: attendee.name, sen: attendee.sen },
+          sessionsRevoked: true,
+        })
       }
 
       case 'GET /admin/attendance': {

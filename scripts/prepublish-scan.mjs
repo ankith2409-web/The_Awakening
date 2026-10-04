@@ -11,7 +11,13 @@
  * `.vercel/` are expected to exist locally and are not the thing being checked.
  * What matters is that none of their contents reach the remote.
  *
- *   node scripts/prepublish-scan.mjs
+ *   npm run scan:secrets
+ *
+ * Deliberately NOT named `prepublish`. npm treats that as a lifecycle hook and
+ * runs it on every `npm install`, which put this in the path of Vercel's build —
+ * where there is no `.git`, so the scan refused and took the whole deploy down.
+ * A check that only makes sense before a human pushes must not be something a
+ * package installer can trigger.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -85,7 +91,16 @@ function gitFiles() {
 }
 
 if (!existsSync('.git')) {
-  console.error('\n  No git repository yet — nothing to scan.\n')
+  /*
+    Reachable when the checkout has no `.git` — a CI sandbox, or a `vercel deploy`
+    from a copied tree. Refusing loudly is right: without git there is no way to
+    know what would be published, and a scan of "everything on disk" would read
+    `.env` and `dist` and report secrets that were never going to be committed.
+
+    The fix belongs at the call site — see `scan:secrets` in package.json for why
+    this must never be an install hook.
+  */
+  console.error('\n  No git repository here, so the publish set is unknown — refusing to guess.\n')
   process.exit(1)
 }
 

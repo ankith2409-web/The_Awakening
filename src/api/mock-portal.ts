@@ -1,5 +1,5 @@
 import { SEED_ADMINS, SEED_ATTENDEE, SEED_EVENT, SEED_TEAMS } from '@/domain/dataset'
-import { normalisePhone, normaliseSen, isValidIndianMobile, isValidSen } from '@/domain/phone'
+import { normalisePhone, normaliseSen, isValidSen } from '@/domain/phone'
 import { signTicket } from '@/domain/ticket'
 import {
   PortalError,
@@ -15,8 +15,6 @@ import {
   type AttendeeWithSecret,
   type CheckIn,
   type EventInfo,
-  type PasswordResetInput,
-  type PasswordResetResult,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -151,52 +149,60 @@ export class MockPortalApi implements PortalApi {
     clearSession('attendee')
   }
 
+  /* --------------------------------------------------------------- admin */
+
   /**
-   * Sets a new password from a phone number alone — unverified, matching the
-   * server.
+   * Sets an attendee's password. The only password-change path.
    *
-   * Mirrors the server's two guarantees that matter: the same message is
-   * returned whether or not the number exists, and a successful reset drops any
-   * session the old password had minted.
+   * The mock had a self-service `resetAttendeePassword` and it is deliberately
+   * gone rather than kept for parity: a mock that still offers an unverified
+   * reset teaches the shape of an endpoint the server no longer has, and the
+   * next person to read it would assume the vulnerability is still there.
+   *
+   * Mirrors the two guarantees the real one makes — identified by SEN, and any
+   * session the previous password minted is dropped.
    */
-  async resetAttendeePassword(input: PasswordResetInput): Promise<PasswordResetResult> {
+  async adminSetAttendeePassword(input: {
+    sen: string
+    password: string
+  }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }> {
     await delay(LATENCY_MS)
 
-    const target = normalisePhone(input.phone)
-    if (!isValidIndianMobile(target)) {
-      throw new PortalError('unknown', 'Enter a 10-digit mobile number.')
+    if (this.#adminSessionId === null) {
+      throw new PortalError('forbidden', 'Log in to the admin portal.')
     }
+
+    const target = normaliseSen(input.sen)
+    if (!isValidSen(target)) {
+      throw new PortalError('unknown_sen', 'That does not look like a SEN.')
+    }
+
     const problem = passwordProblem(input.password)
     if (problem) throw new PortalError('weak_password', problem)
 
-    const attendee = this.#store.attendees.find(
-      (person) => (person.phone ?? '') === target,
+    const attendee = this.#store.attendees.find((person) => person.sen === target)
+    if (!attendee) {
+      throw new PortalError('unknown_sen', 'No registered attendee matches that SEN.')
+    }
+
+    // Replaced rather than mutated: `passwordHash` is readonly, and an immutable
+    // swap keeps the store consistent with its own type.
+    this.#store.attendees = this.#store.attendees.map((person) =>
+      person.id === attendee.id ? { ...person, passwordHash: hash(input.password) } : person,
     )
 
-    if (attendee) {
-      // Replaced rather than mutated: `passwordHash` is readonly, and an
-      // immutable swap keeps the store consistent with its own type.
-      this.#store.attendees = this.#store.attendees.map((person) =>
-        person.id === attendee.id
-          ? { ...person, passwordHash: hash(input.password) }
-          : person,
-      )
-      // The previous password's session is no longer trustworthy.
-      if (this.#attendeeSessionId === attendee.id) {
-        this.#attendeeSessionId = null
-        clearSession('attendee')
-      }
-      persist(this.#store)
+    // The previous password's session is no longer trustworthy.
+    if (this.#attendeeSessionId === attendee.id) {
+      this.#attendeeSessionId = null
+      clearSession('attendee')
     }
+    persist(this.#store)
 
     return {
-      ok: true,
-      message:
-        'If that number is registered, its password has been reset. Log in with your new password.',
+      attendee: { id: attendee.id, name: attendee.name, sen: attendee.sen },
+      sessionsRevoked: true,
     }
   }
-
-  /* --------------------------------------------------------------- admin */
 
   async getAdminSession(): Promise<AdminSession | null> {
     await delay(LATENCY_MS / 3)

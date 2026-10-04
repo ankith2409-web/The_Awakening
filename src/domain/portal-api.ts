@@ -8,8 +8,6 @@ import type {
   AttendeeSession,
   CheckIn,
   EventInfo,
-  PasswordResetInput,
-  PasswordResetResult,
   Team,
   Ticket,
 } from './types'
@@ -27,18 +25,20 @@ export interface PortalApi {
   attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeSession>
   attendeeLogout(): Promise<void>
 
-  /**
-   * Sets a new password from a phone number alone.
-   *
-   * Deliberately unverified — there is no OTP, email or security question, so
-   * knowing a number is enough to take over that account. That is the
-   * organiser's explicit call, and the server compensates with rate limiting
-   * and a uniform response rather than pretending it is secure.
-   *
-   * Returns the same message whether or not the number is registered, so the
-   * UI must not branch on the result.
-   */
-  resetAttendeePassword(input: PasswordResetInput): Promise<PasswordResetResult>
+  /*
+    There is deliberately no `resetAttendeePassword`.
+
+    One existed, and it was the most serious weakness in the portal: no OTP, no
+    email, no security question, so knowing a phone number was enough to take
+    over that account and present its pass. Rate limiting was the only thing
+    between it and a script walking the roster, and the endpoint was under
+    active probing in production.
+
+    Recovery is now admin-mediated. An attendee asks an organiser at the desk and
+    `adminSetAttendeePassword` sets a new one — an authenticated, attributable
+    action instead of an unauthenticated one. Absence of the method here is the
+    reminder that there is no self-service path.
+  */
 
   /* -- admin (separate door) -------------------------------------------- */
   getAdminSession(): Promise<AdminSession | null>
@@ -74,6 +74,22 @@ export interface PortalApi {
   listAttendees(): Promise<readonly Attendee[]>
   /** Every attendance record, newest last. */
   listAttendance(): Promise<readonly CheckIn[]>
+
+  /**
+   * Sets an attendee's password. The only password-change path in the portal.
+   *
+   * Identified by SEN rather than phone or name: the SEN is printed on the badge
+   * and is already the gate's identifier, so an organiser holding a pass does
+   * not have to ask someone to spell out a number.
+   *
+   * Revokes every existing session for that attendee, so a password change
+   * actually locks the previous holder out.
+   */
+  adminSetAttendeePassword(input: {
+    sen: string
+    password: string
+  }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }>
+
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo>
   updateAgendaItem(
     id: string,

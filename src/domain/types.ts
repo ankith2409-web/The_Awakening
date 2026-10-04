@@ -63,23 +63,6 @@ export interface AttendeeRegisterInput extends AttendeeLoginInput {
   readonly sen: string
 }
 
-export interface PasswordResetInput {
-  readonly phone: string
-  readonly password: string
-}
-
-/**
- * The outcome of a reset attempt.
- *
- * `message` is identical whether or not the number is registered — that
- * uniformity is the point, so the endpoint cannot be used to enumerate the
- * roster. Do not branch on anything else.
- */
-export interface PasswordResetResult {
-  readonly ok: true
-  readonly message: string
-}
-
 export interface AdminLoginInput {
   readonly username: string
   readonly password: string

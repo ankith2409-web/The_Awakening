@@ -8,6 +8,7 @@ import { Button } from '@/components/Button'
 import { Alert, SectionLabel } from '@/components/Typography'
 import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
+import { AttendeeDirectory } from './AttendeeDirectory'
 import { formatPhone } from '@/domain/phone'
 import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
 
@@ -32,11 +33,20 @@ const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   printed: 'Bare SEN with no signature — typed by staff or read from a printed barcode.',
 }
 
-type Tab = 'scan' | 'attendance' | 'teams' | 'programme'
+type Tab = 'scan' | 'attendance' | 'desk' | 'teams' | 'programme'
 
+/**
+ * `desk` sits third, immediately after attendance.
+ *
+ * The two are one workflow: someone comes to the door and staff check them in;
+ * someone else comes to the door and staff fix their password. Placing the
+ * attendee directory next to the log means the person on the desk has both in
+ * one place, rather than hunting through a tab list.
+ */
 const TABS: { id: Tab; label: string }[] = [
   { id: 'scan', label: 'Scan' },
   { id: 'attendance', label: 'Attendance' },
+  { id: 'desk', label: 'Desk' },
   { id: 'teams', label: 'Teams' },
   { id: 'programme', label: 'Programme' },
 ]
@@ -183,6 +193,8 @@ export function AdminPortalView() {
                 eventName={event?.name ?? 'event'}
               />
             ) : null}
+
+            {tab === 'desk' ? <AttendeeDirectory /> : null}
 
             {tab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
 

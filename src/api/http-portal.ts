@@ -9,8 +9,6 @@ import {
   type AttendeeSession,
   type CheckIn,
   type EventInfo,
-  type PasswordResetInput,
-  type PasswordResetResult,
   type PortalErrorCode,
   type Team,
   type Ticket,
@@ -92,13 +90,6 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('POST', '/attendee/logout')
   }
 
-  resetAttendeePassword(input: PasswordResetInput): Promise<PasswordResetResult> {
-    return this.#request('POST', '/attendee/password/reset', {
-      phone: input.phone,
-      password: input.password,
-    })
-  }
-
   /* --------------------------------------------------------------- admin */
 
   async getAdminSession(): Promise<AdminSession | null> {
@@ -116,6 +107,13 @@ export class HttpPortalApi implements PortalApi {
 
   adminLogout(): Promise<void> {
     return this.#request('POST', '/admin/logout')
+  }
+
+  adminSetAttendeePassword(input: { sen: string; password: string }) {
+    return this.#request<{
+      attendee: { id: string; name: string; sen: string }
+      sessionsRevoked: boolean
+    }>('POST', '/admin/attendees/password', input)
   }
 
   /* ---------------------------------------------------------- programme */

@@ -1,7 +1,8 @@
 # THE AWAKENING — Access Portal
 
 Attendee registration, a per-person QR entry pass, live event status, and a
-separate admin portal for scanning SEN barcodes at the door.
+separate admin portal for scanning SEN barcodes at the door and resetting an
+attendee's password.
 
 **AI agents — built by you.** A Fetch AI event by Google Developer Groups, hosted
 by Amity University Bengaluru, Seminar Hall, 14–15 October 2026.
@@ -79,8 +80,10 @@ src/
     LandingView.tsx        The public front door
     AuthViews.tsx          Log in + Register
     DashboardView.tsx      QR pass, attendance, event status
-    ForgotPasswordView.tsx
-    admin/                 AdminLoginView, AdminPortalView
+    admin/
+      AdminLoginView.tsx   The separate staff door
+      AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Teams, Programme
+      AttendeeDirectory.tsx  Find an attendee, set their password
 
 server/                The backend. Deliberately NOT named `api/` — see below.
   [...route].ts          All endpoints, one serverless function
@@ -90,7 +93,7 @@ server/                The backend. Deliberately NOT named `api/` — see below.
     http.ts               ApiError taxonomy, JSON and body parsing
     identifiers.ts        Phone/SEN normalisation (mirrors src/domain/phone.ts)
     ticket.ts             HMAC ticket signing, constant-time verification
-    reset.ts              Password-reset rate limiter
+    reset.ts              Housekeeping for the retired reset-attempt ledger
 
 db/
   schema.sql           Tables, unique indexes, CHECK constraints (idempotent)
@@ -135,7 +138,8 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | `attendance`               | append-only; unique index on `attendee_id`                     |
 | `sessions`                 | SHA-256 token hash, `kind`, `expires_at`; expired rows purged |
 | `admins`                   | bcrypt hashes, seeded from environment                        |
-| `password_reset_attempts`  | rate-limit ledger, per phone and per IP                       |
+| `password_changes`         | append-only audit of admin-mediated password changes          |
+| `password_reset_attempts`  | retired; retained as a record of the old endpoint's probing   |
 | `events`                   | one row                                                       |
 | `agenda`                   | per-event items with `day`, `sort_order` and `status`         |
 | `teams`                    | read-only; there is no team write route                       |
@@ -167,21 +171,30 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | `POST`  | `/attendee/login`          | `{ name, phone, password, remember }` | —               |
 | `POST`  | `/attendee/register`       | `{ name, phone, password, sen }`      | —               |
 | `POST`  | `/attendee/logout`         | —                                     | attendee        |
-| `POST`  | `/attendee/password/reset` | `{ phone, password }`                 | rate limited    |
 | `GET`   | `/attendee/ticket`         | —                                     | attendee        |
 | `GET`   | `/attendee/attendance`     | —                                     | attendee        |
 | `GET`   | `/admin/session`           | —                                     | optional        |
 | `POST`  | `/admin/login`             | `{ username, password }`              | —               |
 | `POST`  | `/admin/logout`            | —                                     | admin           |
 | `GET`   | `/admin/attendees`         | —                                     | admin           |
+| `POST`  | `/admin/attendees/password`| `{ sen, password }`                   | admin           |
 | `GET`   | `/admin/attendance`        | —                                     | admin           |
 | `POST`  | `/admin/attendance`        | `{ sen }`                             | admin           |
 | `PATCH` | `/admin/agenda/:id`        | `{ status }`                          | admin           |
 | `PATCH` | `/admin/event`             | `{ phase }`                           | admin           |
 
+There is deliberately **no** `/attendee/password/reset` route. See
+[Password recovery is admin-mediated](#password-recovery-is-admin-mediated).
+
 Two independent providers, not one: attendee and admin are **separate doors** with
 separate credentials, and neither can authorise the other. An anonymous call to
 any `/admin/*` route returns 403.
+
+`POST /admin/attendees/password` returns `{ attendee: { id, name, sen },
+sessionsRevoked: true }`. It is the only password-change path in the portal, and
+its three writes — new hash, revoked sessions, audit row — run in a single
+transaction so a partial commit cannot leave a changed password with surviving
+sessions.
 
 `PATCH /admin/agenda/:id` returns the single updated `AgendaItem`;
 `PATCH /admin/event` returns the whole `EventInfo`, which is what the caller
@@ -325,50 +338,61 @@ the code, and `PortalError` ignores a message identical to its code. Errors that
 carry real wording — `Invalid status.`, `Enter a 10-digit mobile number. You
 entered 9.` — still reach the screen unchanged.
 
-### Password reset
+### Password recovery is admin-mediated
 
-`/forgot-password`, attendee portal only.
+There is no self-service password reset, and its absence is deliberate.
 
-**This reset is unverified.** There is no OTP, no email and no security question:
-a phone number alone is enough to set a new password. This was an explicit
-organiser decision. It is a genuine account-takeover path — knowing someone's
-number lets you take their account and present their pass — and is recorded here
-rather than buried.
+The portal used to have one. It took a phone number and a new password with **no
+verification of any kind** — no OTP, no email, no security question — so knowing
+someone's number was enough to take over their account and present their pass at
+the gate. Rate limiting (5 per number per hour, 20 per caller IP) was the only
+control, and the endpoint was under active probing in production, with the per-IP
+limiter holding at exactly its configured ceiling.
 
-What the endpoint does instead of verifying:
+That was the most serious weakness the portal had. It was fixed by deleting the
+endpoint, not by tightening it.
 
-| Control                                        | Why                                                    |
-| ---------------------------------------------- | ------------------------------------------------------ |
-| 5 attempts per number per hour                 | One attacker grinding one known number                |
-| 20 attempts per caller IP per hour             | One host sweeping the whole roster                    |
-| Identical status **and message** either way    | Cannot be used to enumerate the roster                 |
-| A dummy bcrypt compare on a miss               | Response time does not leak existence either           |
-| Successful reset deletes that attendee's sessions | A takeover is visible to whoever it displaced        |
-| A successful attempt **counts** toward the limit | Guessing right buys no extra attempts                |
+Recovery now works like this:
 
-The last row is load-bearing. An earlier version cleared a number's history on
-success, so the count never reached the limit and any caller could reset the same
-account indefinitely. There is deliberately no clear-on-success helper, and a test
-asserts the limit engages.
+1. An attendee asks an organiser at the registration desk.
+2. Staff open the **Desk** tab in the admin portal, search by name, SEN or phone,
+   and set a new password with that person watching.
+3. Every existing session belonging to that attendee is revoked.
 
-Rate-limit state lives in Postgres rather than process memory: serverless
-instances are ephemeral and unshared, so an in-memory counter would reset on every
-cold start and the effective limit would be "however many guesses fit in one
-function's lifetime".
+| Property | Why |
+| --- | --- |
+| Requires an authenticated admin session | Nothing to probe — an attacker cannot reach the route |
+| Identified by **SEN**, not phone or name | The SEN is on the badge and is already the gate's identifier; names collide, phone numbers get misheard |
+| Server re-applies the registration password rules | An admin cannot set a weaker password than a self-registering attendee could choose |
+| SEN matched case-insensitively after normalising | An organiser reading a badge aloud types it however they heard it |
+| Revokes all of that attendee's sessions | A password change that leaves old sessions alive has not locked anyone out |
+| The attendee portal has no such link | Recovery is a conversation with a person, and the login page says so |
+| Every change is recorded | A privileged credential change should be attributable |
 
-**For real verification**, the change is contained — put an SMS OTP in front of
-this endpoint (MSG91, Fast2SMS and Twilio all send to Indian numbers). Nothing
-else needs to move.
-
-The endpoint is being probed against the live site; the per-IP limiter has held at
-exactly its configured ceiling. To see who is calling:
+The audit trail lives in `password_changes` (append-only, like `attendance`) and
+records which admin authorised a change, for whom, and when. It is deliberately
+not exposed over the API — the same reason the test suite reads it straight from
+the database:
 
 ```sql
-select ip, count(*) as attempts, max(created_at) as last_seen
-  from password_reset_attempts
- group by ip
- order by attempts desc, last_seen desc;
+select a.sen, a.name, ad.display_name as changed_by, pc.at
+  from password_changes pc
+  join attendees a on a.id = pc.attendee_id
+  join admins ad on ad.id = pc.admin_id
+ order by pc.at desc;
 ```
+
+This trades a self-service flow for a queue at the desk. For a two-day event
+where an attendee is standing in front of the person changing their password,
+that is the right trade: the identity check is a face and a badge, which is
+stronger than an SMS OTP in the sense that actually matters here.
+
+The `password_reset_attempts` table is left in place but is no longer written to.
+Its rows are an accurate record of the probing the old endpoint received.
+
+**Staff credentials have no recovery route at all.** An admin password is changed
+in the Neon console or the Vercel environment and redeployed — out of band, not
+over the public API.
 
 ### Route guard
 
@@ -376,8 +400,13 @@ select ip, count(*) as attempts, max(created_at) as last_seen
 which is counter-intuitive: `when="active"` on `/dashboard` would bounce
 anonymous visitors to `/login`, which is fine, but the same value on `/` would
 bounce them to `/dashboard`, whose own guard bounces them on to `/login`, and the
-landing page would never render at all. Hence `/login`, `/register` and
-`/forgot-password` are all `when="anonymous"`.
+landing page would never render at all. Hence `/login` and `/register` are both
+`when="anonymous"`.
+
+`/forgot-password` no longer exists as a route and falls through to the
+catch-all, landing on `/login` — where the "ask the desk" instruction is. A
+deliberate dead end rather than a 404: anyone who reaches it is locked out, and
+a locked-out person needs an instruction, not an error.
 
 `/` is `when="any"`, so the hero renders for a signed-in visitor too — the shared
 link is the thing pasted into a group chat and it should show what it promises.
@@ -497,7 +526,7 @@ that does none of them does not belong.
 | Validation messages            | Fade in, inside reserved height                |
 | Buttons                        | 1px press settle on transform                  |
 | Loading skeletons              | Shimmer — the one permitted loop               |
-| Admin tabs, attendance, teams  | Cross-fade and stagger                         |
+| Admin tabs, attendance, desk, teams | Cross-fade and stagger                    |
 | **Admin scan panel**           | **None, deliberately**                         |
 
 Four rules, each with a failure behind it:
@@ -512,7 +541,7 @@ Four rules, each with a failure behind it:
   open.
 - **No motion on the gate.** The scan panel is what a volunteer uses at a busy
   door, usually on a phone, with the camera preview and an on-screen keyboard in
-  play. Tabs, attendance and teams animate; the scan panel does not.
+  play. Tabs, attendance, desk and teams animate; the scan panel does not.
 
 **Stagger is capped** at `STAGGER_CAP = 8` in `src/lib/motion.ts`. Uncapped,
 45ms × 500 attendance rows is a 22-second wait, and every row past the eighth is
@@ -547,8 +576,9 @@ are zeroed explicitly.
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
 | `test:api`      | 55          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards  |
-| `test:gate`     | 23          | yes      | Signature verification, the `printed` fallback, every reset guarantee |
+| `test:gate`     | 28          | yes      | Signature verification, the `printed` fallback, admin-mediated recovery and its audit trail |
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
+| `test:desk`     | 40          | no       | Roster search normalisation; the panel's structure; no self-service reset |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
 | `test:landing`  | 40          | no       | Entry points clear a phone; footer destinations; links open safely |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
@@ -566,17 +596,30 @@ npm run test:landing       # no database needed
 npm run test:motion        # no database needed
 ```
 
-`test:errors` and `test:copy` are bundled with esbuild first. They import the real
-modules through the real resolver, because the `@/` alias in `src/` is a Vite
-convention bare Node cannot resolve — bundling is what lets them exercise shipped
-code rather than a copy. `test:errors` writes its full verdict table to
+`test:api` and `test:copy` deliberately do **not** read `.env`. They need
+`ADMIN_USERNAME` and `ADMIN_PASSWORD` exported explicitly, so that a suite pointed
+at production can never quietly authenticate with whatever local credentials
+happen to sit in a file. `test:gate` does read `.env`, because its audit-trail
+assertions need `DATABASE_URL`; when that is absent those four assertions **skip**
+with an explanation rather than fail.
+
+`test:errors`, `test:copy` and `test:desk` are bundled with esbuild first. They import
+the real modules through the real resolver, because the `@/` alias in `src/` is a
+Vite convention bare Node cannot resolve — bundling is what lets them exercise
+shipped code rather than a copy. `test:errors` writes its full verdict table to
 `scripts/error-matrix.csv` (git-ignored).
 
-The static suites (`landing`, `motion`, `scan`) read the source rather than
+The static suites (`landing`, `motion`, `scan`, `desk`) read the source rather than
 driving a browser, because the defects they guard are structural: state written
 but never read, focus restored on a path where it must not be, a control hidden
-behind a breakpoint. None of those are visible to an API-level test — the request
-succeeds and the row is written either way.
+behind a breakpoint, a "Forgot password?" link creeping back. None of those are
+visible to an API-level test — the request succeeds and the row is written either
+way.
+
+`test:desk` earned its place immediately: it caught that a phone number typed with
+its country code — `+91 83103 29525`, which is how staff copy numbers out of a
+contacts app — matched nobody, because the stored value is the bare ten digits.
+The desk would have told someone their own number was unregistered.
 
 ### Cleaning up after a test run
 
@@ -625,22 +668,28 @@ the row out of band. Removing an attendee therefore removes real attendance
 history, and the person can be scanned and marked again afterwards, since the
 unique index goes with the row.
 
-### Rate limits and tests
+### Running the HTTP suites
 
-Vercel **replaces** `x-forwarded-for` with the real client IP rather than
-appending to it, so a client that sets its own value is ignored. Locally there is
-no proxy, so a test can set the header freely; deployed, every caller — the suite
-included — collapses into one shared bucket.
-
-`test:gate` therefore checks the shared budget on its first real reset call and
-**skips the reset section** with an explanation if it is already spent, rather
-than reporting a cascade of 429s that read like the endpoint is broken. To
-exercise that dimension for real, run it against the local harness:
+`test:api`, `test:gate` and `test:copy` all drive a real server. Against a hosted
+deployment, export `TEST_BASE_URL` and the admin credentials:
 
 ```bash
-node dev-api.mjs    # then, in another shell
-$env:TEST_BASE_URL="http://localhost:3000"; npm run test:gate
+node dev-api.mjs    # local harness, then, in another shell:
+$env:TEST_BASE_URL="http://localhost:3000"
+$env:ADMIN_USERNAME="admin"; $env:ADMIN_PASSWORD="…"
+npm run test:api; npm run test:gate; npm run test:copy
 ```
+
+`dev-api.mjs` serves the serverless function on `:3000` with no proxy in the path,
+which is the only way to exercise anything that depends on the real caller IP —
+Vercel **replaces** `x-forwarded-for` rather than appending to it, so deployed,
+every caller collapses into one shared bucket.
+
+That shared bucket used to matter: the retired reset endpoint was rate limited per
+IP and the suite spent a chunk of that budget on each run, so it checked the
+budget first and skipped the section when it was already spent rather than
+reporting a cascade of 429s that read like a broken endpoint. The route no longer
+exists, so `test:gate` no longer needs the workaround.
 
 ---
 
@@ -656,6 +705,10 @@ $env:TEST_BASE_URL="http://localhost:3000"; npm run test:gate
   cookie lifetime and the database row derive from the same day count, so the
   browser cannot forget a session the server still honours.
 - **Admin authorisation is enforced server-side.** The client only hides UI.
+- **There is no unauthenticated password change.** Recovery requires an admin
+  session, is identified by SEN, re-applies the registration password rules, and
+  revokes every session belonging to the attendee in the same transaction that
+  writes the new hash and the audit row.
 - **Every request is time-bounded**, so a stalled connection cannot strand
   someone on a screen with no way forward.
 - **`TICKET_SECRET` and `DATABASE_URL` are marked sensitive** in Vercel.
@@ -665,10 +718,17 @@ $env:TEST_BASE_URL="http://localhost:3000"; npm run test:gate
 ### Known limits
 
 - **Sign-in is not rate limited.** It is bcrypt-backed, so brute force is
-  expensive but not blocked. The reset endpoint *is* limited; sign-in is not.
-  Worth adding if the portal is public before the event.
-- **The reset endpoint is unverified by design** and is being probed. The per-IP
-  limiter is currently the only control between an attacker and the roster.
+  expensive but not blocked. Worth adding if the portal is public before the
+  event — and it matters more now, since removing the reset endpoint took away the
+  only unauthenticated route that was ever heavily probed.
+- **An admin can take over any attendee account by design.** Setting a password
+  is a privileged act, and the audit trail records who did it rather than
+  preventing it. That is inherent to desk-mediated recovery; the compensating
+  control is that the admin session is the only door, not a phone number.
+- **A password set at the desk is known to two people.** The attendee should
+  change it afterwards once a self-service route exists — but there is currently
+  none, so in practice it stays as the desk set it. Worth revisiting if the
+  portal is reused.
 - Neon free tier auto-suspends after roughly 5 minutes idle, costing about a
   second on the first request afterwards. A paid plan removes it.
 
@@ -686,13 +746,19 @@ $env:TEST_BASE_URL="http://localhost:3000"; npm run test:gate
 
 ## Publishing safely
 
-`npm run prepublish` scans exactly the file set git would publish — not the
+`npm run scan:secrets` scans exactly the file set git would publish — not the
 working directory — for Postgres connection strings, Neon keys, provider tokens,
 private key blocks and admin password literals. It also fails if `.env`,
 `.vercel`, `node_modules` or `dist` are tracked at all.
 
 A tracked `.env` full of placeholders still has to fail: someone will eventually
 paste a real value into it.
+
+The script is named `scan:secrets` rather than `prepublish` on purpose. npm treats
+`prepublish` as a lifecycle hook and runs it on **every** `npm install` — which put
+this scan in the path of Vercel's build, where there is no `.git` to enumerate, so
+it refused and failed the deploy. A check that only makes sense before a human
+pushes must not be something an installer can trigger.
 
 ## Deployment
 

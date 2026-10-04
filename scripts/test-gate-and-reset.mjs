@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 /**
- * Focused checks for the two features added most recently.
+ * Focused checks for the two features that changed most recently: the gate's
+ * signature verification, and password recovery.
  *
  * Run against a live API:  node scripts/test-gate-and-reset.mjs
+ *
+ * Set ADMIN_USERNAME / ADMIN_PASSWORD for a hosted deployment. The audit-trail
+ * assertions additionally read the database directly, so export DATABASE_URL to
+ * include them — without it they skip rather than fail.
  */
+
+import { Client } from 'pg'
+import { loadEnv } from './_env.mjs'
+
+loadEnv()
 
 const BASE = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
 
@@ -27,21 +37,37 @@ function skip(label, why) {
 }
 
 /**
- * Reset calls must pass the run's IP as the FIFTH argument.
+ * Reads the audit trail for one SEN, newest first.
  *
- * Getting this wrong fails silently and expensively: the value lands in the
- * `cookie` slot, no x-forwarded-for header is sent, every run then shares a
- * single `unknown` bucket in the limiter, and the suite passes once and fails
- * on every run after — which reads like a flaky test rather than a wrong call.
+ * Resolves to `null` when there is no database to ask, which the caller reports
+ * as a skip. A missing DATABASE_URL is an environment fact, not a failure of the
+ * portal — and a suite that fails for that reason teaches people to ignore it.
  */
-async function call(method, path, body, cookie, ip) {
+async function auditRowsFor(sen) {
+  const url = process.env.DATABASE_URL
+  if (!url) return null
+
+  const client = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } })
+  try {
+    await client.connect()
+    const { rows } = await client.query(
+      `select pc.admin_id, pc.at
+         from password_changes pc
+         join attendees a on a.id = pc.attendee_id
+        where upper(a.sen) = upper($1)
+        order by pc.at desc`,
+      [sen],
+    )
+    return rows
+  } finally {
+    await client.end()
+  }
+}
+
+async function call(method, path, body, cookie) {
   const headers = {}
   if (cookie) headers.Cookie = cookie
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  // The rate limiter budgets per caller IP as well as per number. Sending a
-  // unique IP per run keeps repeated runs from sharing — and exhausting — one
-  // budget, so the suite is repeatable.
-  if (ip) headers['x-forwarded-for'] = ip
 
   const res = await fetch(`${BASE}/api${path}`, {
     method,
@@ -72,17 +98,10 @@ async function main() {
   console.log(`\n  Testing ${BASE}\n`)
   const runId = Date.now().toString().slice(-5)
   /*
-    A fresh caller identity per run, so the per-IP budget starts empty and
-    back-to-back runs cannot exhaust each other's.
-
-    Drawn from 198.18.0.0/15 (RFC 2544 benchmarking space) rather than
-    something timestamp-shaped: an earlier version used
-    `203.0.113.${Date.now() % 250}`, which gave only 250 distinct values and
-    collided between consecutive runs. 65k values plus randomness makes a
-    collision between back-to-back runs negligible.
+    Per-run identifiers, so back-to-back runs do not collide on the unique index
+    on phone and SEN. Nothing here needs to look like a real registration: these
+    are fixtures the cleanup script recognises by name.
   */
-  const octets = Math.floor(Math.random() * 65_000)
-  const ip = `198.18.${Math.floor(octets / 256)}.${octets % 256}`
   const senQr = `SEN${runId}Q`
   const senBare = `SEN${runId}B`
   const phoneQr = `9${runId}11111`.slice(0, 10)
@@ -133,169 +152,145 @@ async function main() {
   check('QR row persisted method=qr', qrRow?.method === 'qr', `got ${qrRow?.method}`)
   check('forged row persisted method=printed', bareRow?.method === 'printed', `got ${bareRow?.method}`)
 
-  /* -- password reset ------------------------------------------------------ */
+  /* -- password recovery is admin-mediated ---------------------------------- */
   /*
-    Stop if the shared per-IP budget is already spent.
+    These assertions are shaped around absence as much as presence.
 
-    Vercel overwrites `x-forwarded-for` with the real client IP, so on a hosted
-    deployment every caller — this suite included, plus anyone probing the
-    endpoint — shares one bucket. Twenty resets an hour is the ceiling and this
-    suite spends a dozen per run, so after a few runs the budget is gone and
-    every assertion below fails with 429, reading like the reset endpoint is
-    broken when it is the limiter doing exactly its job.
+    The public reset endpoint used to accept a phone number and a new password
+    with no verification of any kind: no OTP, no email, no security question.
+    Knowing someone's number was therefore enough to take over their account
+    and present their pass at the gate. It was the most serious weakness the
+    portal had, and it was under active probing in production.
 
-    Checked on the first real call rather than on a separate probe: a probe
-    spends budget too, so it could take the last slot and leave the section to
-    fail on the very next request. Run against the local harness to exercise
-    this for real.
+    The fix was to delete it, not to tighten it — so the first assertion here is
+    that it is gone. If a future change reintroduces an unauthenticated reset,
+    this fails, which is the only place in the codebase that would notice.
   */
-  const reset = await call('POST', '/attendee/password/reset', {
-    phone: phoneQr, password: 'newpass2026',
-  }, undefined, ip)
+  const publicReset = await call('POST', '/attendee/password/reset', {
+    phone: phoneQr, password: 'sneaky2026',
+  })
+  check('the self-service reset endpoint no longer exists',
+    publicReset.status === 404, `got ${publicReset.status}`)
 
-  if (reset.status === 429) {
-    skip(
-      'the password-reset section',
-      `the shared per-IP budget for this caller is already exhausted (HTTP 429, ` +
-        `Retry-After ${reset.headers?.get?.('retry-after') ?? '?'}). Vercel overwrites ` +
-        `x-forwarded-for, so a hosted deployment cannot isolate this suite - run it ` +
-        `against the local harness to assert on it.`,
-    )
-    console.log(
-      `\n  ${passed} passed, ${failed} failed` +
-        (skipped > 0 ? `, ${skipped} skipped` : "") + `\n`,
-    )
-    if (failed > 0) process.exitCode = 1
-    return
-  }
+  // Proves the 404 is a real removal rather than a 404 raised after the write.
+  const untouched = await call('POST', '/attendee/login', {
+    name: 'Qr Tester', phone: phoneQr, password: 'grid2026', remember: false,
+  })
+  check('the removed endpoint did not change the password on its way out',
+    untouched.status === 200, `got ${untouched.status}`)
 
-  check('reset succeeds', reset.status === 200 && reset.body?.ok === true, `got ${reset.status}`)
+  /* -- the door is shut to unauthenticated callers --------------------------- */
+  const noSession = await call('POST', '/admin/attendees/password', {
+    sen: senQr, password: 'sneaky2026',
+  })
+  check('an unauthenticated caller cannot change a password',
+    noSession.status === 403, `got ${noSession.status}`)
+
+  const garbage = await call('POST', '/admin/attendees/password', {
+    sen: '!!', password: 'grid2026',
+  }, admin.cookie)
+  check('a malformed SEN is rejected before any lookup',
+    garbage.status === 422 && garbage.body?.code === 'unknown_sen',
+    `got ${garbage.status}/${garbage.body?.code}`)
+
+  const unregistered = await call('POST', '/admin/attendees/password', {
+    sen: `SEN${runId}ZZ`, password: 'grid2026',
+  }, admin.cookie)
+  check('an unregistered SEN is refused',
+    unregistered.status === 422 && unregistered.body?.code === 'unknown_sen',
+    `got ${unregistered.status}/${unregistered.body?.code}`)
+
+  /*
+    An admin cannot set a weaker password than a self-registering attendee could
+    choose. Otherwise "ask the organiser" becomes a downgrade path: the rule
+    exists on the registration form and it has to exist here too, or the desk
+    becomes the easy way in.
+  */
+  const weak = await call('POST', '/admin/attendees/password', {
+    sen: senQr, password: 'abc',
+  }, admin.cookie)
+  check('an admin cannot set a password registration would have refused',
+    weak.status === 422 && weak.body?.code === 'weak_password',
+    `got ${weak.status}/${weak.body?.code}`)
+
+  /* -- the admin can do the thing it exists for ------------------------------ */
+  const changed = await call('POST', '/admin/attendees/password', {
+    sen: senQr, password: 'newpass2026',
+  }, admin.cookie)
+  check('the admin can set a password for a registered attendee',
+    changed.status === 200 && changed.body?.attendee?.sen === senQr,
+    `got ${changed.status}/${changed.body?.attendee?.sen}`)
+  check('the response names the attendee it acted on',
+    changed.body?.attendee?.name === 'Qr Tester',
+    `got ${changed.body?.attendee?.name}`)
+  check('the response reports that sessions were revoked',
+    changed.body?.sessionsRevoked === true,
+    `got ${changed.body?.sessionsRevoked}`)
+
+  const staleSession = await call('GET', '/attendee/session', undefined, a.cookie)
+  check('a session from the previous password is revoked',
+    staleSession.body === null, `got ${JSON.stringify(staleSession.body)}`)
 
   const oldLogin = await call('POST', '/attendee/login', {
     name: 'Qr Tester', phone: phoneQr, password: 'grid2026', remember: false,
   })
-  check('old password no longer works', oldLogin.status === 401, `got ${oldLogin.status}`)
+  check('the previous password no longer works',
+    oldLogin.status === 401, `got ${oldLogin.status}`)
 
   const newLogin = await call('POST', '/attendee/login', {
     name: 'Qr Tester', phone: phoneQr, password: 'newpass2026', remember: false,
   })
-  check('new password works', newLogin.status === 200, `got ${newLogin.status}`)
-
-  // The reset must kill sessions minted by the old password.
-  const staleSession = await call('GET', '/attendee/session', undefined, a.cookie)
-  check('sessions from the old password are revoked', staleSession.body === null,
-    `got ${JSON.stringify(staleSession.body)}`)
-
-  /* -- reset must not become an oracle ------------------------------------- */
-  const missing = await call('POST', '/attendee/password/reset', {
-    phone: `7${runId}99999`.slice(0, 10), password: 'another2026',
-  }, undefined, ip)
-  const present = await call('POST', '/attendee/password/reset', {
-    phone: phoneBare, password: 'another2026',
-  }, undefined, ip)
-  check('unknown number returns the same status as a known one',
-    missing.status === present.status, `${missing.status} vs ${present.status}`)
-  check('unknown number returns the same message as a known one',
-    missing.body?.message === present.body?.message,
-    `"${missing.body?.message}" vs "${present.body?.message}"`)
-
-  const weak = await call('POST', '/attendee/password/reset', {
-    phone: phoneBare, password: 'abc',
-  }, undefined, ip)
-  check('weak new password is rejected', weak.status === 422 && weak.body?.code === 'weak_password',
-    `got ${weak.status}`)
-
-  /* -- rate limiting -------------------------------------------------------- */
-  /*
-    A fresh number, so the count starts at zero.
-
-    This is the assertion that caught the worst bug in the feature: an earlier
-    version cleared a number's history on a SUCCESSFUL reset, so the count never
-    reached the limit and an attacker could reset the same account forever.
-    The successful attempt must consume budget.
-  */
-  const phoneFlood = `6${runId}33333`.slice(0, 10)
+  check('the new password works', newLogin.status === 200, `got ${newLogin.status}`)
 
   /*
-    Detect a pre-exhausted per-IP budget BEFORE asserting on the limiter.
-
-    Vercel overwrites `x-forwarded-for` with the real client IP, so on a hosted
-    deployment every caller shares one bucket and the IP budget gets consumed by
-    the suite's own earlier runs - and by anyone else probing the endpoint. That
-    is the limiter working correctly, but it makes these assertions report
-    failures that really mean "this environment cannot host this test".
-
-    So if the very first attempt is already blocked, the budget was spent before
-    we arrived. Say so and skip rather than fail. Run this suite against the
-    local harness (dev-api.mjs, no proxy in the path) to exercise the IP
-    dimension for real.
+    An organiser reading a badge aloud types the SEN however they heard it, and
+    the gate's scanner receives it however the phone's camera decoded it. The
+    lookup normalises before comparing, so a lowercase SEN must land on the same
+    attendee — otherwise the desk tells someone their own number is unknown.
   */
-  const probe = await call('POST', '/attendee/password/reset', {
-    phone: phoneFlood, password: 'flood2026',
-  }, undefined, ip)
+  const lowercase = await call('POST', '/admin/attendees/password', {
+    sen: senQr.toLowerCase(), password: 'newpass2026',
+  }, admin.cookie)
+  check('the SEN is matched case-insensitively',
+    lowercase.status === 200 && lowercase.body?.attendee?.sen === senQr,
+    `got ${lowercase.status}/${lowercase.body?.attendee?.sen}`)
 
-  if (probe.status === 429) {
+  /* -- the change is attributable ------------------------------------------- */
+  /*
+    Reached with the database rather than over HTTP because that is the only
+    place the audit trail is readable, and the point of this check is precisely
+    that it is not exposed over the API.
+
+    A privileged credential change with no record of who authorised it is a much
+    weaker thing to be able to hand to an attendee who disputes one.
+  */
+  const audit = await auditRowsFor(senQr)
+  if (audit === null) {
     skip(
-      'per-IP rate limit assertions',
-      `the shared per-IP budget for this caller is already exhausted (HTTP 429, ` +
-        `Retry-After ${probe.headers?.get?.('retry-after') ?? '?'}). Vercel overwrites ` +
-        `x-forwarded-for, so a hosted deployment cannot isolate this test - run it ` +
-        `against the local harness to assert on it.`,
+      'the password-change audit trail',
+      'DATABASE_URL is not set, so the audit table cannot be read from here. ' +
+        'Run with it exported to assert on this.',
     )
-    console.log(`\n  ${passed} passed, ${failed} failed, ${skipped} skipped\n`)
-    if (failed > 0) process.exitCode = 1
-    return
+  } else {
+    check('each successful change is recorded', audit.length >= 2,
+      `${audit.length} row(s) — expected at least 2 (the set, plus the case test)`)
+    check('the audit trail names the admin who authorised it',
+      audit.length > 0 && audit.every((row) => typeof row.admin_id === 'string' && row.admin_id !== ''),
+      JSON.stringify(audit.map((row) => row.admin_id)))
+    check('the audit trail is stamped with a time',
+      audit.length > 0 && audit.every((row) => !Number.isNaN(Date.parse(row.at))),
+      JSON.stringify(audit.map((row) => row.at)))
+    check('the recorded admin is the one that signed in',
+      audit.length > 0 && audit.every((row) => row.admin_id === admin.body?.admin?.id),
+      `${audit[0]?.admin_id} vs ${admin.body?.admin?.id}`)
   }
 
-  // The probe is itself a real attempt and consumes budget, so the flood below
-  // starts from 2 of the 5/hour per-number allowance.
-  let limited = 0
-  let firstLimitedAt = -1
-  let blockedMessage = '(none)'
-  for (let i = 0; i < 8; i += 1) {
-    const res = await call('POST', '/attendee/password/reset', {
-      phone: phoneFlood, password: 'flood2026',
-    }, undefined, ip)
-    if (res.status === 429) {
-      limited += 1
-      if (firstLimitedAt === -1) {
-        firstLimitedAt = i
-        blockedMessage = res.body?.message ?? '(no message)'
-      }
-    }
-  }
-  check('per-number rate limit engages', limited > 0, `${limited}/8 were 429`)
-  check('limit engages after a handful of attempts, not all of them',
-    firstLimitedAt > 0 && firstLimitedAt <= 6,
-    `first 429 on attempt #${firstLimitedAt + 1}` +
-      (firstLimitedAt <= 0 ? ` — blocked by: ${blockedMessage}` : ''))
-
-  const blocked = await call('POST', '/attendee/password/reset', {
-    phone: phoneFlood, password: 'flood2026',
-  }, undefined, ip)
-  check('blocked response is 429 with rate_limited code',
-    blocked.status === 429 && blocked.body?.code === 'rate_limited',
-    `got ${blocked.status}/${blocked.body?.code}`)
-
-  const retryAfter = blocked.headers?.get?.('retry-after')
-  check('blocked response carries Retry-After', Boolean(retryAfter), `got ${retryAfter}`)
-  console.log(`  note  Retry-After: ${retryAfter ?? 'absent'}`)
-
-  // A different number from the same caller must still work — the per-number
-  // budget must not silently become a per-IP lockout of legitimate users.
-  // Must start 6-9: Indian mobiles never begin with 5.
-  const other = `7${runId}44444`.slice(0, 10)
-  const otherRes = await call('POST', '/attendee/password/reset', {
-    phone: other, password: 'other2026',
-  }, undefined, ip)
-  check('a different number is unaffected by another number being blocked',
-    otherRes.status === 200, `got ${otherRes.status}`)
-
-  /* -- no admin equivalent -------------------------------------------------- */
+  /* -- staff credentials still have no recovery route ----------------------- */
   const adminReset = await call('POST', '/admin/password/reset', {
     username: 'admin', password: 'hacked2026',
   }, admin.cookie)
-  check('no admin password-reset route exists', adminReset.status === 404, `got ${adminReset.status}`)
+  check('no admin password-reset route exists',
+    adminReset.status === 404, `got ${adminReset.status}`)
 
   console.log(
     `\n  ${passed} passed, ${failed} failed` +

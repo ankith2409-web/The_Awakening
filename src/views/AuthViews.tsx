@@ -230,12 +230,34 @@ export function LoginView() {
           {submitting ? 'Authenticating' : 'Log in'}
         </Button>
 
-        <SlideNavLink
-          to="/forgot-password"
-          className="self-start border-b-2 border-swiss-ink pb-1"
-        >
-          Forgot password?
-        </SlideNavLink>
+        {/*
+          There is no self-service password reset, and this line is the reason
+          the portal has no "Forgot password?" link.
+
+          It used to be one, and it was unverified — no OTP, no email, no
+          security question — so knowing a phone number was enough to take over
+          that account and walk in with the attendee's pass. Recovery is now
+          admin-mediated: the attendee asks an organiser, who sets a new one.
+
+          Copy sits here rather than on a dead route because the person reading
+          it is, by definition, locked out and needs to know where to go. It
+          names the desk and says plainly that the desk can help, because
+          "contact support" without a location is not an instruction.
+        */}
+        <p className="flex items-start gap-3 border-l-4 border-swiss-ink bg-swiss-muted p-4 text-2xs font-medium leading-relaxed text-content-muted">
+          <span
+            aria-hidden="true"
+            className="mt-1 size-2.5 shrink-0 bg-swiss-ink"
+          />
+          <span>
+            <span className="font-bold uppercase tracking-[0.2em] text-swiss-ink">
+              Forgotten your password?
+            </span>{' '}
+            Passwords are reset by a person, not by this page. Ask any organiser
+            at the registration desk — they can set a new one for you on the
+            spot.
+          </span>
+        </p>
 
         {isMockApi ? (
           <p className="border-2 border-swiss-ink/20 bg-swiss-muted p-4 text-2xs font-medium leading-relaxed text-content-muted">

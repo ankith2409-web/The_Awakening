@@ -112,15 +112,41 @@ alter table attendance
   add constraint attendance_method check (method in ('qr', 'printed'));
 
 -- -----------------------------------------------------------------------------
+-- Admin password changes
+--
+-- Password recovery is ADMIN-MEDIATED: an attendee who forgets their password
+-- asks an organiser at the desk, who sets a new one. That replaced a
+-- self-service reset which was unverified — knowing a phone number was enough to
+-- take over that account — so the only remaining path to a password change is
+-- now a privileged, authenticated action.
+--
+-- Which is exactly why this table exists. The old flow recorded every attempt,
+-- including the failed ones, because an unverified endpoint can be attacked
+-- silently. The new one can only be reached by someone holding an admin
+-- session, so the useful record is not "who tried" but "who changed a password,
+-- for whom, and when". That is a security-relevant privileged action and it
+-- should be attributable.
+--
+-- Append-only, like attendance. No updated_at, no status: a change happened.
+-- -----------------------------------------------------------------------------
+create table if not exists password_changes (
+  id          uuid primary key default gen_random_uuid(),
+  attendee_id uuid        not null references attendees (id) on delete cascade,
+  admin_id    uuid        not null,
+  at          timestamptz not null default now()
+);
+
+create index if not exists password_changes_attendee_idx
+  on password_changes (attendee_id, at desc);
+
+-- -----------------------------------------------------------------------------
 -- Password-reset attempts
 --
--- Password reset is deliberately unverified (organiser's decision), which makes
--- it an account-takeover path: anyone who knows a phone number can set a new
--- password on that account. Rate limiting is therefore load-bearing here — it
--- is the only thing between that and a script walking the whole roster.
---
--- Every attempt is recorded against BOTH the phone number and the caller IP,
--- so neither one targeted number nor one host can grind through the list.
+-- RETAINED, BUT UNUSED. This backed the removed self-service reset endpoint.
+-- The table is left in place rather than dropped: dropping it would be a
+-- destructive schema change to a live database for no benefit, and the rows it
+-- holds are an accurate historical record of the probing that endpoint received.
+-- It is no longer written to or read by any route.
 -- -----------------------------------------------------------------------------
 create table if not exists password_reset_attempts (
   id         bigserial primary key,

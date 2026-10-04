@@ -4,7 +4,6 @@ import { useAdmin, useAttendee, type SessionStatus } from '@/auth/contexts'
 import { AdminLoginView } from '@/views/admin/AdminLoginView'
 import { AdminPortalView } from '@/views/admin/AdminPortalView'
 import { LoginView, RegisterView } from '@/views/AuthViews'
-import { ForgotPasswordView } from '@/views/ForgotPasswordView'
 import { LandingView } from '@/views/LandingView'
 import { DashboardView } from '@/views/DashboardView'
 
@@ -132,18 +131,20 @@ export function App() {
           </Guard>
         }
       />
-      <Route
-        path="/forgot-password"
-        element={
-          <Guard
-            status={attendee.status}
-            when="anonymous"
-            redirect="/dashboard"
-          >
-            <ForgotPasswordView />
-          </Guard>
-        }
-      />
+      {/*
+        There is no `/forgot-password` route, and its absence is deliberate.
+
+        Password recovery is admin-mediated — an attendee asks an organiser at
+        the desk, who sets a new one through the admin portal. The self-service
+        reset this replaced was unverified, so knowing a phone number was enough
+        to take over that account and walk in with the attendee's pass. It was
+        under active probing in production.
+
+        `/forgot-password` now falls through to the catch-all and lands on
+        `/login`, where the "ask the desk" line sits. That is deliberate too:
+        anyone who reaches a dead end here is someone who has genuinely forgotten
+        their password, and they need an instruction, not a 404.
+      */}
       <Route
         path="/dashboard"
         element={
