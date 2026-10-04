@@ -9,7 +9,7 @@ import { Alert, SectionLabel } from '@/components/Typography'
 import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
-import { formatPhone } from '@/domain/phone'
+import { StaffPanel } from './StaffPanel'
 import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
 
 /**
@@ -33,22 +33,31 @@ const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   printed: 'Bare SEN with no signature — typed by staff or read from a printed barcode.',
 }
 
-type Tab = 'scan' | 'attendance' | 'desk' | 'teams' | 'programme'
+type Tab = 'scan' | 'attendance' | 'desk' | 'staff' | 'teams' | 'programme'
 
 /**
- * `desk` sits third, immediately after attendance.
+ * The tabs, and who may see each one.
  *
- * The two are one workflow: someone comes to the door and staff check them in;
- * someone else comes to the door and staff fix their password. Placing the
- * attendee directory next to the log means the person on the desk has both in
- * one place, rather than hunting through a tab list.
+ * `gate` is a volunteer at the door: scan a badge, look at the log, look at
+ * teams. Nothing else. `owner` additionally gets the Desk (changing somebody's
+ * credential is not a door-side job), the Staff panel, and the Programme.
+ *
+ * The role is read from the session to decide what to DRAW. It is not what
+ * decides what is ALLOWED — every one of these routes checks the role again on
+ * the server, because this value arrives in a cookie and a volunteer with a
+ * modified browser is not a hypothetical.
+ *
+ * `desk` sits third, immediately after attendance. The two are one workflow:
+ * someone comes to the door and staff check them in; someone else comes to the
+ * door and staff fix their password.
  */
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'scan', label: 'Scan' },
-  { id: 'attendance', label: 'Attendance' },
-  { id: 'desk', label: 'Desk' },
-  { id: 'teams', label: 'Teams' },
-  { id: 'programme', label: 'Programme' },
+const TABS: { id: Tab; label: string; ownerOnly: boolean }[] = [
+  { id: 'scan', label: 'Scan', ownerOnly: false },
+  { id: 'attendance', label: 'Attendance', ownerOnly: false },
+  { id: 'desk', label: 'Desk', ownerOnly: true },
+  { id: 'staff', label: 'Staff', ownerOnly: true },
+  { id: 'teams', label: 'Teams', ownerOnly: false },
+  { id: 'programme', label: 'Programme', ownerOnly: true },
 ]
 
 const PHASES: EventPhase[] = ['registration', 'live', 'completed']
@@ -57,7 +66,6 @@ const AGENDA_STATUSES: AgendaItem['status'][] = ['done', 'live', 'upcoming']
 export function AdminPortalView() {
   const {
     admin,
-    attendees,
     attendance,
     teams,
     event,
@@ -75,6 +83,27 @@ export function AdminPortalView() {
   } = useAdmin()
 
   const [tab, setTab] = useState<Tab>('scan')
+
+  /*
+    Fails SAFE: an unknown or missing role is treated as the narrower one.
+
+    If the server ever sends a role this build does not recognise — a third value
+    added by a later deploy, a stale bundle against a newer API — the correct
+    behaviour is to show a volunteer three tabs, not to show a stranger the Staff
+    panel. Widening by accident is unrecoverable; narrowing is merely annoying.
+  */
+  const isOwner = admin?.role === 'owner'
+  const visibleTabs = TABS.filter((item) => isOwner || !item.ownerOnly)
+
+  /*
+    Guards against being stranded on a tab this role cannot see.
+
+    `tab` is state that outlives a role change: a signed-in owner who is
+    demoted elsewhere keeps their session cookie, the session probe re-reads the
+    row, and the panel comes back as `gate`. Without this the Desk or Staff panel
+    would stay on screen, rendering an empty roster and a 403 on every action.
+  */
+  const activeTab = visibleTabs.some((item) => item.id === tab) ? tab : 'scan'
 
   /*
     No auto-dismiss for the scan confirmation.
@@ -122,20 +151,20 @@ export function AdminPortalView() {
             aria-label="Admin sections"
             className="mt-10 flex flex-wrap gap-px border-2 border-swiss-ink bg-swiss-ink"
           >
-            {TABS.map((item) => (
+            {visibleTabs.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 role="tab"
                 id={`tab-${item.id}`}
-                aria-selected={tab === item.id}
+                aria-selected={activeTab === item.id}
                 aria-controls={`tabpanel-${item.id}`}
                 onClick={() => setTab(item.id)}
                 className={[
                   'min-h-11 flex-1 cursor-pointer px-5 py-3',
                   'text-2xs font-bold uppercase tracking-[0.2em]',
                   'transition-colors duration-150 ease-linear',
-                  tab === item.id
+                  activeTab === item.id
                     ? 'bg-swiss-accent-text text-swiss-paper'
                     : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
                 ].join(' ')}
@@ -157,9 +186,9 @@ export function AdminPortalView() {
             is invisible but still interactive.
           */}
           <div
-            id={`tabpanel-${tab}`}
+            id={`tabpanel-${activeTab}`}
             role="tabpanel"
-            aria-labelledby={`tab-${tab}`}
+            aria-labelledby={`tab-${activeTab}`}
             tabIndex={0}
             /*
               The panel cross-fades on tab change, so swapping sections is
@@ -171,12 +200,12 @@ export function AdminPortalView() {
               and competes with the one interaction that must stay fast.
             */
             className={
-              tab === 'scan'
+              activeTab === 'scan'
                 ? 'mt-8 scroll-mt-28'
                 : 'motion-tab-panel mt-8 scroll-mt-28'
             }
           >
-            {tab === 'scan' ? (
+            {activeTab === 'scan' ? (
               <ScanPanel
               scanning={scanning}
               lastScan={lastScan}
@@ -185,20 +214,27 @@ export function AdminPortalView() {
             />
             ) : null}
 
-            {tab === 'attendance' ? (
+            {/*
+              The log no longer takes the roster. It shows `attendeeName` off each
+              row, which the server joins in, so a `gate` account sees real names
+              without ever being sent the roster it would need to resolve them.
+            */}
+            {activeTab === 'attendance' ? (
               <AttendanceLog
                 records={attendance}
-                attendees={attendees}
                 loading={loadingData}
                 eventName={event?.name ?? 'event'}
+                canExport={isOwner}
               />
             ) : null}
 
-            {tab === 'desk' ? <AttendeeDirectory /> : null}
+            {activeTab === 'desk' ? <AttendeeDirectory /> : null}
 
-            {tab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
+            {activeTab === 'staff' ? <StaffPanel /> : null}
 
-            {tab === 'programme' ? (
+            {activeTab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
+
+            {activeTab === 'programme' ? (
               <ProgrammePanel
                 event={event}
                 loading={loadingData}
@@ -219,16 +255,30 @@ export function AdminPortalView() {
             >
               Refresh
             </Button>
-            <Button
-              variant="primary"
-              size="md"
-              disabled={attendance.length === 0}
-              onClick={() =>
-                downloadAttendanceCsv(attendance, event?.name ?? 'event')
-              }
-            >
-              Export SEN ({attendance.length})
-            </Button>
+            {/*
+              Owner-only.
+
+              This is the SEN export, and it is the one control a `gate` account
+              must not have. It is client-side, so hiding the button is genuinely
+              all the UI can do — which is worth being honest about: a volunteer
+              who can read the attendance log already sees every marked SEN on
+              screen and could write them down. Letting them have the log and
+              forbidding the export is a speed bump, not a wall. The wall is that
+              `/admin/attendees` is refused, so the roster of everyone who has
+              *not* arrived never reaches their device at all.
+            */}
+            {isOwner ? (
+              <Button
+                variant="primary"
+                size="md"
+                disabled={attendance.length === 0}
+                onClick={() =>
+                  downloadAttendanceCsv(attendance, event?.name ?? 'event')
+                }
+              >
+                Export SEN ({attendance.length})
+              </Button>
+            ) : null}
           </div>
         </div>
       </main>
@@ -424,27 +474,38 @@ function ScanConfirmation({
 
 /* ------------------------------------------------------------- attendance */
 
+/**
+ * The attendance log.
+ *
+ * Names come off each row (`attendeeName`, joined in by the server) rather than
+ * being looked up against the roster. That is not a tidy-up: `/admin/attendees`
+ * is owner-only, so a lookup would render this log as a column of dashes for
+ * every volunteer who most needs it. Phone is owner-only too and is simply not
+ * in the table for that reason.
+ */
 function AttendanceLog({
   records,
-  attendees,
   loading,
   eventName,
+  canExport,
 }: {
   records: ReturnType<typeof useAdmin>['attendance']
-  attendees: ReturnType<typeof useAdmin>['attendees']
   loading: boolean
   eventName: string
+  canExport: boolean
 }) {
   const [query, setQuery] = useState('')
-  const byId = useMemo(
-    () => new Map(attendees.map((person) => [person.id, person])),
-    [attendees],
-  )
 
   const filtered = useMemo(() => {
-    const needle = normaliseSen(query)
+    const needle = normaliseSen(query).toLowerCase()
     if (needle === '') return records
-    return records.filter((record) => record.sen.includes(needle))
+    // Matches the SEN or the name — a volunteer at the door knows one or the
+    // other far more often than both.
+    return records.filter(
+      (record) =>
+        record.sen.toLowerCase().includes(needle) ||
+        record.attendeeName.toLowerCase().includes(needle),
+    )
   }, [records, query])
 
   if (loading) return <Skeleton className="h-64 w-full" />
@@ -459,8 +520,8 @@ function AttendanceLog({
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter by SEN"
-          aria-label="Filter attendance by SEN"
+          placeholder="Filter by SEN or name"
+          aria-label="Filter attendance by SEN or name"
           className="h-10 w-full border-2 border-swiss-paper bg-transparent px-3 font-mono text-sm text-swiss-paper placeholder:font-sans placeholder:text-content-muted/80 focus:border-swiss-accent-on-dark focus:outline-none sm:w-64"
         />
       </div>
@@ -478,7 +539,7 @@ function AttendanceLog({
             <table className="w-full border-collapse text-left">
               <thead>
                 <tr className="border-b-2 border-swiss-ink">
-                  {['#', 'SEN', 'Name', 'Phone', 'Time', 'Gate', 'Via'].map((head) => (
+                  {['#', 'SEN', 'Name', 'Time', 'Gate', 'Via'].map((head) => (
                     <th
                       key={head}
                       scope="col"
@@ -490,9 +551,7 @@ function AttendanceLog({
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((record, index) => {
-                  const person = byId.get(record.attendeeId)
-                  return (
+                {filtered.map((record, index) => (
                     <tr
                       key={record.id}
                       style={stagger(index)}
@@ -508,10 +567,7 @@ function AttendanceLog({
                         {record.sen}
                       </th>
                       <td className="px-4 py-3 text-sm font-bold tracking-tight text-swiss-ink">
-                        {person?.name ?? '—'}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-2xs text-content-muted">
-                        {person ? formatPhone(person.phone) : '—'}
+                        {record.attendeeName}
                       </td>
                       <td className="px-4 py-3 font-mono text-2xs text-content-muted">
                         {new Date(record.at).toLocaleTimeString('en-GB', {
@@ -534,16 +590,13 @@ function AttendanceLog({
                         </span>
                       </td>
                     </tr>
-                  )
-                })}
+                ))}
               </tbody>
             </table>
           </div>
 
           <ul className="flex flex-col md:hidden">
-            {filtered.map((record, index) => {
-              const person = byId.get(record.attendeeId)
-              return (
+            {filtered.map((record, index) => (
                 <li
                   key={record.id}
                   style={stagger(index)}
@@ -553,7 +606,7 @@ function AttendanceLog({
                     {record.sen}
                   </p>
                   <p className="mt-1 text-sm font-bold tracking-tight text-swiss-ink">
-                    {person?.name ?? '—'}
+                    {record.attendeeName}
                   </p>
                   <p className="mt-1 font-mono text-2xs text-content-muted">
                     {new Date(record.at).toLocaleTimeString('en-GB', {
@@ -566,19 +619,25 @@ function AttendanceLog({
                     {ADMISSION_LABEL[record.method]}
                   </p>
                 </li>
-              )
-            })}
+            ))}
           </ul>
         </>
       )}
 
-      <p className="border-t-2 border-swiss-ink px-6 py-4 text-2xs font-medium text-content-muted">
-        Export produces one SEN per row for{' '}
-        <span className="font-bold uppercase tracking-[0.15em] text-swiss-ink">
-          {eventName}
-        </span>
-        .
-      </p>
+      {/*
+        The export is owner-only, so the caption that explains it is too. A
+        volunteer being told about an export they cannot perform is worse than
+        silence — it invites them to go looking for it.
+      */}
+      {canExport ? (
+        <p className="border-t-2 border-swiss-ink px-6 py-4 text-2xs font-medium text-content-muted">
+          Export produces one SEN per row for{' '}
+          <span className="font-bold uppercase tracking-[0.15em] text-swiss-ink">
+            {eventName}
+          </span>
+          .
+        </p>
+      ) : null}
     </section>
   )
 }

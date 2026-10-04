@@ -1,5 +1,6 @@
 import type {
   AdminLoginInput,
+  AdminRole,
   AdminSession,
   AdminUser,
   Attendee,
@@ -8,6 +9,7 @@ import type {
   AttendeeSession,
   CheckIn,
   EventInfo,
+  StaffAccount,
   Team,
   Ticket,
 } from './types'
@@ -72,11 +74,14 @@ export interface PortalApi {
 
   /* -- admin: directory & controls --------------------------------------- */
   listAttendees(): Promise<readonly Attendee[]>
-  /** Every attendance record, newest last. */
+  /** Every attendance record, oldest first. Carries the attendee name per row. */
   listAttendance(): Promise<readonly CheckIn[]>
 
   /**
    * Sets an attendee's password. The only password-change path in the portal.
+   *
+   * Owner-only. A `gate` account is refused here as firmly as it is refused the
+   * roster — see `adminSetAttendeePassword` for the reasoning.
    *
    * Identified by SEN rather than phone or name: the SEN is printed on the badge
    * and is already the gate's identifier, so an organiser holding a pass does
@@ -95,6 +100,53 @@ export interface PortalApi {
     id: string,
     patch: Partial<Pick<EventInfo['agenda'][number], 'status'>>,
   ): Promise<EventInfo['agenda'][number]>
+
+  /* -- admin: staff (owner only) ------------------------------------------ */
+
+  /**
+   * Every staff account. Owner-only.
+   *
+   * Exists so a volunteer can be created or disabled on event day without a
+   * redeploy, and so "who else has access" has an answer.
+   */
+  listStaff(): Promise<readonly StaffAccount[]>
+
+  /**
+   * Creates a staff account and returns it.
+   *
+   * The password is chosen here and handed over in person — no invitation, no
+   * reset link, no second channel that could leak a credential.
+   */
+  createStaff(input: {
+    username: string
+    displayName: string
+    password: string
+    role: AdminRole
+  }): Promise<{ staff: StaffAccount }>
+
+  /**
+   * Changes another account's role, password, or whether it is active.
+   *
+   * Revokes that account's live sessions, so a demotion takes effect on the next
+   * request rather than whenever a cookie happens to expire. Every field is
+   * optional; omit one to leave it alone.
+   *
+   * The server refuses to let you change your own access, and refuses to remove
+   * the last active owner.
+   */
+  updateStaff(
+    id: string,
+    patch: { role?: AdminRole; password?: string; active?: boolean },
+  ): Promise<{ staff: StaffAccount }>
 }
 
-export type { AdminUser, Team, EventInfo, Attendee, CheckIn, Ticket }
+export type {
+  AdminUser,
+  AdminRole,
+  StaffAccount,
+  Team,
+  EventInfo,
+  Attendee,
+  CheckIn,
+  Ticket,
+}

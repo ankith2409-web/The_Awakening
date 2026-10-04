@@ -40,12 +40,46 @@ export interface AttendeeSession {
   readonly attendee: Attendee
 }
 
+/**
+ * Staff access levels.
+ *
+ * `owner` runs the event — the roster, credentials, the programme, staff
+ * accounts. `gate` is a volunteer at the door: mark attendance, read the log,
+ * read teams.
+ *
+ * Mirrors the server's list. It is here so the UI can hide what a `gate` account
+ * cannot use — never to decide whether it is allowed. The server checks the role
+ * on every route, because this value arrives in a cookie.
+ */
+export const ADMIN_ROLES = ['owner', 'gate'] as const
+
+export type AdminRole = (typeof ADMIN_ROLES)[number]
+
 /** Admins are entirely separate from attendees — separate login, separate session. */
 export interface AdminUser {
   readonly id: string
   readonly username: string
   readonly displayName: string
+  readonly role: AdminRole
 }
+
+/**
+ * A staff account as the admin portal sees it. Never carries a hash.
+ *
+ * `active: false` is a disabled account rather than a deleted one, so the name
+ * stays attached to audit rows the account already produced.
+ */
+export interface StaffAccount {
+  readonly id: string
+  readonly username: string
+  readonly displayName: string
+  readonly role: AdminRole
+  readonly active: boolean
+  readonly createdAt: string | null
+}
+
+/** The change made to a staff account, for the audit line in the Staff panel. */
+export type StaffAction = 'created' | 'role_changed' | 'reset' | 'deactivated' | 'reactivated'
 
 export interface AdminSession {
   readonly admin: AdminUser
@@ -147,6 +181,15 @@ export interface CheckIn {
   /** Which door it was scanned at. */
   readonly gate: string
   /**
+   * The attendee's name, joined in by the server.
+   *
+   * It rides on the row rather than being resolved client-side against the
+   * roster, because the roster is owner-only. A `gate` account can read this log
+   * but cannot fetch `/admin/attendees`, so the name has to arrive with the row
+   * or the log would show nothing but SENs.
+   */
+  readonly attendeeName: string
+  /**
    * How the attendee was admitted.
    *
    * `qr` means the pass's HMAC signature verified, proving the pass was issued
@@ -177,6 +220,7 @@ export type PortalErrorCode =
   | 'invalid_credentials'
   | 'phone_taken'
   | 'sen_taken'
+  | 'username_taken'
   | 'weak_password'
   | 'invalid_ticket'
   | 'unknown_sen'
@@ -191,6 +235,7 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
   invalid_credentials: 'Those credentials do not match our records.',
   phone_taken: 'That phone number is already registered.',
   sen_taken: 'That SEN is already registered to another attendee.',
+  username_taken: 'That username is already taken.',
   weak_password: 'Password does not meet the minimum requirements.',
   invalid_ticket: 'This ticket is invalid or has already been used.',
   unknown_sen: 'No registered attendee matches that SEN.',

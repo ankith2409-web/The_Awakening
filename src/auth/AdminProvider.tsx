@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { portalApi, PortalError, PORTAL_ERROR_MESSAGES } from '@/api'
 import type {
+  AdminRole,
   AdminUser,
   AgendaItem,
   Attendee,
   CheckIn,
   EventInfo,
+  StaffAccount,
   Team,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
@@ -31,6 +33,8 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     scan produced no confirmation at all.
   */
   const [lastScan, setLastScan] = useState<AdminContextValue['lastScan']>(null)
+  /** Staff accounts. Owner-only — never fetched for a `gate` session. */
+  const [staff, setStaff] = useState<readonly StaffAccount[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -58,10 +62,22 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     setLoadingData(true)
 
-    // AllSettled: one failing panel must not blank the whole admin view.
+    /*
+      The roster is only ever requested by an owner.
+
+      Not just because the server refuses a `gate` account — calling it anyway
+      would put every attendee's name, phone and SEN through the network tab of
+      a volunteer's phone on every refresh. The request is not made.
+
+      `allSettled` throughout, because one failing panel must not blank the whole
+      admin view; the roster is simply one of the promises for some roles and not
+      for others.
+    */
+    const isOwner = admin?.role === 'owner'
+
     const [attendeesResult, attendanceResult, teamsResult, eventResult] =
       await Promise.allSettled([
-        portalApi.listAttendees(),
+        isOwner ? portalApi.listAttendees() : Promise.resolve<readonly Attendee[]>([]),
         portalApi.listAttendance(),
         portalApi.getTeams(),
         portalApi.getEvent(),
@@ -73,7 +89,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     if (eventResult.status === 'fulfilled') setEvent(eventResult.value)
 
     setLoadingData(false)
-  }, [])
+  }, [admin?.role])
 
   useEffect(() => {
     if (status === 'active') void refresh()
@@ -246,6 +262,65 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), [])
   const clearLastScan = useCallback(() => setLastScan(null), [])
 
+  /*
+    Staff management.
+
+    Owner-only by construction: these are only ever reached from the Staff panel,
+    which an owner is the only role that can render. The server refuses them
+    regardless — this is convenience, not the control.
+
+    Every one returns null on failure rather than throwing, matching
+    `scanAttendance`: the panel stays mounted and shows the outcome inline, and
+    the reason goes to the banner.
+  */
+  const refreshStaff = useCallback(async () => {
+    if (admin?.role !== 'owner') return
+    try {
+      setStaff(await portalApi.listStaff())
+    } catch {
+      // A failed staff list must not break the portal; the panel shows what it
+      // has and the banner carries the reason.
+    }
+  }, [admin?.role])
+
+  const createStaff = useCallback(
+    async (input: {
+      username: string
+      displayName: string
+      password: string
+      role: AdminRole
+    }): Promise<StaffAccount | null> => {
+      setError(null)
+      try {
+        const result = await portalApi.createStaff(input)
+        setStaff((current) => [...current, result.staff])
+        return result.staff
+      } catch (cause) {
+        toError(cause)
+        return null
+      }
+    },
+    [toError],
+  )
+
+  const updateStaff = useCallback(
+    async (
+      id: string,
+      patch: { role?: AdminRole; password?: string; active?: boolean },
+    ): Promise<StaffAccount | null> => {
+      setError(null)
+      try {
+        const result = await portalApi.updateStaff(id, patch)
+        setStaff((current) => current.map((person) => (person.id === id ? result.staff : person)))
+        return result.staff
+      } catch (cause) {
+        toError(cause)
+        return null
+      }
+    },
+    [toError],
+  )
+
   const value = useMemo<AdminContextValue>(
     () => ({
       status,
@@ -254,6 +329,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       attendance,
       teams,
       event,
+      staff,
       loadingData,
       scanning,
       error,
@@ -265,6 +341,9 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setAttendeePassword,
       setEventPhase,
       setAgendaStatus,
+      refreshStaff,
+      createStaff,
+      updateStaff,
       clearError,
       clearLastScan,
     }),
@@ -275,6 +354,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       attendance,
       teams,
       event,
+      staff,
       loadingData,
       scanning,
       error,
@@ -286,6 +366,9 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setAttendeePassword,
       setEventPhase,
       setAgendaStatus,
+      refreshStaff,
+      createStaff,
+      updateStaff,
       clearError,
       clearLastScan,
     ],
@@ -297,7 +380,9 @@ export function AdminProvider({ children }: { children: ReactNode }) {
 /** Drops the joined attendee so the stored log stays a flat `CheckIn[]`. */
 function stripAttendee(record: CheckIn & { attendee: Attendee }): CheckIn {
   // `method` is carried through deliberately: the log needs it to show how each
-  // attendee was admitted.
-  const { id, sen, attendeeId, at, gate, method } = record
-  return { id, sen, attendeeId, at, gate, method }
+  // attendee was admitted. `attendeeName` comes from the record rather than from
+  // the joined row so the log renders for a `gate` account, which is never sent
+  // the roster.
+  const { id, sen, attendeeId, at, gate, method, attendeeName } = record
+  return { id, sen, attendeeId, at, gate, method, attendeeName }
 }

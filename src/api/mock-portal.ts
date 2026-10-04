@@ -5,6 +5,7 @@ import {
   PortalError,
   type AdmissionMethod,
   type AdminLoginInput,
+  type AdminRole,
   type AdminSession,
   type AdminUser,
   type AgendaItem,
@@ -15,6 +16,7 @@ import {
   type AttendeeWithSecret,
   type CheckIn,
   type EventInfo,
+  type StaffAccount,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -23,9 +25,26 @@ import type { PortalApi } from '@/domain/portal-api'
 const STORE_KEY = 'gdg-portal.store.v1'
 const LATENCY_MS = 600
 
+/**
+ * A staff account as the mock stores it.
+ *
+ * `role` and `active` are optional on read because a store persisted before roles
+ * existed will not have them, and the default has to be the permissive one or
+ * every existing mock session would lose access on upgrade.
+ */
+interface MockStaff {
+  id: string
+  username: string
+  displayName: string
+  passwordHash: string
+  role?: string
+  active?: boolean
+  createdAt?: string
+}
+
 interface Store {
   attendees: AttendeeWithSecret[]
-  admins: { id: string; username: string; displayName: string; passwordHash: string }[]
+  admins: MockStaff[]
   event: EventInfo
   teams: Team[]
   checkIns: CheckIn[]
@@ -168,9 +187,9 @@ export class MockPortalApi implements PortalApi {
   }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }> {
     await delay(LATENCY_MS)
 
-    if (this.#adminSessionId === null) {
-      throw new PortalError('forbidden', 'Log in to the admin portal.')
-    }
+    // Owner-only, matching the server: changing somebody's credential is not a
+    // door-side job.
+    this.#requireOwner()
 
     const target = normaliseSen(input.sen)
     if (!isValidSen(target)) {
@@ -209,7 +228,10 @@ export class MockPortalApi implements PortalApi {
     const admin = this.#store.admins.find(
       (candidate) => candidate.id === this.#adminSessionId,
     )
-    return admin ? { admin: toPublicAdmin(admin) } : null
+    // A disabled account holding a live id reads as signed out, exactly as the
+    // server treats a disabled account holding a live cookie.
+    if (!admin || admin.active === false) return null
+    return { admin: toPublicAdmin(admin) }
   }
 
   async adminLogin(input: AdminLoginInput): Promise<AdminSession> {
@@ -220,7 +242,7 @@ export class MockPortalApi implements PortalApi {
       (candidate) => candidate.username.toLowerCase() === username,
     )
 
-    if (!admin || admin.passwordHash !== hash(input.password)) {
+    if (!admin || admin.active === false || admin.passwordHash !== hash(input.password)) {
       throw new PortalError('invalid_credentials')
     }
 
@@ -228,6 +250,33 @@ export class MockPortalApi implements PortalApi {
     writeSession('admin', admin.id, true)
 
     return { admin: toPublicAdmin(admin) }
+  }
+
+  /*
+    The role gate, in the mock.
+
+    Mirrors the server so that a permission bug reproduces locally. A mock that
+    let a `gate` account read the roster would hide the exact defect this exists
+    to catch, and the next person to read it would assume the check is server-side
+    and not bother.
+  */
+  #requireOwner(): string {
+    const admin = this.#store.admins.find((candidate) => candidate.id === this.#adminSessionId)
+    if (!admin || admin.active === false) {
+      throw new PortalError('forbidden', 'Log in to the admin portal.')
+    }
+    if (toPublicAdmin(admin).role !== 'owner') {
+      throw new PortalError('forbidden', 'Your account cannot make this change.')
+    }
+    return admin.id
+  }
+
+  #requireAdmin(): string {
+    const admin = this.#store.admins.find((candidate) => candidate.id === this.#adminSessionId)
+    if (!admin || admin.active === false) {
+      throw new PortalError('forbidden', 'Log in to the admin portal.')
+    }
+    return admin.id
   }
 
   async adminLogout(): Promise<void> {
@@ -328,6 +377,10 @@ export class MockPortalApi implements PortalApi {
       at: new Date().toISOString(),
       gate: 'Gate A',
       method,
+      // Set here as well as in `listAttendance`. The scan response is the one
+      // place a `gate` account sees a name, so it has to be on the record
+      // itself rather than joined in only for the log.
+      attendeeName: attendee.name,
     }
 
     this.#store.checkIns.push(record)
@@ -339,20 +392,29 @@ export class MockPortalApi implements PortalApi {
   /* -------------------------------------------------------- admin tools */
 
   async listAttendees(): Promise<readonly Attendee[]> {
-    this.#requireAdmin()
+    this.#requireOwner()
     await delay(LATENCY_MS / 2)
     return this.#store.attendees.map(toPublic)
   }
 
-  /** Every attendance record, oldest first. */
+  /**
+   * Every attendance record, oldest first.
+   *
+   * Available to any staff account, `gate` included, and the attendee name is
+   * joined on here for the same reason the server does it: the log cannot
+   * resolve names without the roster, and the roster is owner-only.
+   */
   async listAttendance(): Promise<readonly CheckIn[]> {
     this.#requireAdmin()
     await delay(LATENCY_MS / 2)
-    return structuredClone(this.#store.checkIns)
+    return this.#store.checkIns.map((checkIn) => {
+      const person = this.#store.attendees.find((a) => a.id === checkIn.attendeeId)
+      return { ...structuredClone(checkIn), attendeeName: person?.name ?? '' }
+    })
   }
 
   async updateAgendaItem(id: string, patch: Partial<AgendaItem>): Promise<AgendaItem> {
-    this.#requireAdmin()
+    this.#requireOwner()
     await delay(LATENCY_MS / 2)
 
     const agenda = this.#store.event.agenda
@@ -371,13 +433,113 @@ export class MockPortalApi implements PortalApi {
   }
 
   async updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
-    this.#requireAdmin()
+    this.#requireOwner()
     await delay(LATENCY_MS / 2)
 
     this.#store.event = { ...this.#store.event, phase }
     persist(this.#store)
 
     return structuredClone(this.#store.event)
+  }
+
+  /* ----------------------------------------------------- staff (owner only) */
+
+  async listStaff(): Promise<readonly StaffAccount[]> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+    return this.#store.admins.map(toPublicStaff)
+  }
+
+  async createStaff(input: {
+    username: string
+    displayName: string
+    password: string
+    role: AdminRole
+  }): Promise<{ staff: StaffAccount }> {
+    this.#requireOwner()
+    await delay(LATENCY_MS)
+
+    const username = input.username.trim()
+    if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) {
+      throw new PortalError(
+        'unknown',
+        'Use 3 to 40 letters, numbers, dot, underscore or hyphen.',
+      )
+    }
+    if (username === '') throw new PortalError('unknown', 'Username is required.')
+    if (input.displayName.trim() === '') {
+      throw new PortalError('unknown', 'Name is required.')
+    }
+    if (
+      this.#store.admins.some((a) => a.username.toLowerCase() === username.toLowerCase())
+    ) {
+      throw new PortalError('username_taken')
+    }
+    const problem = passwordProblem(input.password)
+    if (problem) throw new PortalError('weak_password', problem)
+
+    const created: MockStaff = {
+      id: `adm_${Math.random().toString(36).slice(2, 10)}`,
+      username,
+      displayName: input.displayName.trim(),
+      passwordHash: hash(input.password),
+      role: input.role === 'gate' ? 'gate' : 'owner',
+      active: true,
+      createdAt: new Date().toISOString(),
+    }
+    this.#store.admins = [...this.#store.admins, created]
+    persist(this.#store)
+
+    return { staff: toPublicStaff(created) }
+  }
+
+  async updateStaff(
+    id: string,
+    patch: { role?: AdminRole; password?: string; active?: boolean },
+  ): Promise<{ staff: StaffAccount }> {
+    const adminId = this.#requireOwner()
+    await delay(LATENCY_MS)
+
+    const target = this.#store.admins.find((a) => a.id === id)
+    if (!target) throw new PortalError('not_found')
+    if (target.id === adminId) {
+      throw new PortalError('unknown', 'You cannot change your own access.')
+    }
+
+    const nextRole = patch.role ?? (target.role === 'gate' ? 'gate' : 'owner')
+    const nextActive = patch.active ?? target.active !== false
+
+    const losesOwner =
+      (target.role ?? 'owner') === 'owner' && (nextRole !== 'owner' || !nextActive)
+    if (losesOwner) {
+      const owners = this.#store.admins.filter(
+        (a) => (a.role ?? 'owner') === 'owner' && a.active !== false,
+      )
+      if (owners.length <= 1) {
+        throw new PortalError(
+          'unknown',
+          'This is the only full-access account. Create another before changing this one.',
+        )
+      }
+    }
+
+    if (patch.password !== undefined) {
+      const problem = passwordProblem(patch.password)
+      if (problem) throw new PortalError('weak_password', problem)
+    }
+
+    const updated: MockStaff = {
+      ...target,
+      role: nextRole,
+      active: nextActive,
+      passwordHash: patch.password === undefined ? target.passwordHash : hash(patch.password),
+    }
+    this.#store.admins = this.#store.admins.map((a) => (a.id === id ? updated : a))
+    // A demotion has to take effect now, not when the old cookie expires.
+    if (this.#adminSessionId === id) this.#adminSessionId = null
+    persist(this.#store)
+
+    return { staff: toPublicStaff(updated) }
   }
 
   /* ------------------------------------------------------------- guards */
@@ -388,14 +550,6 @@ export class MockPortalApi implements PortalApi {
     )
     if (!attendee) throw new PortalError('forbidden')
     return attendee
-  }
-
-  /** Every admin-only method funnels through here. */
-  #requireAdmin(): void {
-    const isAdmin = this.#store.admins.some(
-      (candidate) => candidate.id === this.#adminSessionId,
-    )
-    if (!isAdmin) throw new PortalError('forbidden')
   }
 }
 
@@ -410,8 +564,31 @@ function toPublicAdmin(admin: {
   id: string
   username: string
   displayName: string
+  role?: string
 }): AdminUser {
-  return { id: admin.id, username: admin.username, displayName: admin.displayName }
+  return {
+    id: admin.id,
+    username: admin.username,
+    displayName: admin.displayName,
+    // Defaults to `owner`, matching the seeded admin and the database default. A
+    // mock that defaulted to `gate` would lock the demo account out of everything
+    // and look like a broken permission model.
+    role: admin.role === 'gate' ? 'gate' : 'owner',
+  }
+}
+
+/** Mirrors the server's projection: no hash, ever. */
+function toPublicStaff(admin: MockStaff): StaffAccount {
+  return {
+    id: admin.id,
+    username: admin.username,
+    displayName: admin.displayName,
+    role: admin.role === 'gate' ? 'gate' : 'owner',
+    // A store persisted before `active` existed reads as active, matching the
+    // database default rather than locking every existing mock account out.
+    active: admin.active !== false,
+    createdAt: admin.createdAt ?? null,
+  }
 }
 
 function passwordProblem(password: string): string | null {

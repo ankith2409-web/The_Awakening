@@ -41,6 +41,8 @@ const TEST_NAMES = [
   // scripts/test-gate-and-reset.mjs
   'Qr Tester',
   'Bare Tester',
+  // scripts/test-staff-roles.mjs
+  'Gate Probe',
 ]
 
 /*

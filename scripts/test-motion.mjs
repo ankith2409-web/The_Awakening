@@ -110,11 +110,16 @@ for (const [label, pattern] of [
   The one exclusion the organiser asked for. The scan panel is a volunteer
   standing at a door with a phone and a camera preview; a fade there reads as
   lag. Tabs, attendance and teams are fine — the scan panel is not.
+
+  Matched on the structure rather than on the state variable's name. An earlier
+  version grepped for `tab === 'scan'` and reported a regression when that
+  variable was renamed to `activeTab` for role gating — the branch was still
+  there, still correct, and still doing its job.
 */
-const tabpanelClass = admin.match(/className=\{\s*\n?\s*tab === 'scan'[\s\S]{0,220}?\}/)
+const tabpanelClass = admin.match(/className=\{\s*\n?\s*\w*[Tt]ab === 'scan'[\s\S]{0,220}?\}/)
 check(
   'the scan tab panel is explicitly excluded from motion',
-  tabpanelClass !== null && /tab === 'scan'/.test(tabpanelClass[0]) &&
+  tabpanelClass !== null && /=== 'scan'/.test(tabpanelClass[0]) &&
     /'motion-tab-panel/.test(tabpanelClass[0]),
   'the scan panel no longer has its own no-motion branch',
 )

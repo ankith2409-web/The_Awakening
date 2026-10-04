@@ -1,12 +1,14 @@
 import { createContext, useContext } from 'react'
 import type {
   AdmissionMethod,
+  AdminRole,
   AdminUser,
   AgendaItem,
   Attendee,
   CheckIn,
   EventInfo,
   PortalErrorCode,
+  StaffAccount,
   Team,
   Ticket,
 } from '@/domain/types'
@@ -52,11 +54,20 @@ export function useAttendee(): AttendeeContextValue {
 export interface AdminContextValue {
   readonly status: SessionStatus
   readonly admin: AdminUser | null
+  /**
+   * The attendee roster. EMPTY for a `gate` account.
+   *
+   * Not hidden — never fetched. `GET /admin/attendees` returns every name, phone
+   * and SEN, so the provider does not call it unless the signed-in admin is an
+   * owner, and the server refuses it otherwise.
+   */
   readonly attendees: readonly Attendee[]
-  /** Append-only attendance log, oldest first. */
+  /** Append-only attendance log, oldest first. Carries the attendee name per row. */
   readonly attendance: readonly CheckIn[]
   readonly teams: readonly Team[]
   readonly event: EventInfo | null
+  /** Staff accounts. Owner-only; empty for a `gate` session. */
+  readonly staff: readonly StaffAccount[]
   readonly loadingData: boolean
   /** True while a scan is in flight. */
   readonly scanning: boolean
@@ -108,6 +119,29 @@ export interface AdminContextValue {
   ) => Promise<{ name: string; sen: string } | null>
   setEventPhase: (phase: EventInfo['phase']) => Promise<void>
   setAgendaStatus: (id: string, status: AgendaItem['status']) => Promise<void>
+
+  /* -- staff (owner only) ------------------------------------------------- */
+
+  /** Re-reads the staff list. No-op for a `gate` session. */
+  refreshStaff: () => Promise<void>
+  /** Creates an account. Resolves to it, or `null` if refused. */
+  createStaff: (input: {
+    username: string
+    displayName: string
+    password: string
+    role: AdminRole
+  }) => Promise<StaffAccount | null>
+  /**
+   * Changes another account's role, password or active flag.
+   *
+   * Resolves to the updated account, or `null` if refused. The server will not
+   * let you change your own access or remove the last active owner, so a `null`
+   * here is always a rule rather than a fault.
+   */
+  updateStaff: (
+    id: string,
+    patch: { role?: AdminRole; password?: string; active?: boolean },
+  ) => Promise<StaffAccount | null>
   /** Clears the current error banner. */
   clearError: () => void
   /**

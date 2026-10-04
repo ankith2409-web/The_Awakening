@@ -172,9 +172,14 @@ const server = readCode('server/[...route].ts')
 
 check('the panel is rendered by the admin portal', portalView.includes('<AttendeeDirectory />'))
 check('the Desk tab exists', /id: 'desk'/.test(portalView))
+/*
+  Matched on `=== 'desk'` rather than on a particular variable name: this
+  assertion is about the tab actually rendering the panel, and it should not care
+  what the state holding the current tab is called.
+*/
 check(
   'the Desk tab renders the panel, not just a label',
-  /tab === 'desk'[\s\S]{0,80}<AttendeeDirectory/.test(portalView),
+  /=== 'desk'[\s\S]{0,80}<AttendeeDirectory/.test(portalView),
 )
 
 check(
@@ -275,6 +280,35 @@ check(
 check(
   'the attendee is told to ask the desk',
   auth.includes('Forgotten your password') && auth.includes('registration desk'),
+)
+
+/* -- the Desk panel is owner-only ------------------------------------------- */
+
+/*
+  The Desk tab changes somebody's credential. That is not a door-side job, so it
+  must be marked owner-only in the tab table — which is a one-word change that
+  nothing else in the suite would notice.
+
+  The route check is the real control and lives in `test:roles`; this guards the
+  half that is presentation, because a volunteer being shown a tab that 403s on
+  every action is worse than one that is never shown.
+*/
+check(
+  'the Desk tab is marked owner-only',
+  /id: 'desk',[^}]*ownerOnly: true/.test(portalView),
+)
+
+check(
+  'an unrecognised role is treated as the narrower one',
+  /const isOwner = admin\?\.role === 'owner'/.test(portalView),
+  'anything but a literal owner comparison widens by accident',
+)
+
+check(
+  'the roster is never requested for a non-owner',
+  /isOwner \? portalApi\.listAttendees\(\) : Promise\.resolve/.test(
+    readCode('src/auth/AdminProvider.tsx'),
+  ),
 )
 
 report()

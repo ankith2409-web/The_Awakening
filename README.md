@@ -82,8 +82,9 @@ src/
     DashboardView.tsx      QR pass, attendance, event status
     admin/
       AdminLoginView.tsx   The separate staff door
-      AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Teams, Programme
+      AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Staff, Teams, Programme
       AttendeeDirectory.tsx  Find an attendee, set their password
+      StaffPanel.tsx      Create staff accounts, set roles, switch them off
 
 server/                The backend. Deliberately NOT named `api/` — see below.
   [...route].ts          All endpoints, one serverless function
@@ -137,7 +138,8 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | `attendees`                | unique on `phone` and `sen`; both CHECK-constrained            |
 | `attendance`               | append-only; unique index on `attendee_id`                     |
 | `sessions`                 | SHA-256 token hash, `kind`, `expires_at`; expired rows purged |
-| `admins`                   | bcrypt hashes, seeded from environment                        |
+| `admins`                   | bcrypt hashes, `role` (`owner` / `gate`), `active`             |
+| `staff_changes`            | append-only audit of who changed which staff account          |
 | `password_changes`         | append-only audit of admin-mediated password changes          |
 | `password_reset_attempts`  | retired; retained as a record of the old endpoint's probing   |
 | `events`                   | one row                                                       |
@@ -176,19 +178,23 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | `GET`   | `/admin/session`           | —                                     | optional        |
 | `POST`  | `/admin/login`             | `{ username, password }`              | —               |
 | `POST`  | `/admin/logout`            | —                                     | admin           |
-| `GET`   | `/admin/attendees`         | —                                     | admin           |
-| `POST`  | `/admin/attendees/password`| `{ sen, password }`                   | admin           |
+| `GET`   | `/admin/attendees`         | —                                     | **owner**       |
+| `POST`  | `/admin/attendees/password`| `{ sen, password }`                   | **owner**       |
 | `GET`   | `/admin/attendance`        | —                                     | admin           |
 | `POST`  | `/admin/attendance`        | `{ sen }`                             | admin           |
-| `PATCH` | `/admin/agenda/:id`        | `{ status }`                          | admin           |
-| `PATCH` | `/admin/event`             | `{ phase }`                           | admin           |
+| `GET`   | `/admin/staff`             | —                                     | **owner**       |
+| `POST`  | `/admin/staff`             | `{ username, displayName, password, role }` | **owner** |
+| `PATCH` | `/admin/staff`             | `{ id, role?, password?, active? }`   | **owner**       |
+| `PATCH` | `/admin/agenda/:id`        | `{ status }`                          | **owner**       |
+| `PATCH` | `/admin/event`             | `{ phase }`                           | **owner**       |
 
 There is deliberately **no** `/attendee/password/reset` route. See
 [Password recovery is admin-mediated](#password-recovery-is-admin-mediated).
 
 Two independent providers, not one: attendee and admin are **separate doors** with
 separate credentials, and neither can authorise the other. An anonymous call to
-any `/admin/*` route returns 403.
+any `/admin/*` route returns 403, and a `gate` account calling an owner-only route
+gets the same 403 — see [Two kinds of staff account](#two-kinds-of-staff-account).
 
 `POST /admin/attendees/password` returns `{ attendee: { id, name, sen },
 sessionsRevoked: true }`. It is the only password-change path in the portal, and
@@ -337,6 +343,71 @@ Fixed at both ends: the server omits `message` entirely when it would only repea
 the code, and `PortalError` ignores a message identical to its code. Errors that
 carry real wording — `Invalid status.`, `Enter a 10-digit mobile number. You
 entered 9.` — still reach the screen unchanged.
+
+### Two kinds of staff account
+
+"Can open the door" and "can run the event" are different permissions, so they are
+different accounts.
+
+| | `owner` — full access | `gate` — gate only |
+| --- | --- | --- |
+| Mark attendance by scan | yes | yes |
+| Read the attendance log | yes | yes |
+| Read teams | yes | yes |
+| The attendee roster | yes | **403** |
+| Change an attendee's password | yes | **403** |
+| Edit the programme or event phase | yes | **403** |
+| Create, demote or disable staff | yes | **403** |
+| Export SEN | yes | not shown |
+
+A volunteer at the door needs to scan a badge and nothing else. They get three
+tabs and a scan field.
+
+**The roster is refused, not merely hidden.** `GET /admin/attendees` returns every
+attendee's name, phone and SEN in one response — it is the SEN export with an
+extra step. A `gate` account gets 403, and the client never issues the request,
+so the roster of everyone who has *not* arrived does not pass through a volunteer's
+phone on every refresh.
+
+That is why the attendance log carries `attendeeName` on each row, joined in by
+the server. It used to resolve names client-side against the roster, which would
+have rendered the log as a column of dashes for exactly the person who most needs
+to read it. The log's Phone column is gone for the same reason.
+
+### Three things that cannot be got wrong from inside
+
+Enforced on the server, surfaced in the Staff panel rather than reimplemented:
+
+1. **Nobody can change their own access.** Otherwise one misclick signs out the
+   person fixing it, and a self-demotion can remove the last owner.
+2. **The last active `owner` cannot be demoted or disabled.** The database is
+   seeded with one owner; if that account can be turned off there is no way back in
+   short of direct database access.
+3. **Role, password and `active` changes delete that account's live sessions.** A
+   volunteer demoted mid-shift stops being able to scan on the next request, not
+   whenever their cookie happens to expire. A disabled account holding a live
+   cookie reads as signed out.
+
+Creating a gate account, changing its role, resetting its password and switching it
+off are all in the **Staff** tab — no redeploy, so somebody can be given access on
+event day. Every one of those is written to `staff_changes`.
+
+Roles are read from the database on every admin request rather than baked into the
+session, so a demotion takes effect immediately. An unrecognised role is treated as
+the **narrower** one, in both the server and the client: widening by accident is
+unrecoverable, narrowing is merely annoying.
+
+### The export is a speed bump, not a wall
+
+Worth being straight about. A `gate` account can read the attendance log, so it can
+see every marked SEN on screen and could write them down. Hiding the export button
+does not prevent that, and no client-side control could — the data is already in the
+browser.
+
+The real boundary is that `/admin/attendees` is refused, so a volunteer never holds
+the full roster. Letting them see the log while forbidding the export is a
+convenience and a speed bump, not a security boundary. If the log has to be closed
+too, that is a deliberate decision and one line of change.
 
 ### Password recovery is admin-mediated
 
@@ -578,7 +649,8 @@ are zeroed explicitly.
 | `test:api`      | 55          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards  |
 | `test:gate`     | 28          | yes      | Signature verification, the `printed` fallback, admin-mediated recovery and its audit trail |
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
-| `test:desk`     | 40          | no       | Roster search normalisation; the panel's structure; no self-service reset |
+| `test:desk`     | 43          | no       | Roster search normalisation; the panel's structure; no self-service reset |
+| `test:roles`    | 41          | yes      | Every owner-only route refused to `gate`; the three lockout rules; staff audit trail |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
 | `test:landing`  | 40          | no       | Entry points clear a phone; footer destinations; links open safely |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
@@ -608,6 +680,10 @@ the real modules through the real resolver, because the `@/` alias in `src/` is 
 Vite convention bare Node cannot resolve — bundling is what lets them exercise
 shipped code rather than a copy. `test:errors` writes its full verdict table to
 `scripts/error-matrix.csv` (git-ignored).
+
+`test:roles` creates the staff accounts it needs and deletes them afterwards, scoped
+to a `role-probe-` username prefix. It also asserts on the database directly, so it
+needs `DATABASE_URL`; without it the four audit-trail assertions **skip**.
 
 The static suites (`landing`, `motion`, `scan`, `desk`) read the source rather than
 driving a browser, because the defects they guard are structural: state written
@@ -670,14 +746,14 @@ unique index goes with the row.
 
 ### Running the HTTP suites
 
-`test:api`, `test:gate` and `test:copy` all drive a real server. Against a hosted
-deployment, export `TEST_BASE_URL` and the admin credentials:
+`test:api`, `test:gate`, `test:copy` and `test:roles` all drive a real server.
+Against a hosted deployment, export `TEST_BASE_URL` and the admin credentials:
 
 ```bash
 node dev-api.mjs    # local harness, then, in another shell:
 $env:TEST_BASE_URL="http://localhost:3000"
 $env:ADMIN_USERNAME="admin"; $env:ADMIN_PASSWORD="…"
-npm run test:api; npm run test:gate; npm run test:copy
+npm run test:api; npm run test:gate; npm run test:copy; npm run test:roles
 ```
 
 `dev-api.mjs` serves the serverless function on `:3000` with no proxy in the path,
@@ -704,7 +780,9 @@ exists, so `test:gate` no longer needs the workaround.
 - **Sessions are httpOnly cookies.** The client never sees a token, and the
   cookie lifetime and the database row derive from the same day count, so the
   browser cannot forget a session the server still honours.
-- **Admin authorisation is enforced server-side.** The client only hides UI.
+- **Admin authorisation is enforced server-side.** The client only hides UI. Staff
+  roles are re-read from the database on every request, so a demotion takes effect
+  immediately rather than whenever a cookie expires.
 - **There is no unauthenticated password change.** Recovery requires an admin
   session, is identified by SEN, re-applies the registration password rules, and
   revokes every session belonging to the attendee in the same transaction that
@@ -717,14 +795,15 @@ exists, so `test:gate` no longer needs the workaround.
 
 ### Known limits
 
-- **Sign-in is not rate limited.** It is bcrypt-backed, so brute force is
-  expensive but not blocked. Worth adding if the portal is public before the
-  event — and it matters more now, since removing the reset endpoint took away the
-  only unauthenticated route that was ever heavily probed.
-- **An admin can take over any attendee account by design.** Setting a password
+- **Sign-in is not rate limited,** for either door. It is bcrypt-backed, so brute
+  force is expensive but not blocked. Worth adding if the portal is public before
+  the event — and it matters more now, since removing the reset endpoint took away
+  the only unauthenticated route that was ever heavily probed.
+- **An owner can take over any attendee account by design.** Setting a password
   is a privileged act, and the audit trail records who did it rather than
   preventing it. That is inherent to desk-mediated recovery; the compensating
-  control is that the admin session is the only door, not a phone number.
+  control is that an admin session is the only door, not a phone number — and that
+  a `gate` volunteer cannot do it at all.
 - **A password set at the desk is known to two people.** The attendee should
   change it afterwards once a self-service route exists — but there is currently
   none, so in practice it stays as the desk set it. Worth revisiting if the
@@ -737,9 +816,14 @@ exists, so `test:gate` no longer needs the workaround.
 1. **Rotate the database password.** The Neon connection string was exposed in
    plaintext during development. Reset the password in the Neon console, then
    update `DATABASE_URL` in Vercel.
-2. **Rotate the admin password**, which was likewise exposed.
-3. **Replace the placeholder logo** — `public/fetch-ai.svg`.
-4. **Replace the placeholder agenda speakers and teams** in `db/seed.sql`, then
+2. **Rotate the admin password**, which was likewise exposed. It is currently the
+   only account, and it is a full-access one — see below.
+3. **Create a `gate` account per volunteer** from **Staff** in the admin portal.
+   Give them that, not the full-access one. Rotating the owner password first
+   matters, because until there are two owners you cannot test the demotion rules
+   without risking the account you would use to fix a mistake.
+4. **Replace the placeholder logo** — `public/fetch-ai.svg`.
+5. **Replace the placeholder agenda speakers and teams** in `db/seed.sql`, then
    re-run `npm run db:setup`.
 
 ---

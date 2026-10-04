@@ -137,6 +137,82 @@ const publicAttendee = (row: AttendeeRow) => ({
   createdAt: row.created_at,
 })
 
+/**
+ * Staff access levels.
+ *
+ * `owner` runs the event: the roster, credentials, the programme, and staff
+ * accounts. `gate` is a volunteer with a phone at the door: mark attendance, read
+ * the log, read teams. Nothing in the codebase may widen a `gate` session, and
+ * the only way to get the other role is another `owner` granting it.
+ */
+const ADMIN_ROLES = ['owner', 'gate'] as const
+type AdminRole = (typeof ADMIN_ROLES)[number]
+
+/**
+ * Coerces whatever came out of the database into a known role.
+ *
+ * The column has a CHECK constraint, so the database cannot store a third value.
+ * This exists because the default arm is not paranoia about the CHECK — it is
+ * that an unrecognised role must fail CLOSED. A new value silently treated as
+ * `owner` would be a privilege escalation, and this function is what decides
+ * that, so it defaults to the narrower door.
+ */
+function adminRole(value: unknown): AdminRole {
+  return value === 'gate' ? 'gate' : ADMIN_ROLES.includes(value as AdminRole) ? 'owner' : 'gate'
+}
+
+type StaffRow = {
+  id: string
+  username: string
+  display_name: string
+  role: string
+  active: boolean
+  created_at?: string
+  createdAt?: string
+}
+
+/**
+ * A staff account, minus the hash.
+ *
+ * `password_hash` is never selected on this path in the first place, so this is
+ * belt and braces rather than the protection — but a projection function that
+ * forgets to strip a secret is the kind of thing that only gets noticed after a
+ * leak.
+ */
+const publicStaff = (row: StaffRow) => ({
+  id: row.id,
+  username: row.username,
+  displayName: row.display_name,
+  role: adminRole(row.role),
+  active: row.active,
+  createdAt: row.createdAt ?? row.created_at ?? null,
+})
+
+/**
+ * Staff usernames.
+ *
+ * Narrower than attendee SENs on purpose: this is a credential namespace that a
+ * human types at a desk, so it has to survive being typed by someone reading it
+ * aloud, and it must not be confusable with an attendee's name.
+ */
+function staffUsernameProblem(value: string): string | null {
+  if (value === '') return 'Username is required.'
+  if (value.length < 3) return 'Use at least 3 characters.'
+  if (value.length > 40) return 'Use 40 characters or fewer.'
+  if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
+    return 'Use letters, numbers, dot, underscore or hyphen.'
+  }
+  return null
+}
+
+/** A display name is what other staff see, so it must not be an empty string. */
+function staffDisplayNameProblem(value: string): string | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return 'Name is required.'
+  if (trimmed.length > 60) return 'Use 60 characters or fewer.'
+  return null
+}
+
 async function route(
   req: VercelRequest,
   res: VercelResponse,
@@ -309,9 +385,41 @@ async function route(
   /* -- admin ------------------------------------------------------------ */
   if (group === 'admin') {
     const session = await currentSession(req, 'admin')
+
+    /*
+      Two levels, and the distinction is the whole point of this file.
+
+      `requireAdmin` proves only that the caller is staff. It is not enough on its
+      own for anything that hands out data or changes state: a `gate` account is
+      a volunteer with a phone at the door, and it must not be able to read the
+      roster, export SENs, edit the programme or reset a credential.
+
+      `requireOwner` is the narrower door. Both are enforced here rather than in
+      the client, because the client is a suggestion and a session cookie is not.
+    */
     const requireAdmin = () => {
       if (!session) throw forbidden('Log in to the admin portal.')
       return session.subject_id
+    }
+
+    const requireOwner = () => {
+      const id = requireAdmin()
+      if (!adminIsOwner) throw forbidden('Your account cannot make this change.')
+      return id
+    }
+
+    /*
+      The role is read once per request from the row the session already points
+      at, and re-read rather than cached in the session token: a demotion has to
+      take effect on the next request, not whenever the holder next logs in.
+    */
+    let adminIsOwner = false
+    if (session) {
+      const { rows } = await db().query<{ role: string }>(
+        'select role from admins where id = $1 and active',
+        [session.subject_id],
+      )
+      adminIsOwner = rows[0]?.role === 'owner'
     }
 
     switch (key) {
@@ -321,13 +429,30 @@ async function route(
           id: string
           username: string
           display_name: string
-        }>('select id, username, display_name from admins where id = $1', [
+          role: string
+        }>('select id, username, display_name, role from admins where id = $1 and active', [
           session.subject_id,
         ])
         const row = rows[0]
+        // A disabled account holding a live cookie is treated as signed out.
         if (!row) return json(res, 200, null)
         return json(res, 200, {
-          admin: { id: row.id, username: row.username, displayName: row.display_name },
+          admin: {
+            id: row.id,
+            username: row.username,
+            displayName: row.display_name,
+            /*
+              The role belongs here, not only on the login response.
+
+              This is the endpoint the client calls on every page load to decide
+              whether anyone is signed in. Omitting the role made a signed-in
+              owner who refreshed the page resolve as `undefined`, which the UI
+              treats as the narrower role — so the Staff panel, the Desk and the
+              export all vanished until they signed out and back in. The tabs came
+              back; the ability to fix the problem did not.
+            */
+            role: adminRole(row.role),
+          },
         })
       }
 
@@ -336,23 +461,44 @@ async function route(
         const username = requireString(body, 'username').trim()
         const password = requireString(body, 'password')
 
+        /*
+          Matched on `lower(username)`, not `username`.
+
+          Staff accounts get typed by hand on event day, and "Ankith" versus
+          "ankith" failing to match looks exactly like a wrong password. The
+          unique index is case-insensitive too, so there is never more than one
+          account these could both be talking about.
+        */
         const { rows } = await db().query<{
           id: string
           username: string
           display_name: string
           password_hash: string
-        }>('select id, username, display_name, password_hash from admins where username = $1', [
-          username,
-        ])
+          role: string
+          active: boolean
+        }>(
+          'select id, username, display_name, password_hash, role, active from admins where lower(username) = lower($1)',
+          [username],
+        )
         const row = rows[0]
 
-        if (!row || !(await verifyPassword(password, row.password_hash))) {
+        /*
+          A disabled account gives the same answer as a wrong password, on purpose.
+          Saying "this account is disabled" tells someone probing usernames which
+          ones exist, and tells a volunteer who left that their account still works.
+        */
+        if (!row || !row.active || !(await verifyPassword(password, row.password_hash))) {
           throw unauthorized('Those credentials do not match our records.')
         }
 
         await createSession(res, 'admin', row.id, true)
         return json(res, 200, {
-          admin: { id: row.id, username: row.username, displayName: row.display_name },
+          admin: {
+            id: row.id,
+            username: row.username,
+            displayName: row.display_name,
+            role: adminRole(row.role),
+          },
         })
       }
 
@@ -361,8 +507,17 @@ async function route(
         return json(res, 200, { ok: true })
       }
 
+      /*
+        The roster. Owner-only.
+
+        This route is the reason the `gate` role exists: it returns every
+        attendee's name, phone and SEN in one response, which is the SEN export
+        with an extra step. A volunteer at the gate does not need it — the scan
+        response names whoever just checked in — so it is not available to them,
+        and the client never calls it on their behalf.
+      */
       case 'GET /admin/attendees': {
-        requireAdmin()
+        requireOwner()
         const { rows } = await db().query<AttendeeRow>(
           'select id, name, phone, sen, password_hash, created_at from attendees order by created_at',
         )
@@ -388,7 +543,7 @@ async function route(
         So either all three happen or none do.
       */
       case 'POST /admin/attendees/password': {
-        const adminId = requireAdmin()
+        const adminId = requireOwner()
         const body = await readJson<Record<string, unknown>>(req)
         const sen = normaliseSen(requireString(body, 'sen'))
         const password = requireString(body, 'password')
@@ -450,10 +605,31 @@ async function route(
         })
       }
 
+      /*
+        The attendance log. Available to every staff account, `gate` included —
+        "has this person already been through the door" is a gate question, not a
+        management one.
+
+        The attendee's NAME rides along on each row.
+
+        It used to be resolved client-side against `GET /admin/attendees`, which
+        is exactly the roster a volunteer must not have. Carrying one name per
+        row is what the log displays anyway; making them fetch the whole roster
+        to see it would have meant handing them the roster.
+      */
       case 'GET /admin/attendance': {
         requireAdmin()
         const { rows } = await db().query(
-          'select id, sen, attendee_id as "attendeeId", gate, at, method from attendance order by at',
+          `select t.id,
+                  t.sen,
+                  t.attendee_id as "attendeeId",
+                  t.gate,
+                  t.at,
+                  t.method,
+                  a.name as "attendeeName"
+             from attendance t
+             join attendees a on a.id = t.attendee_id
+            order by t.at`,
         )
         return json(res, 200, rows)
       }
@@ -513,7 +689,7 @@ async function route(
       }
 
       case 'PATCH /admin/event': {
-        requireAdmin()
+        requireOwner()
         const body = await readJson<Record<string, unknown>>(req)
         const phase = body.phase
         if (phase !== 'registration' && phase !== 'live' && phase !== 'completed') {
@@ -527,11 +703,230 @@ async function route(
         requireAdmin()
         return sendEvent(res)
       }
+
+      /* -- staff management. Owner-only, all of it ------------------------- */
+
+      case 'GET /admin/staff': {
+        requireOwner()
+        const { rows } = await db().query(
+          `select id, username, display_name as "displayName", role, active,
+                  to_char(created_at at time zone 'utc', 'YYYY-MM-DD HH24:MI') as "createdAt"
+             from admins
+            order by active desc, role, username`,
+        )
+        return json(res, 200, rows)
+      }
+
+      /*
+        Create a staff account.
+
+        The password is typed by the owner and handed over in person. There is no
+        invitation email and no reset link — this is the same desk-mediated
+        decision made for attendees, and it means one fewer channel that could
+        leak a credential.
+
+        Username uniqueness is enforced by the index on `lower(username)`, so a
+        collision comes back as a constraint error rather than a silent second
+        account. Catching it here is what turns "something went wrong" into "that
+        username is taken".
+      */
+      case 'POST /admin/staff': {
+        const adminId = requireOwner()
+        const body = await readJson<Record<string, unknown>>(req)
+        const username = requireString(body, 'username').trim()
+        const displayName = requireString(body, 'displayName').trim()
+        const password = requireString(body, 'password')
+        const role = body.role === 'gate' ? 'gate' : 'owner'
+
+        const usernameProblem = staffUsernameProblem(username)
+        if (usernameProblem) throw unprocessable('unknown', usernameProblem)
+
+        const displayProblem = staffDisplayNameProblem(displayName)
+        if (displayProblem) throw unprocessable('unknown', displayProblem)
+
+        // Identical rule to attendee registration, deliberately. An owner should
+        // not be able to mint a staff credential weaker than a password the
+        // portal would refuse for anyone else.
+        const problem = passwordProblem(password)
+        if (problem) throw unprocessable('weak_password', problem)
+
+        const { rows: clash } = await db().query(
+          'select 1 from admins where lower(username) = lower($1)',
+          [username],
+        )
+        if (clash.length > 0) {
+          throw conflict('username_taken')
+        }
+
+        const client = await db().connect()
+        let created
+        try {
+          await client.query('begin')
+          const { rows } = await client.query<{
+            id: string
+            username: string
+            display_name: string
+            role: string
+            active: boolean
+            created_at: string
+          }>(
+            `insert into admins (username, display_name, password_hash, role)
+             values ($1, $2, $3, $4)
+             returning id, username, display_name, role, active, created_at`,
+            [username, displayName, await hashPassword(password), role],
+          )
+          created = rows[0]
+          await client.query(
+            `insert into staff_changes (admin_id, subject_id, action, detail)
+             values ($1, $2, 'created', $3)`,
+            [adminId, created.id, `${created.username} as ${role}`],
+          )
+          await client.query('commit')
+        } catch (cause) {
+          await client.query('rollback')
+          throw cause
+        } finally {
+          client.release()
+        }
+
+        return json(res, 201, {
+          staff: publicStaff(created),
+        })
+      }
+
+      /*
+        Change another account's role, password, or whether it is active.
+
+        Three invariants, each of which exists because breaking it is unrecoverable
+        from inside the portal:
+
+          1. You cannot disable yourself. Otherwise one misclick signs the person
+             fixing it out.
+          2. You cannot change your own role. Otherwise you can demote the last
+             owner and leave nobody able to promote anyone back.
+          3. The last active owner cannot be demoted or disabled. This is the
+             bootstrap guarantee — the database is seeded with one owner, and if
+             that account can be turned off there is no way back in short of the
+             database.
+
+        Password changes and role changes both drop that account's live sessions.
+        A volunteer who is demoted mid-shift must stop being able to scan
+        immediately, not whenever their cookie happens to expire.
+      */
+      case 'PATCH /admin/staff': {
+        const adminId = requireOwner()
+        const body = await readJson<Record<string, unknown>>(req)
+        const targetId = requireString(body, 'id').trim()
+
+        const { rows: found } = await db().query<{
+          id: string
+          username: string
+          role: string
+          active: boolean
+        }>('select id, username, role, active from admins where id = $1', [targetId])
+        const target = found[0]
+        if (!target) throw notFound()
+
+        if (target.id === adminId) {
+          throw unprocessable('unknown', 'You cannot change your own access.')
+        }
+
+        const nextRole = body.role === undefined ? target.role : body.role
+        if (nextRole !== 'owner' && nextRole !== 'gate') {
+          throw badRequest('unknown', 'Invalid role.')
+        }
+
+        const nextActive =
+          body.active === undefined ? target.active : body.active === true
+
+        const losesOwner = target.role === 'owner' && (nextRole !== 'owner' || !nextActive)
+        if (losesOwner) {
+          const { rows: owners } = await db().query(
+            `select count(*)::int as n from admins where role = 'owner' and active`,
+          )
+          if ((owners[0]?.n ?? 0) <= 1) {
+            throw unprocessable(
+              'unknown',
+              'This is the only full-access account. Create another before changing this one.',
+            )
+          }
+        }
+
+        const nextPassword = body.password === undefined ? null : requireString(body, 'password')
+        if (nextPassword !== null) {
+          const problem = passwordProblem(nextPassword)
+          if (problem) throw unprocessable('weak_password', problem)
+        }
+
+        const client = await db().connect()
+        let updated
+        try {
+          await client.query('begin')
+          const { rows } = await client.query<{
+            id: string
+            username: string
+            display_name: string
+            role: string
+            active: boolean
+          }>(
+            `update admins
+                set role = $2,
+                    active = $3,
+                    password_hash = coalesce($4, password_hash)
+              where id = $1
+           returning id, username, display_name, role, active`,
+            [
+              target.id,
+              nextRole,
+              nextActive,
+              nextPassword === null ? null : await hashPassword(nextPassword),
+            ],
+          )
+          updated = rows[0]
+
+          // Everything that privileges this account ends here: the old password's
+          // sessions and any cookie already in a browser.
+          await client.query(`delete from sessions where kind = 'admin' and subject_id = $1`, [
+            target.id,
+          ])
+
+          if (nextPassword !== null) {
+            await client.query(
+              `insert into staff_changes (admin_id, subject_id, action, detail)
+               values ($1, $2, 'reset', 'password changed')`,
+              [adminId, target.id],
+            )
+          }
+          if (nextRole !== target.role) {
+            await client.query(
+              `insert into staff_changes (admin_id, subject_id, action, detail)
+               values ($1, $2, 'role_changed', $3)`,
+              [adminId, target.id, `${target.role} -> ${nextRole}`],
+            )
+          }
+          if (nextActive !== target.active) {
+            await client.query(
+              `insert into staff_changes (admin_id, subject_id, action, detail)
+               values ($1, $2, $3, $4)`,
+              [adminId, target.id, nextActive ? 'reactivated' : 'deactivated', target.username],
+            )
+          }
+
+          await client.query('commit')
+        } catch (cause) {
+          await client.query('rollback')
+          throw cause
+        } finally {
+          client.release()
+        }
+
+        return json(res, 200, { staff: publicStaff(updated) })
+      }
     }
 
     // PATCH /admin/agenda/:id
     if (method === 'PATCH' && group === 'admin' && action === 'agenda' && rest[0]) {
-      requireAdmin()
+      requireOwner()
       const id = rest[0]
       const body = await readJson<Record<string, unknown>>(req)
       const status = body.status

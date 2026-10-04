@@ -20,7 +20,8 @@
     "test:copy": "esbuild scripts/test-api-error-copy.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/test-api-error-copy.mjs --log-level=error && node node_modules/.tmp/test-api-error-copy.mjs",
     "load:test": "node scripts/load-test.mjs",
     "test:desk": "esbuild scripts/test-desk-panel.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --outfile=node_modules/.tmp/test-desk-panel.mjs --log-level=error && node node_modules/.tmp/test-desk-panel.mjs",
-    "scan:secrets": "node scripts/prepublish-scan.mjs"
+    "scan:secrets": "node scripts/prepublish-scan.mjs",
+    "test:roles": "node scripts/test-staff-roles.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

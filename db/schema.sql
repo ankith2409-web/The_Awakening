@@ -43,14 +43,47 @@ create index if not exists attendees_sen_lower_idx on attendees (upper(sen));
 
 -- -----------------------------------------------------------------------------
 -- Admins — a separate door from attendees, with separate credentials.
+--
+-- Two roles, because "can open the door" and "can run the event" are different
+-- permissions. A volunteer at the gate needs to scan a badge and nothing else;
+-- they do not need to change a credential, edit the programme, or walk away with
+-- a spreadsheet of every registered SEN.
+--
+--   owner — everything, including staff management. Cannot be removed.
+--   gate  — mark attendance, read the attendance log, read teams. Nothing else.
+--
+-- The default is `owner` on purpose: an account that existed before roles did
+-- must not silently lose the ability to fix anything. Downgrading is an explicit
+-- act through the Staff panel.
+--
+-- `active` rather than a delete, so disabling a volunteer who has walked off site
+-- does not erase the name attached to audit rows they already produced.
 -- -----------------------------------------------------------------------------
 create table if not exists admins (
   id            uuid primary key default gen_random_uuid(),
   username      text        not null unique,
   display_name  text        not null,
   password_hash text        not null,
+  role          text        not null default 'owner',
+  active        boolean     not null default true,
   created_at    timestamptz not null default now()
 );
+
+-- Same upgrade-in-place reasoning as the SEN constraint above: a `create table if
+-- not exists` is a no-op on an existing table, so without these an already-seeded
+-- database would keep the old shape and every query would fail on a missing
+-- column.
+alter table admins add column if not exists role text not null default 'owner';
+alter table admins add column if not exists active boolean not null default true;
+
+alter table admins drop constraint if exists admins_role;
+alter table admins
+  add constraint admins_role check (role in ('owner', 'gate'));
+
+-- Usernames are compared case-insensitively at login, so the unique index has to
+-- be too — otherwise "Ankith" and "ankith" are two accounts and one of them
+-- cannot be told apart in a list of staff.
+create unique index if not exists admins_username_lower_idx on admins (lower(username));
 
 -- -----------------------------------------------------------------------------
 -- Sessions
@@ -138,6 +171,30 @@ create table if not exists password_changes (
 
 create index if not exists password_changes_attendee_idx
   on password_changes (attendee_id, at desc);
+
+-- -----------------------------------------------------------------------------
+-- Staff changes
+--
+-- Who created, demoted or disabled which staff account, and who authorised it.
+--
+-- Same reasoning as password_changes, applied to the other privileged act in the
+-- portal. A volunteer account is a credential that can mark anyone present, so
+-- "how did this account come to exist" has to have an answer after the fact.
+--
+-- `action` is the verb that was applied: 'created', 'role_changed', 'reset',
+-- 'deactivated', 'reactivated'. Append-only.
+-- -----------------------------------------------------------------------------
+create table if not exists staff_changes (
+  id         uuid primary key default gen_random_uuid(),
+  admin_id   uuid        not null,
+  subject_id uuid        not null,
+  action     text        not null,
+  detail     text,
+  at         timestamptz not null default now()
+);
+
+create index if not exists staff_changes_subject_idx
+  on staff_changes (subject_id, at desc);
 
 -- -----------------------------------------------------------------------------
 -- Password-reset attempts

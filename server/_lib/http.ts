@@ -14,6 +14,7 @@ export type ApiErrorCode =
   | 'invalid_credentials'
   | 'phone_taken'
   | 'sen_taken'
+  | 'username_taken'
   | 'weak_password'
   | 'invalid_ticket'
   | 'unknown_sen'
