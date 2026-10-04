@@ -291,8 +291,8 @@ function Hero({
           <p className="hero-anim-rise mt-3 max-w-md text-2xs font-medium uppercase leading-relaxed tracking-[0.15em] text-content-muted sm:mt-4">
             {signedIn
               ? attendeeName
-                ? `Signed in as ${attendeeName}.`
-                : 'Signed in.'
+                ? `Registered as ${attendeeName}.`
+                : 'Already registered.'
               : 'Already registered? Log in here.'}
           </p>
 

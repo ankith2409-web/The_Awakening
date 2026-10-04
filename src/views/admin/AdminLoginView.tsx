@@ -76,7 +76,7 @@ export function AdminLoginView() {
       description="Restricted area. Staff credentials are issued separately from attendee registration and are not transferable."
       footer={
         <SlideNavLink to="/login" className="border-b-2 border-swiss-ink pb-1">
-          ← Attendee sign in
+          ← Attendee log in
         </SlideNavLink>
       }
     >

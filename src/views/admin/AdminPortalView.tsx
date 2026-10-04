@@ -149,15 +149,24 @@ export function AdminPortalView() {
             Operations
           </span>
           <div className="hidden text-right sm:block">
+            {/*
+              "Operating as", not "Signed in".
+
+              Two reasons. The house rule is "Log in", never "Sign in", and this
+              masthead had been the one place that broke it. But the label was also
+              wrong on its own terms: it described a session state rather than
+              saying whose session this is, which is the thing somebody at a desk
+              with a shared credential actually needs to know before they act.
+            */}
             <p className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-              Signed in
+              Operating as
             </p>
             <p className="text-sm font-black tracking-tight text-swiss-ink">
               {admin?.displayName ?? 'Staff'}
             </p>
           </div>
           <Button variant="secondary" size="md" onClick={() => void logout()}>
-            Sign out
+            Log out
           </Button>
         </div>
       </header>

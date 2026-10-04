@@ -226,7 +226,7 @@ export function AttendeeDirectory() {
         </span>{' '}
         is handled here and nowhere else. Set the new password with the attendee
         watching, then read it back to them. They cannot change it themselves,
-        and any existing session on their device is signed out by this.
+        and any existing session on their device is ended by this.
       </p>
 
       {matches.length === 0 ? (
@@ -320,7 +320,7 @@ function DirectoryRow({
             {person.name}
             {/*
               Was a bare "IN". That was ambiguous even before per-day attendance —
-              it sat under a masthead reading "SIGNED IN", so it could plausibly be
+              it sat under a masthead reading "OPERATING AS", so it could plausibly be
               read as a session state. Now it names the days, and the title spells
               it out for anyone who has to ask.
 

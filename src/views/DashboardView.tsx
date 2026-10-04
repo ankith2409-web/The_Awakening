@@ -30,8 +30,9 @@ export function DashboardView() {
         <div className="flex items-center gap-3 sm:gap-4">
           {attendee ? (
             <div className="hidden text-right sm:block">
+              {/* "Signed in" broke the house rule that the verb is "log", not "sign". */}
               <p className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-                Signed in
+                Registered as
               </p>
               <p className="text-sm font-black tracking-tight text-swiss-ink">
                 {attendee.name}
@@ -39,7 +40,7 @@ export function DashboardView() {
             </div>
           ) : null}
           <Button variant="secondary" size="md" onClick={() => void logout()}>
-            Sign out
+            Log out
           </Button>
         </div>
       </header>

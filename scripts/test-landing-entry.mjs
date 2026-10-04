@@ -18,7 +18,7 @@
  *   node --experimental-strip-types scripts/test-landing-entry.mjs
  */
 
-import { count, declaration, readCode, tally } from './_source.mjs'
+import { count, declaration, readCode, tally, walk } from './_source.mjs'
 
 const VIEW = 'src/views/LandingView.tsx'
 const BUTTON = 'src/components/Button.tsx'
@@ -126,7 +126,7 @@ check(
 )
 check(
   'the caption is not nonsense for a signed-in visitor',
-  /signedIn[\s\S]{0,200}Signed in as/.test(actions),
+  /signedIn[\s\S]{0,200}Registered as/.test(actions),
   'a signed-in visitor is told "Already registered? Log in here." next to their own pass',
 )
 
@@ -202,7 +202,34 @@ check(
   'the top-right Log in is back, which was asked to be removed',
 )
 
-/* -- 6. touch targets are unharmed ------------------------------------------ */
+/* -- 6. the auth verb is "log", everywhere ----------------------------------- */
+
+/*
+  A house rule, and one that was quietly broken in five places: the admin login's
+  cross-link read "Attendee sign in", both mastheads said "Signed in", both logout
+  buttons said "Sign out", and the attendee remember-me checkbox said "Keep me
+  signed in". None of them was a functional bug, which is exactly why they survived
+  — nothing fails when the verb changes.
+
+  So it is asserted across `src/` rather than eyeballed. Comments are stripped
+  first, because the comments that *explain* this rule necessarily quote the banned
+  phrases, and matching those would make the check impossible to satisfy.
+*/
+const BANNED = /\bsign(?:ed)?\s+(?:in|out|on)\b/i
+
+for (const file of walk('src')) {
+  const body = readCode(file)
+  if (!body) continue
+
+  const hit = body.split('\n').find((line) => BANNED.test(line))
+  check(
+    `"${file}" uses "log in / log out", never "sign in"`,
+    !hit,
+    hit ? `found: ${hit.trim().slice(0, 70)}` : undefined,
+  )
+}
+
+/* -- 7. touch targets are unharmed ------------------------------------------ */
 
 /*
   Three CTAs now, not two: "Your pass" for a signed-in visitor alongside the

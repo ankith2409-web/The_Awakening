@@ -221,7 +221,22 @@ async function main() {
   */
   const denied = [
     ['GET', '/admin/attendees', undefined, 'the roster'],
-    ['POST', '/admin/attendees/password', { sen: 'A866175000000', password: PROBE_PASSWORD }, 'changing a password'],
+    /*
+      A synthetic SEN, deliberately.
+
+      This used to be a real registered one, which put an actual attendee's number
+      in a published repository for no benefit. It does not need to exist: the role
+      check runs before any lookup, so 403 is returned regardless. And a SEN that
+      does NOT resolve makes the assertion stricter, not weaker — if the route ever
+      stopped refusing by role, it would answer 404 and this check would fail
+      loudly instead of quietly passing.
+    */
+    [
+      'POST',
+      '/admin/attendees/password',
+      { sen: testSen('NOREGISTRY'), password: PROBE_PASSWORD },
+      'changing a password',
+    ],
     ['PATCH', '/admin/event', { phase: 'live' }, 'the event phase'],
     ['PATCH', '/admin/agenda/ag_01', { status: 'live' }, 'the agenda'],
   ]

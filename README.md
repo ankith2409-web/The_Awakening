@@ -725,6 +725,28 @@ Three details that are each a small way this can go wrong:
 - **Roles sit beside names, not inside link text**, so the accessible name stays
   the person's name.
 
+### The verb is "log", never "sign"
+
+Every authentication verb in the product reads **log in** / **log out**. Not "sign
+in", not "signed in", not "sign out" — and not "signed out" in prose either. A
+mixed pair ("Log in" on one screen, "Sign out" on the next) reads as a bug even
+when nobody can point at what is wrong with it.
+
+This was broken in six places at once and nothing failed, which is why it is now a
+test rather than a habit. `test:landing` walks every `.ts`/`.tsx` file under `src/`,
+strips comments, and fails on any surviving `sign in` / `sign out` / `sign on`. The
+comment-stripping matters: the comments that *explain* this rule necessarily quote
+the banned phrases, so a naive match would be impossible to satisfy.
+
+Three related labels came out of the same sweep, because the same reasoning applies
+to each:
+
+| Instead of      | It says                        | Why                                                     |
+| --------------- | ------------------------------ | ------------------------------------------------------- |
+| "Signed in"     | "Operating as" (admin)        | Names whose session this is, not a session state         |
+| "Signed in"     | "Registered as" (attendee)    | The fact that is actually true, and that is not a session |
+| "Signed in as"  | "Registered as"                | Same, on the landing caption                             |
+
 ### Design system
 
 Swiss International. All tokens live in one `@theme` block in
@@ -819,7 +841,7 @@ are zeroed explicitly.
 
 ## Testing
 
-386 assertions across 13 suites, plus a 250-input error matrix.
+423 assertions across 13 suites, plus a 250-input error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
@@ -832,7 +854,7 @@ are zeroed explicitly.
 | `test:perday`   | 28          | yes      | One record per attendee per day; both days recorded; the lock on future days |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
-| `test:landing`  | 40          | no       | Entry points clear a phone; footer destinations; links open safely |
+| `test:landing`  | 77          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/` |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
@@ -991,7 +1013,7 @@ credentials:
 ```bash
 node dev-api.mjs    # local harness, then, in another shell:
 $env:TEST_BASE_URL="http://localhost:3000"
-$env:ADMIN_USERNAME="admin"; $env:ADMIN_PASSWORD="…"
+$env:ADMIN_USERNAME="event.control"; $env:ADMIN_PASSWORD="…"
 npm run test:api; npm run test:gate; npm run test:copy
 npm run test:roles; npm run test:perday
 ```
@@ -1061,11 +1083,20 @@ exists, so `test:gate` no longer needs the workaround.
 1. **Rotate the database password.** The Neon connection string was exposed in
    plaintext during development. Reset the password in the Neon console, then
    update `DATABASE_URL` in Vercel.
-2. **Rotate the admin password**, which was likewise exposed. It is currently the
-   only account, and it is a full-access one — see below.
-3. **Share the gate credential, not the owner one.** There is exactly one, and it
-   is provisioned by `node scripts/manage-staff.mjs add gate "Registration Desk"
-   gate`. Whoever is on the door uses that; nobody else should be holding it.
+2. **Store both staff passwords in a password manager.** They were shown once at
+   provisioning and are not recoverable — only their bcrypt hashes exist. Everything
+   ever pasted in chat during development has been rotated and retired.
+3. **Share the gate credential, not the owner one.** There is exactly one of each,
+   both named for the role rather than the person holding it:
+
+   | Username       | Role   | Display name       | Reaches                                   |
+   | -------------- | ------ | ------------------ | ----------------------------------------- |
+   | `event.control` | owner | Event Operations   | Everything, including the roster and password resets |
+   | `gate`          | gate  | Registration Desk  | Scan, the attendance log, the teams — nothing else |
+
+   Whoever is on the door gets `gate`. Nobody else should hold it, and no personal
+   name appears on either account — the audit trail records a role, which is also
+   what makes a shared desk credential defensible.
 4. **Replace the placeholder logo** — `public/fetch-ai.svg`.
 5. **Replace the placeholder agenda speakers and teams** in `db/seed.sql`, then
    re-run `npm run db:setup`.

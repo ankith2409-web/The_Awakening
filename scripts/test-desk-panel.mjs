@@ -188,8 +188,8 @@ check(
 )
 
 check(
-  'the panel says the attendee is signed out by the change',
-  panel.includes('signed out by this'),
+  'the panel says the attendee is logged out by the change',
+  panel.includes('ended by this'),
 )
 
 check(

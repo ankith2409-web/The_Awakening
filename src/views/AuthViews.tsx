@@ -155,7 +155,7 @@ export function LoginView() {
     <AuthShell
       logo={<EventMark />}
       eyebrow="01. Access"
-      title="Log In"
+      title="Log in"
       description="Enter the name and mobile number you registered with. Your entry pass is issued the moment you log in."
       footer={
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -221,7 +221,7 @@ export function LoginView() {
         />
 
         <Checkbox
-          label="Keep me signed in on this device"
+          label="Keep me logged in on this device"
           name="remember"
           checked={remember}
           onChange={(event) => setRemember(event.target.checked)}

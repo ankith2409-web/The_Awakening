@@ -32,7 +32,7 @@ const VARIANTS: Record<Variant, string> = {
 /* h-14 (56px) and h-16 (64px) clear the 44px minimum touch target with
    room to spare; uppercase tracking-wide matches the label typography.
    Padding and label size step down on small screens so a long label like
-   "Sign out" cannot push the masthead off a 320px viewport. */
+   "Log out" cannot push the masthead off a 320px viewport. */
 const SIZES: Record<Size, string> = {
   md: 'h-14 px-4 text-xs sm:px-6',
   lg: 'h-16 px-6 text-xs sm:px-8 sm:text-sm',

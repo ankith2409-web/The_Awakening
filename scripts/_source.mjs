@@ -8,7 +8,8 @@
  * because the request succeeds and the row is written either way.
  */
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, sep } from 'node:path'
 
 /**
  * Strips comments before matching.
@@ -40,6 +41,27 @@ export function declaration(source, header) {
 /** Reads a source file and strips its comments in one step. */
 export function readCode(path) {
   return code(readFileSync(path, 'utf8'))
+}
+
+/**
+ * Every `.ts` / `.tsx` file under a directory, recursively.
+ *
+ * For rules that apply across the whole tree rather than to one file — a house
+ * style rule, say — so that a new component cannot quietly reintroduce the thing
+ * the rule exists to prevent. Paths come back relative and forward-slashed so
+ * failure messages read the same on Windows as on Linux.
+ */
+export function walk(dir) {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      out.push(...walk(full))
+    } else if (/\.(ts|tsx)$/.test(entry.name)) {
+      out.push(full.split(sep).join('/'))
+    }
+  }
+  return out.sort()
 }
 
 /** Counts matches, for assertions about how many of something exist. */
