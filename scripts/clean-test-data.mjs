@@ -55,6 +55,10 @@ const TEST_NAMES = [
 const TEST_PREFIXES = [
   'COPYPROBE%',
   'LOADTEST%',
+  // scripts/test-per-day.mjs namespaces its SENs this way so its own cleanup can
+  // find them. Listed here as a second net: a fixture the cleanup script has never
+  // heard of is a fixture that shows up on the admin roster at the event.
+  'PDAY%',
 ]
 
 /*

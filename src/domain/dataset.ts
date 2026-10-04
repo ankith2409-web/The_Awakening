@@ -21,6 +21,16 @@ export const SEED_EVENT: EventInfo = {
   city: 'Bengaluru',
   phase: 'registration',
   capacity: 480,
+  /*
+    Which day attendance is recorded against. Both are resolved from these dates
+    by the server, never by the client: there is nothing at the door to leave on
+    the wrong setting.
+  */
+  activeDay: 1,
+  calendarDay: 1,
+  totalDays: 2,
+  dayOverridden: false,
+  dayOverride: null,
   agenda: [
     { id: 'ag_01', day: 1, startsAt: '09:30', title: 'Registration & Badges', speaker: 'GDG Bengaluru', room: 'Seminar Hall', status: 'done' },
     { id: 'ag_02', day: 1, startsAt: '10:00', title: 'Opening: What Awakens', speaker: 'Dr. Anjali Rao', room: 'Seminar Hall', status: 'done' },

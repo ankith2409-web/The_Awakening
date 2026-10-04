@@ -6,6 +6,7 @@ import type {
   Attendee,
   CheckIn,
   EventInfo,
+  MyAttendance,
   PortalErrorCode,
   Team,
   Ticket,
@@ -22,8 +23,15 @@ export interface AttendeeContextValue {
   readonly status: SessionStatus
   readonly attendee: Attendee | null
   readonly event: EventInfo | null
-  /** The attendee's own attendance record, or null if not yet scanned. */
-  readonly attendance: CheckIn | null
+  /**
+   * The attendee's own attendance, one record per day they were marked.
+   *
+   * Null when not signed in, or before the first load. An attendee with no records
+   * still gets an object — with an empty `records` array and `totalDays` — so the
+   * dashboard can render "not marked yet" per day rather than treating "no
+   * record" and "no day count" as the same thing.
+   */
+  readonly attendance: MyAttendance | null
   readonly ticket: Ticket | null
   readonly loadingData: boolean
   readonly error: ErrorState | null
@@ -84,6 +92,16 @@ export interface AdminContextValue {
     readonly sen: string
     readonly at: string
     readonly method: AdmissionMethod
+    /**
+     * Which day the record was written against, resolved by the server.
+     *
+     * On the confirmation because the operator is the only person who can tell
+     * whether that is right. If the portal records a morning of scans under the
+     * wrong day, nobody notices until the export — and the person holding the
+     * phone would have seen it immediately if it had been on screen.
+     */
+    readonly day: number
+    readonly totalDays: number
   } | null
 
   login: (username: string, password: string) => Promise<void>
@@ -96,7 +114,14 @@ export interface AdminContextValue {
    */
   scanAttendance: (
     sen: string,
-  ) => Promise<{ name: string; sen: string; at: string; method: AdmissionMethod } | null>
+  ) => Promise<{
+    name: string
+    sen: string
+    at: string
+    method: AdmissionMethod
+    day: number
+    totalDays: number
+  } | null>
   /**
    * Sets an attendee's password. The only password-change path in the portal.
    *
@@ -114,6 +139,14 @@ export interface AdminContextValue {
     password: string,
   ) => Promise<{ name: string; sen: string } | null>
   setEventPhase: (phase: EventInfo['phase']) => Promise<void>
+  /**
+   * Pins the day attendance is recorded against, or clears the pin.
+   *
+   * `null` returns to following the calendar, which is the state this belongs in
+   * between events. A number is for exercising the day-two path before it
+   * arrives, or for a schedule that has slipped.
+   */
+  updateEventDay: (day: number | null) => Promise<void>
   setAgendaStatus: (id: string, status: AgendaItem['status']) => Promise<void>
   /** Clears the current error banner. */
   clearError: () => void

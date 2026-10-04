@@ -103,15 +103,26 @@ create table if not exists sessions (
 create index if not exists sessions_expiry_idx on sessions (expires_at);
 
 -- -----------------------------------------------------------------------------
--- Attendance — APPEND ONLY.
+-- Attendance — APPEND ONLY, AND PER DAY.
 --
 -- There is deliberately no updated_at and no status column. A record exists
 -- because a barcode was scanned, and the only way to undo one is to delete the
 -- row out of band.
 --
--- The unique index below is the real guarantee: even if two admins scan the
--- same badge simultaneously, the database rejects the second insert. Enforcing
--- this in the UI alone would leave a race that a real gate would hit.
+-- `day` is which day of the event the scan belongs to. It was added because a
+-- single unique index on attendee_id made attendance a once-in-a-lifetime event:
+-- somebody who attends both days could only ever be marked once, and on day two
+-- their badge came back "already checked in". Not everyone attends both days, so
+-- a single flag cannot represent the event either.
+--
+-- The day is resolved by the SERVER from the calendar, never sent by the client.
+-- A client that chose the day could misattribute a whole queue of scans by
+-- toggling the wrong control, and the operator at the door should have nothing to
+-- get wrong.
+--
+-- The unique index below is the real guarantee: even if two admins scan the same
+-- badge simultaneously, the database rejects the second insert. Enforcing this in
+-- the UI alone would leave a race that a real gate would hit.
 -- -----------------------------------------------------------------------------
 create table if not exists attendance (
   id          uuid primary key default gen_random_uuid(),
@@ -119,6 +130,11 @@ create table if not exists attendance (
   attendee_id uuid        not null references attendees (id) on delete cascade,
   gate        text        not null,
   at          timestamptz not null default now(),
+
+  -- Which day of the event. 1-based, matching `agenda.day`. Existing rows are
+  -- backfilled to 1, which is what the server's own calendar resolution would
+  -- have produced for them: every one was scanned before the event began.
+  day         smallint    not null default 1,
 
   -- How the attendee was admitted:
   --   'qr'      — a scanned pass whose HMAC signature verified against the
@@ -129,20 +145,43 @@ create table if not exists attendance (
   -- Persisted rather than merely logged, because "who was admitted on a
   -- hand-typed number" is exactly the question an audit needs to answer.
   method      text        not null default 'qr',
-  constraint attendance_method check (method in ('qr', 'printed'))
+  constraint attendance_method check (method in ('qr', 'printed')),
+  constraint attendance_day check (day >= 1)
 );
 
-create unique index if not exists one_attendance_per_attendee
-  on attendance (attendee_id);
-
 -- `create table if not exists` is a no-op when the table already exists, so a
--- database created before `method` was introduced would silently keep the old
--- shape and every insert would fail on the missing NOT NULL column. This makes
+-- database created before `method` or `day` was introduced would silently keep the
+-- old shape and every insert would fail on the missing NOT NULL column. This makes
 -- re-running the file upgrade it in place.
+--
+-- These come BEFORE the index changes below. An index on a column that does not
+-- exist yet is a hard error, and `setup-db.mjs` runs statements in file order, so
+-- the order here is load-bearing rather than cosmetic.
 alter table attendance add column if not exists method text not null default 'qr';
 alter table attendance drop constraint if exists attendance_method;
 alter table attendance
   add constraint attendance_method check (method in ('qr', 'printed'));
+
+alter table attendance add column if not exists day smallint not null default 1;
+alter table attendance drop constraint if exists attendance_day;
+alter table attendance add constraint attendance_day check (day >= 1);
+
+/*
+  The old index said one row per attendee FOREVER. Replaced rather than extended:
+  keeping it would mean the second day's insert always conflicts, which is exactly
+  the bug `day` exists to fix.
+
+  Dropped explicitly because `create unique index if not exists` matches on the
+  INDEX NAME, and the new index has a different one — so without the drop, both
+  would exist and the old one would silently keep rejecting every second scan.
+*/
+drop index if exists one_attendance_per_attendee;
+
+create unique index if not exists one_attendance_per_attendee_day
+  on attendance (attendee_id, day);
+
+-- Reads are almost always "everyone marked on day N", so the day leads the index.
+create index if not exists attendance_day_idx on attendance (day, at);
 
 -- -----------------------------------------------------------------------------
 -- Admin password changes
@@ -245,6 +284,26 @@ create table if not exists events (
 -- re-running the file upgrade a database created before the columns existed.
 alter table events add column if not exists end_date date;
 alter table events add column if not exists organiser_host text;
+
+/*
+  Which day attendance scans are recorded against, when an owner says so.
+
+  NULL — the normal state — means the server derives it from the calendar. That is
+  the right default because it is the only option that cannot be misconfigured:
+  nobody has to remember to switch it, and nobody can forget to.
+
+  A number pins the active day regardless of the date. Two reasons it exists:
+
+    - Testing. Before the event the calendar says "day 1", so there is otherwise no
+      way to exercise the day-two scan path at all.
+    - Running behind. If day two starts late, or day one overruns into the next
+      morning, a human can say so instead of the portal quietly filing a morning's
+      scans under the wrong heading.
+
+  Owner-only. A `gate` account cannot read or set it — it is a control, not a
+  preference.
+*/
+alter table events add column if not exists day_override smallint;
 
 create table if not exists agenda (
   id         text primary key,

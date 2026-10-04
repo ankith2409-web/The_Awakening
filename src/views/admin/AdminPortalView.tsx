@@ -76,11 +76,30 @@ export function AdminPortalView() {
     scanAttendance,
     setEventPhase,
     setAgendaStatus,
+    updateEventDay,
     clearError,
     clearLastScan,
   } = useAdmin()
 
   const [tab, setTab] = useState<Tab>('scan')
+
+  /*
+    Which day the SEN export covers.
+
+    Defaults to the active day and follows it, because on the evening of day one
+    "today" is what is wanted and picking it by hand every time is a chance to
+    pick wrong. An owner can still choose another day deliberately.
+
+    Seeded from the event once it arrives rather than hard-coded to 1, so a
+    single-day event never grows a day selector it does not need.
+  */
+  const [exportDay, setExportDay] = useState<number | null>(null)
+  const totalDays = event?.totalDays ?? 1
+  const activeDay = event?.activeDay ?? 1
+  const chosenExportDay = exportDay ?? activeDay
+  const exportCount = attendance.filter(
+    (record) => record.day === chosenExportDay,
+  ).length
 
   /*
     Fails SAFE: an unknown or missing role is treated as the narrower one.
@@ -207,6 +226,9 @@ export function AdminPortalView() {
               <ScanPanel
               scanning={scanning}
               lastScan={lastScan}
+              activeDay={activeDay}
+              totalDays={totalDays}
+              overridden={event?.dayOverridden ?? false}
               onScan={scanAttendance}
               onDismissScan={clearLastScan}
             />
@@ -223,6 +245,8 @@ export function AdminPortalView() {
                 loading={loadingData}
                 eventName={event?.name ?? 'event'}
                 canExport={isOwner}
+                activeDay={activeDay}
+                totalDays={totalDays}
               />
             ) : null}
 
@@ -235,6 +259,7 @@ export function AdminPortalView() {
                 event={event}
                 loading={loadingData}
                 onPhaseChange={(phase) => void setEventPhase(phase)}
+                onDayChange={(day) => void updateEventDay(day)}
                 onStatusChange={(id, status) => void setAgendaStatus(id, status)}
               />
             ) : null}
@@ -264,16 +289,48 @@ export function AdminPortalView() {
               *not* arrived never reaches their device at all.
             */}
             {isOwner ? (
-              <Button
-                variant="primary"
-                size="md"
-                disabled={attendance.length === 0}
-                onClick={() =>
-                  downloadAttendanceCsv(attendance, event?.name ?? 'event')
-                }
-              >
-                Export SEN ({attendance.length})
-              </Button>
+              <div className="flex flex-wrap items-center gap-3">
+                {/*
+                  Which day to export is an explicit choice, not a hidden default.
+
+                  Attendance is one record per person per day, so "Export SEN" has
+                  no single obvious meaning — and picking the wrong one silently is
+                  how a certificate list ends up with the wrong names on it. The
+                  selector sits next to the button so the day is always stated
+                  before the file is produced, and it is in the filename too.
+                */}
+                {totalDays > 1 ? (
+                  <label className="flex items-center gap-2 text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
+                    <span className="sr-only sm:not-sr-only">Export day</span>
+                    <select
+                      value={chosenExportDay}
+                      onChange={(e) => setExportDay(Number(e.target.value))}
+                      className="h-14 border-2 border-swiss-ink bg-swiss-paper px-3 text-sm font-bold tracking-tight text-swiss-ink focus:border-swiss-accent-text focus:outline-none"
+                    >
+                      {Array.from({ length: totalDays }, (_, index) => index + 1).map(
+                        (day) => (
+                          <option key={day} value={day}>
+                            Day {day}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                ) : null}
+
+                <Button
+                  variant="primary"
+                  size="md"
+                  disabled={exportCount === 0}
+                  onClick={() =>
+                    downloadAttendanceCsv(attendance, event?.name ?? 'event', chosenExportDay)
+                  }
+                >
+                  {totalDays > 1
+                    ? `Export SEN — day ${exportDay} (${exportCount})`
+                    : `Export SEN (${exportCount})`}
+                </Button>
+              </div>
             ) : null}
           </div>
         </div>
@@ -303,12 +360,20 @@ export function AdminPortalView() {
 function ScanPanel({
   scanning,
   lastScan,
+  activeDay,
+  totalDays,
+  overridden,
   onScan,
   onDismissScan,
 }: {
   scanning: boolean
   lastScan: AdminContextValue['lastScan']
-  onScan: (sen: string) => Promise<{ name: string; sen: string; at: string } | null>
+  activeDay: number
+  totalDays: number
+  overridden: boolean
+  onScan: (
+    sen: string,
+  ) => Promise<{ name: string; sen: string; at: string; day: number } | null>
   onDismissScan: () => void
 }) {
   const [value, setValue] = useState('')
@@ -347,6 +412,37 @@ function ScanPanel({
       <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
         Scan Attendance
       </h2>
+
+      {/*
+        Which day this scan will be recorded against.
+
+        Read-only, because the server decides it from the calendar and there is
+        nothing at the door to set. It is on screen anyway, prominently, because
+        the operator is the only person who can tell whether that is right: if the
+        portal says "Day 1" on the morning of day two, someone standing at the
+        door needs to be able to see it and say so, rather than discovering it in
+        the export hours later.
+
+        An override is called out because a pinned day is the likeliest reason the
+        portal disagrees with the calendar.
+      */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b-2 border-swiss-ink px-6 py-4">
+        <span className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
+          Recording for
+        </span>
+        <span className="text-xl font-black uppercase leading-none tracking-tight text-swiss-ink">
+          Day {activeDay}
+          <span className="text-sm text-content-muted">
+            {' '}
+            of {totalDays}
+          </span>
+        </span>
+        {overridden ? (
+          <span className="border-2 border-swiss-accent-text px-2 py-0.5 text-2xs font-bold uppercase tracking-[0.15em] text-swiss-accent-text">
+            Pinned by an organiser
+          </span>
+        ) : null}
+      </div>
 
       <div className="flex flex-col gap-6 p-6 lg:flex-row">
         {/* Camera first: it is what staff will actually use at the gate. */}
@@ -431,7 +527,7 @@ function ScanConfirmation({
     >
       <div className="flex items-center justify-between gap-4 border-b-2 border-swiss-ink bg-swiss-ink px-4 py-2">
         <span className="text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
-          Marked
+          Marked for day {scan.day}
         </span>
         <button
           type="button"
@@ -462,6 +558,21 @@ function ScanConfirmation({
           <dd className="font-bold uppercase tracking-[0.15em] text-swiss-ink">
             {scan.method === 'qr' ? 'Pass verified' : 'Typed SEN, no signature'}
           </dd>
+
+          {/*
+            Not shown for a single-day event. "Day 1 of 1" is noise, and it would
+            appear on every confirmation at an event that only has one day.
+          */}
+          {scan.totalDays > 1 ? (
+            <>
+              <dt className="font-bold uppercase tracking-[0.2em] text-content-muted">
+                Day
+              </dt>
+              <dd className="font-bold uppercase tracking-[0.15em] text-swiss-ink">
+                {scan.day} of {scan.totalDays}
+              </dd>
+            </>
+          ) : null}
         </dl>
       </div>
     </div>
@@ -484,25 +595,45 @@ function AttendanceLog({
   loading,
   eventName,
   canExport,
+  activeDay,
+  totalDays,
 }: {
   records: ReturnType<typeof useAdmin>['attendance']
   loading: boolean
   eventName: string
   canExport: boolean
+  activeDay: number
+  totalDays: number
 }) {
   const [query, setQuery] = useState('')
 
+  /*
+    Filtered by day, defaulting to today.
+
+    Two days interleaved by clock time is a bad list to read at a gate: "who came
+    today" is the question being asked and the answer is buried between yesterday's
+    rows. Defaulting to the active day means the common case needs no interaction
+    at all, and "All days" is there when the whole event is wanted.
+  */
+  const [dayFilter, setDayFilter] = useState<'active' | 'all'>(totalDays > 1 ? 'active' : 'all')
+
+  const dayScoped = useMemo(
+    () =>
+      dayFilter === 'all' ? records : records.filter((record) => record.day === activeDay),
+    [records, dayFilter, activeDay],
+  )
+
   const filtered = useMemo(() => {
     const needle = normaliseSen(query).toLowerCase()
-    if (needle === '') return records
+    if (needle === '') return dayScoped
     // Matches the SEN or the name — a volunteer at the door knows one or the
     // other far more often than both.
-    return records.filter(
+    return dayScoped.filter(
       (record) =>
         record.sen.toLowerCase().includes(needle) ||
         record.attendeeName.toLowerCase().includes(needle),
     )
-  }, [records, query])
+  }, [dayScoped, query])
 
   if (loading) return <Skeleton className="h-64 w-full" />
 
@@ -512,6 +643,41 @@ function AttendanceLog({
         <h2 className="text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
           Attendance Log
         </h2>
+
+        {/*
+          Day switch. Two days are two lists, not one long one, and choosing
+          between them is a decision the log header should offer rather than a
+          column the reader has to scan past.
+
+          Hidden entirely for a single-day event: "Day 1 of 1" as a control is
+          clutter, and the filter would do nothing.
+        */}
+        {totalDays > 1 ? (
+          <div
+            role="group"
+            aria-label="Filter attendance by day"
+            className="flex gap-px border-2 border-swiss-paper"
+          >
+            {(['active', 'all'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={dayFilter === option}
+                onClick={() => setDayFilter(option)}
+                className={[
+                  'min-h-10 cursor-pointer px-4 text-2xs font-bold uppercase tracking-[0.15em]',
+                  'transition-colors duration-150 ease-linear',
+                  dayFilter === option
+                    ? 'bg-swiss-paper text-swiss-ink'
+                    : 'bg-transparent text-swiss-paper hover:bg-swiss-paper/10',
+                ].join(' ')}
+              >
+                {option === 'active' ? `Day ${activeDay}` : 'All days'}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
         <input
           type="search"
           value={query}
@@ -527,7 +693,11 @@ function AttendanceLog({
           role="status"
           className="p-6 text-2xs font-bold uppercase tracking-[0.2em] text-content-muted"
         >
-          No attendance recorded yet
+          {query !== ''
+            ? 'No match'
+            : dayFilter === 'all'
+              ? 'No attendance recorded yet'
+              : `Nobody marked for day ${activeDay} yet`}
         </p>
       ) : (
         <>
@@ -712,11 +882,13 @@ function ProgrammePanel({
   event,
   loading,
   onPhaseChange,
+  onDayChange,
   onStatusChange,
 }: {
   event: ReturnType<typeof useAdmin>['event']
   loading: boolean
   onPhaseChange: (phase: EventPhase) => void
+  onDayChange: (day: number | null) => void
   onStatusChange: (id: string, status: AgendaItem['status']) => void
 }) {
   if (loading) return <Skeleton className="h-64 w-full" />
@@ -765,6 +937,69 @@ function ProgrammePanel({
                 {option}
               </button>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/*
+        Which day scans are recorded against.
+
+        Normally nothing to do: the server reads it from the calendar, so on the
+        morning of day two it says day two by itself and there is no switch at the
+        door to forget.
+
+        This control exists for the two cases where the calendar is wrong. Testing
+        the day-two flow before it arrives, and a schedule that has slipped — a
+        day-two session running at 09:00 on the morning the calendar still calls
+        day one. Both are cases where a human knows something the date does not.
+
+        Left on `Auto`, which is where it belongs between events.
+      */}
+      <section className="border-2 border-swiss-ink">
+        <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
+          Attendance Day
+        </h2>
+        <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
+          <p className="flex-1 text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
+            The calendar says day {event.calendarDay} of {event.totalDays}. Auto
+            follows it.
+          </p>
+          <div className="flex gap-px bg-swiss-ink">
+            <button
+              type="button"
+              onClick={() => onDayChange(null)}
+              aria-pressed={event.dayOverride === null}
+              className={[
+                'min-h-11 cursor-pointer px-4 py-2',
+                'text-2xs font-bold uppercase tracking-[0.2em]',
+                'transition-colors duration-150 ease-linear',
+                event.dayOverride === null
+                  ? 'bg-swiss-accent-text text-swiss-paper'
+                  : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
+              ].join(' ')}
+            >
+              Auto
+            </button>
+            {Array.from({ length: event.totalDays }, (_, index) => index + 1).map(
+              (day) => (
+                <button
+                  key={day}
+                  type="button"
+                  onClick={() => onDayChange(day)}
+                  aria-pressed={event.dayOverride === day}
+                  className={[
+                    'min-h-11 cursor-pointer px-4 py-2',
+                    'text-2xs font-bold uppercase tracking-[0.2em]',
+                    'transition-colors duration-150 ease-linear',
+                    event.dayOverride === day
+                      ? 'bg-swiss-accent-text text-swiss-paper'
+                      : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
+                  ].join(' ')}
+                >
+                  Day {day}
+                </button>
+              ),
+            )}
           </div>
         </div>
       </section>

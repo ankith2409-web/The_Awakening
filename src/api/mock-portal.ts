@@ -15,6 +15,7 @@ import {
   type AttendeeWithSecret,
   type CheckIn,
   type EventInfo,
+  type MyAttendance,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -314,14 +315,47 @@ export class MockPortalApi implements PortalApi {
    * The attendee's own record, or null if they have not been scanned.
    * Read-only: there is no way for an attendee to mark themselves present.
    */
-  async getMyAttendance(): Promise<CheckIn | null> {
+  async getMyAttendance(): Promise<MyAttendance | null> {
     await delay(LATENCY_MS / 4)
     const attendeeId = this.#attendeeSessionId
     if (attendeeId === null) return null
-    const record = this.#store.checkIns.find(
-      (entry) => entry.attendeeId === attendeeId,
+    const records = this.#store.checkIns
+      .filter((entry) => entry.attendeeId === attendeeId)
+      .sort((a, b) => a.day - b.day)
+    const day = this.#dayState()
+    return { records: structuredClone(records), ...day }
+  }
+
+  /**
+   * Which day the mock thinks it is.
+   *
+   * Mirrors the server's calendar resolution, including the clamp, so that
+   * testing the two-day flow against the mock behaves the way it will on the day.
+   * The mock cannot know today's date in Bengaluru without repeating that
+   * arithmetic, so it clamps on the host clock — which is close enough for local
+   * development and, unlike a guess, wrong in the same direction the server would
+   * be.
+   */
+  #dayState(): { activeDay: number; totalDays: number; overridden: boolean } {
+    const totalDays = this.#store.event.totalDays
+    const override = this.#store.event.dayOverride
+    const pinned = override !== null && override >= 1 && override <= totalDays
+
+    const first = Date.parse(`${this.#store.event.date}T00:00:00Z`)
+    const today = new Date()
+    const todayUtc = Date.UTC(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
     )
-    return record ? structuredClone(record) : null
+    const elapsed = Number.isNaN(first) ? 1 : Math.round((todayUtc - first) / 86_400_000) + 1
+    const calendarDay = Math.min(Math.max(1, elapsed), totalDays)
+
+    return {
+      activeDay: pinned ? (this.#store.event.dayOverride as number) : calendarDay,
+      totalDays,
+      overridden: pinned,
+    }
   }
 
   /**
@@ -331,9 +365,7 @@ export class MockPortalApi implements PortalApi {
    * method that updates or removes a record — the log is append-only, so a
    * mistake is corrected by voiding out of band, not by editing history.
    */
-  async recordAttendanceBySen(
-    sen: string,
-  ): Promise<CheckIn & { attendee: Attendee }> {
+  async recordAttendanceBySen(sen: string) {
     this.#requireAdmin()
     await delay(LATENCY_MS / 2)
 
@@ -363,10 +395,23 @@ export class MockPortalApi implements PortalApi {
     // with people who never registered.
     if (!attendee) throw new PortalError('unknown_sen')
 
+    const dayState = this.#dayState()
+    const day = dayState.activeDay
+
+    /*
+      Per day, not per attendee — that is the whole difference from the old
+      behaviour. Somebody marked on day one is still admitted on day two, because
+      they came.
+    */
     const existing = this.#store.checkIns.find(
-      (entry) => entry.attendeeId === attendee.id,
+      (entry) => entry.attendeeId === attendee.id && entry.day === day,
     )
-    if (existing) throw new PortalError('already_checked_in')
+    if (existing) {
+      throw new PortalError(
+        'already_checked_in',
+        day > 1 ? `Already marked for day ${day}.` : undefined,
+      )
+    }
 
     const record: CheckIn = {
       id: `chk_${randomSuffix()}`,
@@ -375,6 +420,7 @@ export class MockPortalApi implements PortalApi {
       at: new Date().toISOString(),
       gate: 'Gate A',
       method,
+      day,
       // Set here as well as in `listAttendance`. The scan response is the one
       // place a `gate` account sees a name, so it has to be on the record
       // itself rather than joined in only for the log.
@@ -384,7 +430,7 @@ export class MockPortalApi implements PortalApi {
     this.#store.checkIns.push(record)
     persist(this.#store)
 
-    return { ...record, attendee: toPublic(attendee) }
+    return { ...record, attendee: toPublic(attendee), dayState }
   }
 
   /* -------------------------------------------------------- admin tools */
@@ -405,10 +451,12 @@ export class MockPortalApi implements PortalApi {
   async listAttendance(): Promise<readonly CheckIn[]> {
     this.#requireAdmin()
     await delay(LATENCY_MS / 2)
-    return this.#store.checkIns.map((checkIn) => {
-      const person = this.#store.attendees.find((a) => a.id === checkIn.attendeeId)
-      return { ...structuredClone(checkIn), attendeeName: person?.name ?? '' }
-    })
+    return [...this.#store.checkIns]
+      .sort((a, b) => a.day - b.day || a.at.localeCompare(b.at))
+      .map((checkIn) => {
+        const person = this.#store.attendees.find((a) => a.id === checkIn.attendeeId)
+        return { ...structuredClone(checkIn), attendeeName: person?.name ?? '' }
+      })
   }
 
   async updateAgendaItem(id: string, patch: Partial<AgendaItem>): Promise<AgendaItem> {
@@ -435,6 +483,21 @@ export class MockPortalApi implements PortalApi {
     await delay(LATENCY_MS / 2)
 
     this.#store.event = { ...this.#store.event, phase }
+    persist(this.#store)
+
+    return structuredClone(this.#store.event)
+  }
+
+  async updateEventDay(dayOverride: number | null): Promise<EventInfo> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+
+    const total = this.#store.event.totalDays
+    if (dayOverride !== null && (dayOverride < 1 || dayOverride > total)) {
+      throw new PortalError('unknown', `Choose a day between 1 and ${total}.`)
+    }
+
+    this.#store.event = { ...this.#store.event, dayOverride }
     persist(this.#store)
 
     return structuredClone(this.#store.event)

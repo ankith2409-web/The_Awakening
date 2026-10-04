@@ -135,7 +135,7 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | Table                      | Notes                                                        |
 | -------------------------- | ------------------------------------------------------------ |
 | `attendees`                | unique on `phone` and `sen`; both CHECK-constrained            |
-| `attendance`               | append-only; unique index on `attendee_id`                     |
+| `attendance`               | append-only; unique on `(attendee_id, day)`                     |
 | `sessions`                 | SHA-256 token hash, `kind`, `expires_at`; expired rows purged |
 | `admins`                   | bcrypt hashes, `role` (`owner` / `gate`), `active`             |
 | `staff_changes`            | append-only audit of who changed which staff account          |
@@ -204,8 +204,18 @@ sessions.
 
 `PATCH /admin/agenda/:id` returns the single updated `AgendaItem`;
 `PATCH /admin/event` returns the whole `EventInfo`, which is what the caller
-replaces its state with. Attendance rows come back camelCase (`attendeeId`) so
-the admin log can resolve each row to a person.
+replaces its state with. It takes `phase` and `dayOverride` independently, so
+setting one does not clobber the other. Attendance rows come back camelCase
+(`attendeeId`) so the admin log can resolve each row to a person, and carry `day`
+so it can be grouped.
+
+`GET /attendee/attendance` returns `{ records, activeDay, totalDays, overridden }`
+— an array, not a single record. It used to return one row or `null`; returning
+"the first row" now would tell somebody who came on day two that they arrived on
+day one. `totalDays` is included so the dashboard can render a row for a day with no
+record yet, which is what turns an absence the attendee can read as *not yet* rather
+than as nothing at all. No session is still `null`, so "nobody signed in" stays
+distinguishable from "signed in, not marked".
 
 ---
 
@@ -217,28 +227,138 @@ the admin log can resolve each row to a person.
 update, no delete, and no edit control anywhere in the UI — a mistake is
 corrected by a fresh scan, not by amending history.
 
+**One record per attendee per day**, and that is the fix for a bug that made
+attendance a once-in-a-lifetime event. With a unique index on `attendee_id`, a
+person who attended both days could only ever be marked once — on the morning of
+day two their badge came back *already checked in*. And because not everyone comes
+on both days, a single flag cannot represent this event either: it cannot say who
+was there yesterday and who is here today.
+
 The write is a single atomic statement guarded by a unique index:
 
 ```sql
-insert into attendance (sen, attendee_id, gate)
-select sen, id, 'Gate A' from attendees where id = $1
-on conflict (attendee_id) do nothing
-returning ...
+insert into attendance (sen, attendee_id, gate, method, day)
+select sen, id, 'Gate A', $2, $3 from attendees where id = $1
+on conflict (attendee_id, day) do nothing
+returning id, sen, attendee_id as "attendeeId", gate, at, method, day
 ```
 
-`create unique index one_attendance_per_attendee on attendance (attendee_id)` is
-the real guard, so two scanners hitting the same badge at the same instant cannot
+`create unique index one_attendance_per_attendee_day on attendance (attendee_id, day)`
+is the real guard, so two scanners hitting the same badge at the same instant cannot
 both insert. A SELECT-then-INSERT would leave a race window there.
+
+The old index is **dropped**, not extended. `create unique index if not exists`
+matches on the index NAME, so a differently-named replacement would have left both
+in place and the old one would have silently kept rejecting every second-day scan.
 
 A SEN matching no registered attendee is rejected, so the roll cannot fill with
 people who never registered.
 
-**Export** downloads a CSV of SEN numbers only — one value per row, no header, no
-name, no phone, no time. The header is omitted deliberately: the file is meant to
-be pasted into a column or uploaded to a system that already knows what the values
-are, where a header row would become a bogus entry. CSV rather than `.xlsx`
-because it opens natively in Excel, needs no library, cannot break on a malformed
-cell, and carries a UTF-8 BOM so Excel detects the encoding.
+#### Which day a scan belongs to
+
+**The server decides. The client never sends a day.**
+
+A day picker in the admin UI sounds friendlier, but it is one control that, left on
+the wrong setting, files an entire morning's scans under the wrong heading — and
+nobody finds out until the export is read. Deriving it from the date means there is
+nothing at the door to get wrong, and the operator's job stays exactly what it was:
+scan the badge.
+
+| Situation        | Resolves to     |
+| ---------------- | --------------- |
+| Before the event | Day 1           |
+| 14 October       | Day 1           |
+| 15 October       | Day 2           |
+| After the event  | The last day    |
+
+Not "no day". Every test scan anyone has run against this portal happens outside the
+window, so refusing to resolve one would mean the gate is unusable for testing.
+
+**Future days are locked**, and there is no check for it anywhere in the code. The
+scan endpoint records the active day and nothing else, so the only way to record
+day two is for the server to already believe it is day two. The rule holds *by
+construction* rather than by a predicate somebody could bypass — or, worse, believe
+is being enforced somewhere else. An earlier draft exposed a `canMark(day)`
+predicate for this; it was never called, so it was deleted and the rule documented
+instead.
+
+#### The override, and why it exists
+
+`events.day_override` pins the active day regardless of the date. Owner-only, and
+left on `Auto` — the normal state — between events. Two reasons it is there:
+
+- **Testing.** Before the event the calendar says day one, so there is otherwise no
+  way to exercise the day-two scan path at all.
+- **A schedule that has slipped.** If day two starts late, or day one overruns into
+  the next morning, a human can say so instead of the portal quietly filing a
+  morning's scans under the wrong heading.
+
+It works in both directions: pinning day one on the morning of day two is how you
+record a scan you missed yesterday.
+
+#### One timezone decision that matters
+
+Bengaluru is UTC+05:30 with no daylight saving. Computing "what day is it here" by
+subtracting 86,400,000 ms from a UTC instant works right up until it does not, and
+when it does not every morning scan is filed under the previous day — for both
+days, silently, with no error anywhere.
+
+So `calendarDay` formats the date in `Asia/Kolkata` and asks the runtime what day it
+actually is. `test:day` pins fixed dates including the exact rollover minute in both
+directions: 23:59 in Bengaluru is still day one, one second later it is day two. A
+test that only checked "today" would pass for months and then be wrong on the morning
+of the event.
+
+Related, and caught the same way: node-pg turns a Postgres `DATE` into a JS `Date`
+at local midnight, whose `toString()` is not ISO. `Date.parse` returned `NaN`,
+`totalDaysFor` silently floored to one day, and a two-day event presented itself as
+a one-day one — with every downstream number wrong and nothing reporting it. So
+both dates are cast with `to_char` in SQL, and `totalDaysFor` *rejects* anything
+that is not `YYYY-MM-DD` rather than coercing it. Accepting a `Date` would have
+hidden the next mistake of the same shape.
+
+#### What each surface shows
+
+| Surface             | Day handling                                              |
+| ------------------- | --------------------------------------------------------- |
+| Scan panel          | "Recording for **Day 1 of 2**", always visible            |
+| Scan confirmation   | "Marked for day 1", plus time, gate and admission method  |
+| Attendance log      | A Day / All days switch, defaulting to the active day      |
+| Desk roster         | A `D1` / `D2` badge per attendee                           |
+| Attendee dashboard  | One row per day, marked or not, with today called out      |
+| SEN export          | Per day, with the day in the filename                      |
+
+The attendee dashboard changed most in meaning. It used to say "Attendance Marked"
+once. That told somebody who came on day two that they had been marked — full stop —
+and told somebody who came on day one only that they were marked for an event with a
+second day still to run. Both readings are wrong, and the second is wrong in the
+direction that matters: they turn up on day two expecting nothing to be needed.
+
+That also changed the dashboard's **polling**, which is easy to miss. It stopped as
+soon as any record existed, which was correct while attendance was
+once-in-a-lifetime. With a record per day, an attendee marked on day one would have
+their polling stop that morning and sit watching an empty day two until they
+manually reloaded — after walking through the gate again. It now waits for a record
+for *today*.
+
+#### Export
+
+**Export** downloads a CSV of SEN numbers for **one day** — one value per row, no
+header, no name, no phone, no time, no day column. The day is a required argument
+rather than a default, and it is in the filename (`…-day-2-attendance.csv`).
+
+With a record per person per day, "the SENs" is ambiguous: everyone who came at all,
+or everyone who came today? Both are plausible and produce different files, so
+picking the wrong one silently is how a certificate list ends up with the wrong
+names on it. Two days are two files, produced deliberately. Somebody who attends
+both appears once in each, which is correct — each file answers "who was in the room
+on the day this was taken".
+
+The header is omitted deliberately: the file is meant to be pasted into a column or
+uploaded to a system that already knows what the values are, where a header row
+would become a bogus entry. CSV rather than `.xlsx` because it opens natively in
+Excel, needs no library, cannot break on a malformed cell, and carries a UTF-8 BOM
+so Excel detects the encoding.
 
 ### Gate signature verification
 
@@ -681,6 +801,8 @@ are zeroed explicitly.
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
 | `test:desk`     | 49          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
 | `test:roles`    | 34          | yes      | Every owner-only route refused to `gate`; an unrecognised role fails closed; the CLI's guards |
+| `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
+| `test:perday`   | 28          | yes      | One record per attendee per day; both days recorded; the lock on future days |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
 | `test:landing`  | 40          | no       | Entry points clear a phone; footer destinations; links open safely |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
@@ -722,6 +844,12 @@ such an account is treated as `gate` rather than `owner`, and puts the constrain
 back. That is the assertion that matters most in the file: `adminRole` decides what
 an unrecognised value means, and treating it as `owner` would be a silent privilege
 escalation the moment anyone widened the role list.
+
+`test:day` needs no database and no server. It exists because calendar arithmetic is
+the one part of this feature that can fail *silently* — a timezone mistake files
+every morning scan under the previous day and reports nothing — so it is pinned to
+fixed dates rather than run against "now". That includes the rollover minute in
+both directions and the node-pg `Date` regression described above.
 
 The static suites (`landing`, `motion`, `scan`, `desk`) read the source rather than
 driving a browser, because the defects they guard are structural: state written
@@ -784,15 +912,22 @@ unique index goes with the row.
 
 ### Running the HTTP suites
 
-`test:api`, `test:gate`, `test:copy` and `test:roles` all drive a real server.
-Against a hosted deployment, export `TEST_BASE_URL` and the admin credentials:
+`test:api`, `test:gate`, `test:copy`, `test:roles` and `test:perday` all drive a real
+server. Against a hosted deployment, export `TEST_BASE_URL` and the admin
+credentials:
 
 ```bash
 node dev-api.mjs    # local harness, then, in another shell:
 $env:TEST_BASE_URL="http://localhost:3000"
 $env:ADMIN_USERNAME="admin"; $env:ADMIN_PASSWORD="…"
-npm run test:api; npm run test:gate; npm run test:copy; npm run test:roles
+npm run test:api; npm run test:gate; npm run test:copy
+npm run test:roles; npm run test:perday
 ```
+
+`test:perday` moves the event day with the owner override rather than waiting for
+October, which is both how the day-two path gets exercised before it happens and the
+reason it needs `DATABASE_URL`. It restores the original override on the way out,
+including after a crash.
 
 `dev-api.mjs` serves the serverless function on `:3000` with no proxy in the path,
 which is the only way to exercise anything that depends on the real caller IP —

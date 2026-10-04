@@ -1,22 +1,180 @@
-import type { CheckIn } from '@/domain/types'
+import type { CheckIn, MyAttendance } from '@/domain/types'
 import { Skeleton } from './Skeleton'
 
 /**
- * Attendance status.
+ * Attendance status, one row per day.
  *
- * Read-only by design: an attendee cannot mark themselves present, and there
- * is no control here to do so. The record exists only because staff scanned
- * their code at the gate.
+ * Read-only by design: an attendee cannot mark themselves present, and there is
+ * no control here to do so. A record exists only because staff scanned their code
+ * at the gate.
+ *
+ * Why a row per day rather than one "Attendance Marked":
+ *
+ * Not everyone comes on both days, and a single flag cannot say which. The old
+ * version told somebody who came on day two that they had been marked — full stop
+ * — and somebody who came on day one only that they were marked for an event with
+ * a second day still to come. Both readings are wrong, and the second one is
+ * wrong in the direction that matters: they turn up on day two expecting nothing
+ * to be needed.
+ *
+ * Days with no record render as "not yet" rather than being hidden. An absence the
+ * attendee can see is information; an absence that is not visible is not.
  */
 export function AttendancePanel({
   attendance,
   loading,
 }: {
-  attendance: CheckIn | null
+  attendance: MyAttendance | null
   loading: boolean
 }) {
-  const marked = attendance !== null
+  if (loading) {
+    return (
+      <Frame>
+        <Skeleton className="h-32 w-full border-0" />
+      </Frame>
+    )
+  }
 
+  const totalDays = attendance?.totalDays ?? 1
+  const activeDay = attendance?.activeDay ?? 1
+  const records = attendance?.records ?? []
+
+  /*
+    Map day number to record, and fill the gaps. An attendee who came on day one
+    only gets a row saying so for day two, which is the whole point.
+  */
+  const byDay = new Map<number, CheckIn>()
+  for (const record of records) byDay.set(record.day, record)
+
+  const days = Array.from({ length: totalDays }, (_, index) => index + 1)
+
+  return (
+    <Frame>
+      <ul className="flex flex-col">
+        {days.map((day) => {
+          const record = byDay.get(day)
+          return (
+            <DayRow
+              key={day}
+              day={day}
+              record={record ?? null}
+              isToday={day === activeDay}
+            />
+          )
+        })}
+      </ul>
+
+      <p className="border-t-2 border-swiss-ink px-6 py-4 text-2xs font-medium leading-relaxed text-content-muted">
+        Marked at the gate, once a day. A record is final and cannot be changed.
+      </p>
+    </Frame>
+  )
+}
+
+/**
+ * One day.
+ *
+ * The square is filled when marked and hollow when not, so the difference is a
+ * shape rather than a colour — which is also what makes it legible on the cheap
+ * phone somebody is holding at chest height while walking through a door.
+ */
+function DayRow({
+  day,
+  record,
+  isToday,
+}: {
+  readonly day: number
+  readonly record: CheckIn | null
+  readonly isToday: boolean
+}) {
+  const marked = record !== null
+
+  return (
+    <li
+      className={[
+        'border-b border-swiss-ink/15 p-6 last:border-b-0',
+        // The row that matters most is the one being scanned into right now.
+        isToday ? 'bg-swiss-muted' : '',
+      ].join(' ')}
+    >
+      <div className="flex items-start gap-5">
+        <span
+          aria-hidden="true"
+          className={[
+            'mt-1 size-6 shrink-0',
+            marked ? 'bg-swiss-accent-text' : 'border-2 border-swiss-ink',
+          ].join(' ')}
+        />
+
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-xl font-black uppercase leading-tight tracking-tight text-swiss-ink">
+              Day {day}
+            </span>
+            {isToday ? (
+              <span className="border border-swiss-ink px-2 py-0.5 text-2xs font-bold uppercase tracking-[0.15em] text-swiss-ink">
+                Today
+              </span>
+            ) : null}
+          </p>
+
+          <p
+            className={[
+              'mt-1 text-2xs font-bold uppercase tracking-[0.2em]',
+              marked ? 'text-swiss-accent-text' : 'text-content-muted',
+            ].join(' ')}
+          >
+            {marked ? 'Marked' : 'Not marked yet'}
+          </p>
+
+          {record === null ? (
+            <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
+              Show your pass at the gate on day {day}. This updates on its own.
+            </p>
+          ) : (
+            /*
+              `motion-scale-in` because this is the panel an attendee watches. It
+              flips from "not yet" to "marked" by itself, with no reload and
+              without them touching anything — the poll catches the scan. Without
+              a transition the text simply changes, which is very easy to miss; the
+              motion is what makes a background state change legible.
+            */
+            <div role="status" className="motion-scale-in">
+              <dl className="mt-3 flex flex-wrap gap-x-8 gap-y-2">
+                <div>
+                  <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
+                    Time
+                  </dt>
+                  <dd className="font-mono text-sm font-bold text-swiss-ink">
+                    {formatTime(record.at)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
+                    Gate
+                  </dt>
+                  <dd className="text-sm font-bold tracking-tight text-swiss-ink">
+                    {record.gate}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
+                    Via
+                  </dt>
+                  <dd className="text-2xs font-bold uppercase tracking-[0.15em] text-swiss-ink">
+                    {record.method === 'qr' ? 'Pass verified' : 'Typed SEN'}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          )}
+        </div>
+      </div>
+    </li>
+  )
+}
+
+function Frame({ children }: { children: React.ReactNode }) {
   return (
     <section
       aria-labelledby="attendance-heading"
@@ -31,73 +189,7 @@ export function AttendancePanel({
         </h2>
         <span className="font-mono text-2xs font-bold text-swiss-accent-on-dark">05.</span>
       </header>
-
-      {loading ? (
-        <Skeleton className="h-32 w-full border-0" />
-      ) : marked ? (
-        /*
-          `motion-scale-in` because this panel is the one an attendee watches.
-          It flips from "not yet" to "marked" by itself, with no reload and
-          without them touching anything — the live poll catches the scan. Without
-          a transition the text simply changes, which on a phone held at chest
-          height while walking through a door is very easy to miss; the motion is
-          what makes a background state change legible.
-        */
-        <div
-          role="status"
-          className="motion-scale-in flex items-start gap-5 p-6"
-        >
-          {/* Solid square, not a tick: the system prefers geometry to icons. */}
-          <span
-            aria-hidden="true"
-            className="mt-1 size-6 shrink-0 bg-swiss-accent-text"
-          />
-          <div className="min-w-0">
-            <p className="text-xl font-black uppercase leading-tight tracking-tight text-swiss-ink">
-              Attendance Marked
-            </p>
-            <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
-              Recorded at the gate. This record is final and cannot be changed.
-            </p>
-            <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-2">
-              <div>
-                <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-                  Time
-                </dt>
-                <dd className="font-mono text-sm font-bold text-swiss-ink">
-                  {formatTime(attendance.at)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-                  Gate
-                </dt>
-                <dd className="text-sm font-bold tracking-tight text-swiss-ink">
-                  {attendance.gate}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-                  SEN
-                </dt>
-                <dd className="font-mono text-sm font-bold text-swiss-ink">
-                  {attendance.sen}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </div>
-      ) : (
-        <div className="p-6">
-          <p className="text-xl font-black uppercase leading-tight tracking-tight text-content-muted">
-            Not Marked Yet
-          </p>
-          <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
-            Show your pass at the gate. Staff scan it and this updates
-            automatically — there is nothing for you to do.
-          </p>
-        </div>
-      )}
+      {children}
     </section>
   )
 }

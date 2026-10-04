@@ -157,12 +157,18 @@ export function AdminProvider({ children }: { children: ReactNode }) {
           sen: result.sen,
           at: result.at,
           method: result.method,
+          // From the server's answer, never from local state: the whole point is
+          // that the client has no opinion about which day it is.
+          day: result.day,
+          totalDays: result.dayState.totalDays,
         })
         return {
           name: result.attendee.name,
           sen: result.sen,
           at: result.at,
           method: result.method,
+          day: result.day,
+          totalDays: result.dayState.totalDays,
         }
       } catch (cause) {
         setError(
@@ -255,6 +261,20 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     [toError],
   )
 
+  const updateEventDay = useCallback(
+    async (day: number | null) => {
+      setError(null)
+      try {
+        // The whole `EventInfo` comes back, so the day change and the agenda agree
+        // immediately rather than drifting until the next refresh.
+        setEvent(await portalApi.updateEventDay(day))
+      } catch (cause) {
+        toError(cause)
+      }
+    },
+    [toError],
+  )
+
   const clearError = useCallback(() => setError(null), [])
   const clearLastScan = useCallback(() => setLastScan(null), [])
 
@@ -277,6 +297,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       scanAttendance,
       setAttendeePassword,
       setEventPhase,
+      updateEventDay,
       setAgendaStatus,
       clearError,
       clearLastScan,
@@ -298,6 +319,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       scanAttendance,
       setAttendeePassword,
       setEventPhase,
+      updateEventDay,
       setAgendaStatus,
       clearError,
       clearLastScan,
@@ -313,6 +335,6 @@ function stripAttendee(record: CheckIn & { attendee: Attendee }): CheckIn {
   // attendee was admitted. `attendeeName` comes from the record rather than from
   // the joined row so the log renders for a `gate` account, which is never sent
   // the roster.
-  const { id, sen, attendeeId, at, gate, method, attendeeName } = record
-  return { id, sen, attendeeId, at, gate, method, attendeeName }
+  const { id, sen, attendeeId, at, gate, method, day, attendeeName } = record
+  return { id, sen, attendeeId, at, gate, method, day, attendeeName }
 }

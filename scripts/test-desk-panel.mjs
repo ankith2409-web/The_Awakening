@@ -358,4 +358,66 @@ check(
   ),
 )
 
+/* -- per-day attendance ----------------------------------------------------- */
+
+/*
+  The day comes from the server and the client never sends one.
+
+  A `day` in the request body would mean a stale control in a stale tab could file
+  a morning's scans under the wrong heading — and nobody would find out until the
+  export. So the assertion is about ABSENCE, which is easy to reintroduce by
+  accident and impossible to notice.
+*/
+check(
+  'the scan request sends no day',
+  /recordAttendanceBySen[\s\S]{0,200}\{ sen \}/.test(
+    readCode('src/api/http-portal.ts'),
+  ) &&
+    !/recordAttendanceBySen\([\s\S]{0,160}day:/.test(readCode('src/api/http-portal.ts')),
+)
+
+check(
+  'the server resolves the day itself',
+  server.includes('const dayState = await resolveEventDay()') &&
+    server.includes('const day = dayState.activeDay'),
+)
+
+check(
+  'and never reads a day from the request body',
+  // Narrowed on purpose: `body.dayOverride` is the owner's pin, which IS meant to
+  // come from the body. A bare `body.day` is what must never exist.
+  !/body\.day(?!Override)/.test(server),
+  'a client-supplied day could misattribute a whole queue of scans',
+)
+
+check(
+  'the conflict is per day, so the same badge is admitted on the next day',
+  server.includes('on conflict (attendee_id, day) do nothing'),
+)
+
+check(
+  'the attendee is shown one row per day, including days with no record',
+  readCode('src/components/AttendancePanel.tsx').includes(
+    'Array.from({ length: totalDays }',
+  ),
+)
+
+check(
+  'the attendee polling waits for TODAY, not for any record',
+  /record\.day === today/.test(readCode('src/auth/AttendeeProvider.tsx')),
+  'otherwise an attendee marked on day one stops polling and day two never appears',
+)
+
+check(
+  'the export names its day in the filename',
+  readCode('src/lib/exportAttendance.ts').includes('day-${day}'),
+)
+
+check(
+  'the export takes a required day rather than defaulting',
+  /function downloadAttendanceCsv\([\s\S]*day: number,/.test(
+    readCode('src/lib/exportAttendance.ts'),
+  ),
+)
+
 report()

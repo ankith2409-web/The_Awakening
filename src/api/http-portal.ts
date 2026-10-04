@@ -8,7 +8,9 @@ import {
   type AttendeeRegisterInput,
   type AttendeeSession,
   type CheckIn,
+  type DayState,
   type EventInfo,
+  type MyAttendance,
   type PortalErrorCode,
   type Team,
   type Ticket,
@@ -130,13 +132,22 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('GET', '/attendee/ticket')
   }
 
-  getMyAttendance(): Promise<CheckIn | null> {
+  getMyAttendance(): Promise<MyAttendance | null> {
     return this.#request('GET', '/attendee/attendance')
   }
 
-  /** The only write path for attendance; the log is append-only. */
-  recordAttendanceBySen(sen: string): Promise<CheckIn & { attendee: Attendee }> {
-    return this.#request('POST', '/admin/attendance', { sen })
+  /**
+   * The only write path for attendance; the log is append-only.
+   *
+   * No `day` in the body. The server resolves it from the calendar, so a stale
+   * control in a stale tab cannot file a morning's scans under the wrong heading.
+   */
+  recordAttendanceBySen(sen: string) {
+    return this.#request<CheckIn & { attendee: Attendee; dayState: DayState }>(
+      'POST',
+      '/admin/attendance',
+      { sen },
+    )
   }
 
   /* -------------------------------------------------------- admin tools */
@@ -162,6 +173,10 @@ export class HttpPortalApi implements PortalApi {
 
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
     return this.#request('PATCH', '/admin/event', { phase })
+  }
+
+  updateEventDay(dayOverride: number | null): Promise<EventInfo> {
+    return this.#request('PATCH', '/admin/event', { dayOverride })
   }
 
   /* --------------------------------------------------------- transport */

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { portalApi, PortalError, PORTAL_ERROR_MESSAGES } from '@/api'
-import type { Attendee, CheckIn, EventInfo, Ticket } from '@/domain/types'
+import type { Attendee, EventInfo, MyAttendance, Ticket } from '@/domain/types'
 import { normalisePhone, normaliseSen } from '@/domain/phone'
 import { AttendeeContext, type AttendeeContextValue } from './contexts'
 
@@ -17,7 +17,7 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AttendeeContextValue['status']>('initialising')
   const [attendee, setAttendee] = useState<Attendee | null>(null)
   const [event, setEvent] = useState<EventInfo | null>(null)
-  const [attendance, setAttendance] = useState<CheckIn | null>(null)
+  const [attendance, setAttendance] = useState<MyAttendance | null>(null)
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [loadingData, setLoadingData] = useState(false)
   const [error, setError] = useState<AttendeeContextValue['error']>(null)
@@ -80,12 +80,22 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
    * after walking through the gate — at exactly the moment they are looking at
    * the screen for it.
    *
-   * Polling stops the instant a record exists. The log is append-only and a
-   * record is immutable, so once one is there no further poll can learn
-   * anything: there is genuinely nothing left to watch for.
+   * Polling stops once this attendee is marked for the day being scanned into.
+   *
+   * That is NOT "once any record exists", which is what the old code did. A
+   * record is per day now, so an attendee who came on day one would have their
+   * polling stop on day one morning and sit there showing day two as "not yet"
+   * until they manually reloaded — after walking through the gate again. The
+   * log is append-only and records are immutable, so a record for today's day is
+   * genuinely the last thing a poll can learn.
    */
   useEffect(() => {
-    if (status !== 'active' || attendance !== null || loadingData) return
+    if (status !== 'active' || loadingData) return
+
+    const today = event?.activeDay ?? 1
+    const markedForToday =
+      attendance?.records?.some((record) => record.day === today) ?? false
+    if (markedForToday) return
 
     let cancelled = false
 
@@ -119,7 +129,7 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
     }
-  }, [status, attendance, loadingData])
+  }, [status, attendance, loadingData, event?.activeDay])
 
   /** Stable: only touches `setError`, which React guarantees is stable. */
   const toError = useCallback((cause: unknown): never => {

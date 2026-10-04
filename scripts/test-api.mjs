@@ -201,7 +201,34 @@ async function main() {
   )
 
   const myAttendance = await call(anon, 'GET', '/attendee/attendance')
-  check('attendance starts null', myAttendance.body === null)
+  /*
+    Not null any more.
+
+    This used to be `null`, which meant "not marked yet" and doubled as "no
+    session". It now returns an object with an empty `records` array and the day
+    count, because the dashboard has to render a row per day — including days with
+    no record yet — and cannot do that from a null.
+
+    The distinction that matters is preserved: no session is still `null`, so this
+    is only ever reached by somebody who is actually signed in.
+  */
+  check(
+    'attendance starts with no records',
+    Array.isArray(myAttendance.body?.records) && myAttendance.body.records.length === 0,
+    `got ${JSON.stringify(myAttendance.body)}`,
+  )
+  check(
+    'and reports the day count, so the dashboard can render per-day rows',
+    typeof myAttendance.body?.totalDays === 'number' && myAttendance.body.totalDays >= 1,
+    `totalDays=${myAttendance.body?.totalDays}`,
+  )
+
+  const anonAttendance = await call(makeJar(), 'GET', '/attendee/attendance')
+  check(
+    'no session is still null, distinct from "no records"',
+    anonAttendance.body === null,
+    `got ${JSON.stringify(anonAttendance.body)}`,
+  )
 
   /* -- duplicates ------------------------------------------------------ */
   const dupPhone = await call(makeJar(), 'POST', '/attendee/register', {
@@ -332,7 +359,28 @@ async function main() {
 
   /* -- attendee sees it ------------------------------------------------- */
   const marked = await call(anon, 'GET', '/attendee/attendance')
-  check('attendee sees attendance marked', marked.body?.sen === sen, `got ${JSON.stringify(marked.body)}`)
+  /*
+    A list of records, not one record. `test:perday` covers the two-day case
+    properly; this asserts the shape and the day each record carries, because the
+    single-record assumption is what broke when days were introduced.
+  */
+  const markedRecords = marked.body?.records ?? []
+  check(
+    'attendee sees their attendance as a list',
+    Array.isArray(marked.body?.records),
+    `got ${JSON.stringify(marked.body)}`,
+  )
+  check('with exactly one record so far', markedRecords.length === 1, `${markedRecords.length} records`)
+  check(
+    'that record is theirs',
+    markedRecords[0]?.sen === sen,
+    `got ${markedRecords[0]?.sen}`,
+  )
+  check(
+    'and it names the day it was recorded against',
+    markedRecords[0]?.day === 1,
+    `day=${markedRecords[0]?.day}`,
+  )
 
   await call(anon, 'POST', '/attendee/logout')
   const afterLogout = await call(anon, 'GET', '/attendee/session')

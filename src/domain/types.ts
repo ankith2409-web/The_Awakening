@@ -123,6 +123,35 @@ export interface EventInfo {
   readonly city: string
   readonly phase: EventPhase
   readonly capacity: number
+  /**
+   * Which day attendance scans are recorded against, resolved from the calendar
+   * on the server.
+   *
+   * On `EventInfo` so every surface that needs to say "day one" agrees: the
+   * attendee dashboard, the admin masthead and the Programme panel all read the
+   * same value from the same response.
+   */
+  readonly activeDay: number
+  /**
+   * The day the calendar says it is, even when an override is in force.
+   *
+   * Shown beside the override control so the two can be compared. "The calendar
+   * says day one, you pinned day two" is a sentence an owner can act on; the
+   * portal quietly disagreeing with the date is not.
+   */
+  readonly calendarDay: number
+  /** How many days the event runs for. 1 for a single-day event. */
+  readonly totalDays: number
+  /**
+   * An owner has pinned the day with `dayOverride`.
+   *
+   * Surfaced so the UI can say so. A portal that thinks it is day one when the
+   * calendar says day two is confusing exactly when it matters most, and the
+   * override is the usual reason.
+   */
+  readonly dayOverridden: boolean
+  /** The pinned day, or `null` to follow the calendar. Owner-only to set. */
+  readonly dayOverride: number | null
   readonly agenda: readonly AgendaItem[]
 }
 
@@ -159,6 +188,15 @@ export interface CheckIn {
   readonly sen: string
   readonly attendeeId: string
   readonly at: string
+  /**
+   * Which day of the event this record belongs to. 1-based.
+   *
+   * Resolved by the server from the calendar, never sent by the client — so a
+   * stale control in a stale tab cannot file a morning's scans under the wrong
+   * heading. One record exists per attendee per day, which is what lets somebody
+   * attend both days.
+   */
+  readonly day: number
   /** Which door it was scanned at. */
   readonly gate: string
   /**
@@ -179,6 +217,39 @@ export interface CheckIn {
    * can tell a genuine pass from a guess.
    */
   readonly method: AdmissionMethod
+}
+
+/**
+ * Which day of the event it is.
+ *
+ * Carried on `EventInfo` rather than fetched separately, so the attendee
+ * dashboard, the admin masthead and the Programme panel cannot disagree about it.
+ */
+export interface DayState {
+  /** The day scans are currently recorded against. */
+  readonly activeDay: number
+  /** How many days the event runs for. */
+  readonly totalDays: number
+  /** An owner has pinned the day, rather than it coming from the calendar. */
+  readonly overridden: boolean
+  /** The day the calendar says it is, even when an override is in force. */
+  readonly calendarDay?: number
+}
+
+/**
+ * The signed-in attendee's own attendance, per day.
+ *
+ * An array rather than a single record: attendance used to be once-in-a-lifetime,
+ * and returning "the first row" would tell somebody who came on day two that they
+ * arrived on day one. `totalDays` is included so the dashboard can render a row
+ * for a day with no record yet — an absence the attendee can read as "not yet"
+ * rather than as nothing at all.
+ */
+export interface MyAttendance {
+  readonly records: readonly CheckIn[]
+  readonly activeDay: number
+  readonly totalDays: number
+  readonly overridden: boolean
 }
 
 /**

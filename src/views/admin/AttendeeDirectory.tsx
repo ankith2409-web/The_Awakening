@@ -106,10 +106,27 @@ export function AttendeeDirectory() {
     passwordRef.current?.focus()
   }, [openSen])
 
-  const markedSen = useMemo(
-    () => new Set(attendance.map((record) => normaliseSen(record.sen))),
-    [attendance],
-  )
+  /*
+    Which days this attendee is marked for.
+
+    A Set of day numbers rather than a single boolean. It used to be a bare "in"
+    derived from whether any record existed at all, which was correct while
+    attendance was once-in-a-lifetime and is now wrong twice over: it cannot say
+    which day, and it would show somebody who came only to day one as present for
+    an event that has a second day still to run.
+
+    The badge reads "D1" / "D1 D2" — short enough for a row, and unambiguous once
+    the column has a heading. The fuller wording is in the `title`.
+  */
+  const markedDays = useMemo(() => {
+    const byAttendee = new Map<string, Set<number>>()
+    for (const record of attendance) {
+      const days = byAttendee.get(record.attendeeId) ?? new Set<number>()
+      days.add(record.day)
+      byAttendee.set(record.attendeeId, days)
+    }
+    return byAttendee
+  }, [attendance])
 
   const matches = useMemo(() => matchesAttendeeQuery(attendees, query), [attendees, query])
 
@@ -226,7 +243,7 @@ export function AttendeeDirectory() {
               key={person.id}
               person={person}
               index={index}
-              marked={markedSen.has(normaliseSen(person.sen))}
+              markedDays={daysFor(markedDays.get(person.id))}
               isOpen={openSen === normaliseSen(person.sen)}
               justChanged={done === normaliseSen(person.sen)}
               submitting={submitting}
@@ -254,11 +271,16 @@ export function AttendeeDirectory() {
   )
 }
 
+/** Sorted day numbers for one attendee, or an empty list. */
+function daysFor(days: Set<number> | undefined): number[] {
+  return days === undefined ? [] : [...days].sort((a, b) => a - b)
+}
+
 /** One attendee, and the inline form that sets their password. */
 function DirectoryRow({
   person,
   index,
-  marked,
+  markedDays,
   isOpen,
   justChanged,
   submitting,
@@ -272,7 +294,8 @@ function DirectoryRow({
 }: {
   readonly person: Attendee
   readonly index: number
-  readonly marked: boolean
+  /** Which days this person is marked for. Empty when not marked at all. */
+  readonly markedDays: readonly number[]
   readonly isOpen: boolean
   readonly justChanged: boolean
   readonly submitting: boolean
@@ -295,11 +318,25 @@ function DirectoryRow({
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-lg font-black tracking-tight text-swiss-ink">
             {person.name}
-            {marked ? (
-              <span className="border border-swiss-ink px-2 py-0.5 text-2xs font-bold uppercase tracking-[0.15em] text-swiss-ink">
-                In
+            {/*
+              Was a bare "IN". That was ambiguous even before per-day attendance —
+              it sat under a masthead reading "SIGNED IN", so it could plausibly be
+              read as a session state. Now it names the days, and the title spells
+              it out for anyone who has to ask.
+
+              One badge per day rather than "D1 D2" in one: it stays legible at the
+              width a row actually has, and the two read as separate facts — which
+              they are.
+            */}
+            {markedDays.map((day) => (
+              <span
+                key={day}
+                title={`Marked present on day ${day}`}
+                className="border border-swiss-ink px-2 py-0.5 font-mono text-2xs font-bold uppercase tracking-[0.1em] text-swiss-ink"
+              >
+                D{day}
               </span>
-            ) : null}
+            ))}
             {justChanged ? (
               <span
                 role="status"

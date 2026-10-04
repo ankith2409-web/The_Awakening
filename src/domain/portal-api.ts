@@ -8,7 +8,9 @@ import type {
   AttendeeRegisterInput,
   AttendeeSession,
   CheckIn,
+  DayState,
   EventInfo,
+  MyAttendance,
   Team,
   Ticket,
 } from './types'
@@ -57,18 +59,31 @@ export interface PortalApi {
 
   /* -- attendance ------------------------------------------------------- */
   /**
-   * The attendee's own attendance record, or null if they have not been
-   * scanned. Drives the "attendance marked" state on their dashboard.
+   * The attendee's own attendance, one record per day they were marked.
+   *
+   * Was a single record or null, which was correct while attendance was
+   * once-in-a-lifetime. Returning "the first row" now would tell somebody who
+   * came on day two that they arrived on day one.
    */
-  getMyAttendance(): Promise<CheckIn | null>
+  getMyAttendance(): Promise<MyAttendance | null>
 
   /**
    * Records attendance from a scanned SEN.
    *
    * The ONLY way attendance is ever created. There is no update and no delete
    * — the record is immutable once written.
+   *
+   * Takes no day. The server resolves it from the calendar, so there is nothing at
+   * the door that can be left on the wrong setting. The response carries the day it
+   * recorded, so the confirmation can name it.
+   *
+   * Somebody already marked on an earlier day is admitted again — that is how
+   * attending both days works. A conflict means they are already marked for
+   * *today*.
    */
-  recordAttendanceBySen(sen: string): Promise<CheckIn & { attendee: Attendee }>
+  recordAttendanceBySen(
+    sen: string,
+  ): Promise<CheckIn & { attendee: Attendee; dayState: DayState }>
 
 
   /* -- admin: directory & controls --------------------------------------- */
@@ -95,6 +110,17 @@ export interface PortalApi {
   }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }>
 
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo>
+  /**
+   * Pins the day attendance is recorded against, or clears the pin.
+   *
+   * `null` returns to following the calendar, which is the normal state. A number
+   * makes the portal treat that day as current regardless of the date — how you
+   * exercise day two before it arrives, and how you tell it when a schedule has
+   * slipped.
+   *
+   * Independent of `phase`, so setting one does not clear the other.
+   */
+  updateEventDay(dayOverride: number | null): Promise<EventInfo>
   updateAgendaItem(
     id: string,
     patch: Partial<Pick<EventInfo['agenda'][number], 'status'>>,
@@ -123,5 +149,7 @@ export type {
   EventInfo,
   Attendee,
   CheckIn,
+  DayState,
+  MyAttendance,
   Ticket,
 }

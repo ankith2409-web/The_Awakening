@@ -29,6 +29,7 @@ import {
   phoneProblem,
 } from './_lib/identifiers.ts'
 import { readTicket, signSen } from './_lib/ticket.ts'
+import { resolveEventDay } from './_lib/eventDay.ts'
 // Only the reset-attempt ledger purge survives; the limiter itself went with the
 // endpoint it protected. See `_lib/reset.ts`.
 import { purgeOldResetAttempts } from './_lib/reset.ts'
@@ -309,14 +310,37 @@ async function route(
         // Null rather than 401: the dashboard renders "not marked yet", and a
         // session that expired mid-view should not turn into an error.
         if (!session) return json(res, 200, null)
+
         const { rows } = await db().query(
           // Aliased to camelCase to match the `CheckIn` contract. The admin
           // log resolves each row to a person via `attendeeId`, so leaving it
           // snake_case renders every row without a name.
-          'select id, sen, attendee_id as "attendeeId", gate, at, method from attendance where attendee_id = $1',
+          `select id, sen, attendee_id as "attendeeId", gate, at, method, day
+             from attendance where attendee_id = $1 order by day`,
           [session.subject_id],
         )
-        return json(res, 200, rows[0] ?? null)
+
+        const dayState = await resolveEventDay()
+
+        /*
+          Every record, not just the first, and the day state alongside them.
+
+          This used to return a single row or null, which was correct while
+          attendance was once-in-a-lifetime. With a record per day, "the first one"
+          is a coin toss: somebody who came on day two would see day one's time,
+          and somebody who came on day one only would be told they are marked for
+          an event they have not attended yet.
+
+          The dashboard needs `totalDays` to render rows for days that have no
+          record yet, so an attendee can see "day two — not yet" rather than an
+          absence that reads like nothing at all.
+        */
+        return json(res, 200, {
+          records: rows,
+          activeDay: dayState.activeDay,
+          totalDays: dayState.totalDays,
+          overridden: dayState.overridden,
+        })
       }
 
       /*
@@ -579,11 +603,17 @@ async function route(
                   t.gate,
                   t.at,
                   t.method,
+                  t.day,
                   a.name as "attendeeName"
              from attendance t
              join attendees a on a.id = t.attendee_id
-            order by t.at`,
+            order by t.day, t.at`,
         )
+        /*
+          `order by day, then at` rather than `at` alone. The log is read one day at
+          a time — "who came on day one" is the question — and interleaving two
+          days by clock time turns that into a scan for a needle.
+        */
         return json(res, 200, rows)
       }
 
@@ -607,9 +637,29 @@ async function route(
         const attendee = found[0]
         if (!attendee) throw unprocessable('unknown_sen')
 
-        // ATOMIC. The unique index on attendance(attendee_id) is the real
-        // guard, so two scanners hitting the same badge at the same instant
-        // cannot both insert. A SELECT-then-INSERT would have a window here.
+        /*
+          The day comes from the server's calendar, never from the request.
+
+          A `day` field in the body would let the client file a scan under any
+          heading it liked, and a stale toggle in a stale tab would do exactly that
+          to a whole queue without anybody noticing until the export was read. The
+          operator's only job at the door is to scan the badge.
+        */
+        const dayState = await resolveEventDay()
+        const day = dayState.activeDay
+
+        /*
+          ATOMIC, and on (attendee_id, day).
+
+          The unique index is the real guard, so two scanners hitting the same
+          badge at the same instant cannot both insert — a SELECT-then-INSERT
+          would have a window here.
+
+          The conflict is per day, which is the entire point: somebody marked on
+          day one is still admitted on day two, because they came. That is what
+          `on conflict do nothing` returning nothing now means — "already marked
+          for THIS day" rather than "already marked, ever".
+        */
         const { rows: inserted } = await db().query<{
           id: string
           sen: string
@@ -620,16 +670,28 @@ async function route(
           gate: string
           at: string
           method: string
+          day: number
         }>(
-          `insert into attendance (sen, attendee_id, gate, method)
-           select sen, id, 'Gate A', $2 from attendees where id = $1
-           on conflict (attendee_id) do nothing
-           returning id, sen, attendee_id as "attendeeId", gate, at, method`,
-          [attendee.id, admission],
+          `insert into attendance (sen, attendee_id, gate, method, day)
+           select sen, id, 'Gate A', $2, $3 from attendees where id = $1
+           on conflict (attendee_id, day) do nothing
+           returning id, sen, attendee_id as "attendeeId", gate, at, method, day`,
+          [attendee.id, admission, day],
         )
 
         const record = inserted[0]
-        if (!record) throw conflict('already_checked_in')
+        if (!record) {
+          /*
+            Already marked for this day. The message names the day because on day
+            two the same badge may well succeed — and "already checked in" with no
+            day attached would read as a dead end to somebody holding a valid pass
+            for today.
+          */
+          throw conflict(
+            'already_checked_in',
+            day > 1 ? `Already marked for day ${day}.` : undefined,
+          )
+        }
 
         const { rows: person } = await db().query<AttendeeRow>(
           'select id, name, phone, sen, password_hash, created_at from attendees where id = $1',
@@ -638,17 +700,68 @@ async function route(
         const attendeeRow = person[0]
         if (!attendeeRow) throw notFound()
 
-        return json(res, 201, { ...record, attendee: publicAttendee(attendeeRow) })
+        /*
+          The day state rides along so the scan confirmation can say which day it
+          just recorded. An operator confirming "day two, marked" at a busy door
+          cannot infer it, and getting it wrong at the door is worse than being
+          told.
+        */
+        return json(res, 201, {
+          ...record,
+          attendee: publicAttendee(attendeeRow),
+          dayState: {
+            activeDay: dayState.activeDay,
+            totalDays: dayState.totalDays,
+            overridden: dayState.overridden,
+          },
+        })
       }
 
       case 'PATCH /admin/event': {
         requireOwner()
         const body = await readJson<Record<string, unknown>>(req)
-        const phase = body.phase
-        if (phase !== 'registration' && phase !== 'live' && phase !== 'completed') {
-          throw badRequest('unknown', 'Invalid phase.')
+
+        /*
+          `phase` and `dayOverride` are both optional and independent, so the
+          Programme panel can set one without clobbering the other.
+        */
+        let phase: 'registration' | 'live' | 'completed' | undefined
+        if (body.phase !== undefined) {
+          if (body.phase !== 'registration' && body.phase !== 'live' && body.phase !== 'completed') {
+            throw badRequest('unknown', 'Invalid phase.')
+          }
+          phase = body.phase
         }
-        return sendEvent(res, phase)
+
+        let dayOverride: number | null | undefined
+        if (body.dayOverride !== undefined) {
+          if (body.dayOverride === null) {
+            dayOverride = null
+          } else {
+            const requested = Number(body.dayOverride)
+            if (!Number.isInteger(requested)) {
+              throw badRequest('unknown', 'Invalid day.')
+            }
+            // `resolveEventDay` refuses an out-of-range override on read, so an
+            // unvalidated write here would be silently ignored and the panel
+            // would appear to have done nothing.
+            const { rows } = await db().query<{ n: number }>(
+              `select greatest(
+                 (coalesce(end_date, date) - date) + 1, 1
+               )::int as n from events order by date desc limit 1`,
+            )
+            const total = rows[0]?.n ?? 1
+            if (requested < 1 || requested > total) {
+              throw badRequest(
+                'unknown',
+                total === 1 ? 'This is a one-day event.' : `Choose a day between 1 and ${total}.`,
+              )
+            }
+            dayOverride = requested
+          }
+        }
+
+        return sendEvent(res, phase, dayOverride)
       }
 
       case 'GET /admin/agenda':
@@ -702,10 +815,21 @@ async function route(
 
 /* ----------------------------------------------------------------- helpers */
 
-async function sendEvent(res: VercelResponse, phase?: 'registration' | 'live' | 'completed'): Promise<void> {
+async function sendEvent(
+  res: VercelResponse,
+  phase?: 'registration' | 'live' | 'completed',
+  dayOverride?: number | null,
+): Promise<void> {
   if (phase) {
     await db().query('update events set phase = $1 where id = $2', [
       phase,
+      'evt_awakening_2026',
+    ])
+  }
+
+  if (dayOverride !== undefined) {
+    await db().query('update events set day_override = $1 where id = $2', [
+      dayOverride,
       'evt_awakening_2026',
     ])
   }
@@ -718,7 +842,7 @@ async function sendEvent(res: VercelResponse, phase?: 'registration' | 'live' | 
     `select id, name, tagline, organiser, organiser_host,
             to_char(date, 'YYYY-MM-DD')     as date,
             to_char(end_date, 'YYYY-MM-DD') as end_date,
-            venue, city, phase, capacity
+            venue, city, phase, capacity, day_override
        from events order by date desc limit 1`,
   )
   const event = eventRows[0] as
@@ -734,10 +858,13 @@ async function sendEvent(res: VercelResponse, phase?: 'registration' | 'live' | 
         city: string
         phase: string
         capacity: number
+        day_override: number | null
       }
     | undefined
 
   if (!event) throw notFound('No event configured.')
+
+  const dayState = await resolveEventDay()
 
   const { rows: agenda } = await db().query(
     `select id, day, starts_at, title, speaker, room, status
@@ -758,6 +885,22 @@ async function sendEvent(res: VercelResponse, phase?: 'registration' | 'live' | 
     city: event.city,
     phase: event.phase,
     capacity: event.capacity,
+    /*
+      The day state travels with the event rather than on its own endpoint.
+
+      It is event data — when the event is, in effect — and the dashboard, the
+      admin masthead and the Programme panel all need it. Putting it on `/event`
+      means one request serves all three, and there is no way for two parts of the
+      UI to disagree about which day it is.
+
+      `totalDays` from the row rather than from the agenda, so a programme that
+      happens to list only day-one sessions still reports a two-day event.
+    */
+    activeDay: dayState.activeDay,
+    calendarDay: dayState.calendarDay,
+    totalDays: dayState.totalDays,
+    dayOverride: event.day_override ?? null,
+    dayOverridden: dayState.overridden,
     agenda: agenda.map((item: Record<string, unknown>) => ({
       id: item.id,
       day: item.day,
