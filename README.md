@@ -841,7 +841,7 @@ are zeroed explicitly.
 
 ## Testing
 
-423 assertions across 13 suites, plus a 250-input error matrix.
+430 assertions across 13 suites, plus a 250-input error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
@@ -854,7 +854,7 @@ are zeroed explicitly.
 | `test:perday`   | 28          | yes      | One record per attendee per day; both days recorded; the lock on future days |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
-| `test:landing`  | 77          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/` |
+| `test:landing`  | 84          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
@@ -1059,6 +1059,59 @@ exists, so `test:gate` no longer needs the workaround.
 - **`TICKET_SECRET` and `DATABASE_URL` are marked sensitive** in Vercel.
   `VITE_*` variables deliberately are not — Vite inlines them into the public
   bundle and Vercel rejects secret visibility for them.
+
+### What happens when something breaks
+
+Every failure mode was checked by breaking it on purpose rather than reasoned about.
+
+**A render crash.** React unmounts the entire tree when a component throws while
+rendering, so before this was added a single bad render was a permanent white
+screen — no explanation, no navigation, nothing in the console unless DevTools
+happened to be open. On a phone at a registration desk that reads as "the website is
+down", and the person whose job it is to fix it has no way to tell it was one bad
+render rather than the whole site. `src/components/ErrorBoundary.tsx` catches it and
+shows a recovery panel with a retry and a link to each door, so a failure in one
+portal cannot lock somebody out of the other. It does **not** retry automatically: a
+render that threw once from bad data throws again on the same data, and a reload
+loop at the gate looks exactly like the outage it replaced. Verified by crashing
+`LandingView` on purpose and loading the built bundle.
+
+**A server-side throw.** Every route runs inside one `try`, and anything that is not
+an `ApiError` becomes a clean `500 {code: 'unknown'}` with human copy. Stack traces
+and SQL never reach the client. Probed with 26 hostile requests — garbage cookies, a
+session cookie presented to the wrong door, SQL injection in a SEN, prototype
+pollution, `__proto__` in a query string, path traversal, a 4 000-character path,
+arrays and bare strings where objects belong, numeric coercion, RTL overrides,
+emoji, `TRACE` — and **zero** returned a 5xx, a non-JSON body, or an internal.
+
+**A stalled request.** `fetch` has no default timeout, so a connection that stalls
+(captive portal, mobile data dropping mid-request) leaves the promise pending
+*forever*. That is worst on the session probe, because `AttendeeProvider` only sets
+a status in `.then` or `.catch` — an unsettled probe holds the boot screen
+indefinitely, so an attendee on bad wifi could not reach the sign-in form at all.
+Every request is bounded with `AbortSignal.timeout`, on a shorter budget for the
+probe that gates first paint than for writes that do real work.
+
+**Connection exhaustion.** `db()` returns a module-level singleton capped at five
+connections with a 10-second connect timeout, so a warm lambda reuses sockets
+instead of opening one per request and a Neon hiccup fails fast rather than hanging.
+
+**A camera that misbehaves.** The decoder is imported on demand inside a `try`, and
+permission denial, an insecure context and an absent camera each resolve to a
+distinct state that degrades to typed SEN entry. The door is never blocked by a
+browser quirk.
+
+**Measured under load**, against production:
+
+| Phase                                    | Result                                   |
+| ---------------------------------------- | ---------------------------------------- |
+| 350 registrations, concurrency 25        | 350/350 · p50 1.2s · max 3.3s            |
+| 350 dashboard loads, concurrency 25      | 350/350 · p50 2.3s · max 3.5s            |
+| 350 logins (bcrypt compare)              | 350/350 · p50 1.0s · max 3.2s            |
+| 350 registrations fired simultaneously   | 350/350 · 5.5s wall clock, none rejected |
+
+That last row is the one that matters: the platform **queues** excess concurrency
+rather than rejecting it, so the failure mode under a rush is slow, not down.
 
 ### Known limits
 

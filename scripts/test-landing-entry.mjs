@@ -229,7 +229,54 @@ for (const file of walk('src')) {
   )
 }
 
-/* -- 7. touch targets are unharmed ------------------------------------------ */
+/* -- 7. a render crash cannot blank the site --------------------------------- */
+
+/*
+  React unmounts the whole tree when a component throws while rendering, so without
+  a boundary any single bad render is a permanent white screen: no explanation, no
+  navigation, nothing in the console unless DevTools happens to be open. On a phone
+  at a registration desk that is indistinguishable from the whole site being down.
+
+  Verified by deliberately crashing `LandingView` and loading the built bundle —
+  the recovery panel rendered and the error reached the console. What is asserted
+  here is that the wiring survives, because an unused boundary is one refactor away
+  from being deleted, and it only fails on the day it is needed.
+*/
+const main = readCode('src/main.tsx')
+const boundary = readCode('src/components/ErrorBoundary.tsx')
+
+check(
+  'the app is wrapped in an error boundary',
+  /BoundaryGate/.test(main) && /<BoundaryGate>/.test(main),
+  'a render throw would unmount everything and leave a white page',
+)
+check(
+  'the boundary sits above the providers, not inside them',
+  main.indexOf('<BoundaryGate>') < main.indexOf('<AttendeeProvider>'),
+  'a throw inside a provider would escape the boundary',
+)
+check(
+  'the boundary is inside the Router so it can recover on navigation',
+  main.indexOf('<BrowserRouter>') < main.indexOf('<BoundaryGate>'),
+  'the boundary cannot read the route, so it stays broken after navigating away',
+)
+check(
+  'the boundary catches rather than re-throwing',
+  /getDerivedStateFromError/.test(boundary) && /componentDidCatch/.test(boundary),
+  'a boundary missing a lifecycle hook renders nothing at all',
+)
+check(
+  'the boundary offers a way out of both doors',
+  /to="\/login"/.test(boundary) && /to="\/admin"/.test(boundary),
+  'someone locked out of one portal cannot reach the other',
+)
+check(
+  'the boundary shows no internals',
+  !/error\.message|error\.stack/.test(boundary),
+  'the recovery panel is leaking a stack trace to the attendee',
+)
+
+/* -- 8. touch targets are unharmed ------------------------------------------ */
 
 /*
   Three CTAs now, not two: "Your pass" for a signed-in visitor alongside the
