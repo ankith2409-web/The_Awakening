@@ -141,7 +141,7 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | `staff_changes`            | append-only audit of who changed which staff account          |
 | `password_changes`         | append-only audit of admin-mediated password changes          |
 | `password_reset_attempts`  | retired; retained as a record of the old endpoint's probing   |
-| `events`                   | one row                                                       |
+| `events`                   | one row; `day_override` pins the live day, `locked_days` closes days |
 | `agenda`                   | per-event items with `day`, `sort_order` and `status`         |
 | `teams`                    | read-only; there is no team write route                       |
 
@@ -355,6 +355,64 @@ the top reads as a total for the event when it is two separate figures. The expo
 label repeats the day — `Export SEN — day 2 (14)` — so the basis of the file is never
 unstated.
 
+#### Looking at one day, marking into another
+
+That single control raised a trap, and it is worth writing down because the fix is
+not obvious.
+
+Which day you are **looking at** is the operator's choice. Which day a scan is
+**recorded against** is the server's, from the calendar. Nothing at the door sets the
+second one, and that is deliberate — a picker there can misfile an entire morning's
+scans silently.
+
+So switch the control to Day 2 on the morning of Day 1, scan somebody, and this
+happens: the scan succeeds into Day 1, the confirmation says *"Marked for day 1"*,
+and the Attendance tab then shows *"Nobody marked for day 2 yet"*. The person is
+recorded and invisible. Reported as **"attendance is not marking"** — which is the
+one conclusion the confirmation panel directly contradicts.
+
+Two changes, and the second is the real one:
+
+- **A successful scan moves the view to the day it actually landed on.** Following
+  the record beats explaining it: the operator scans, and the row they just created
+  is on screen. In normal operation the two days already match and this never fires.
+  A *failed* scan moves nothing, because there is no record to follow.
+- **The scan panel warns when the two disagree**, before anyone scans — and for an
+  owner it names where the recording day is actually set (Programme → Attendance
+  Day), because that control being on a different tab under a different name is the
+  other half of why this was confusing.
+
+#### Closing a day
+
+`events.locked_days` refuses **new** marks for a day an owner has closed. Programme
+→ Close Attendance, one toggle per day.
+
+It exists because of append-only. There is no edit and no delete anywhere in this
+product, so once a day's SEN list has gone out for certificates, a late scan cannot
+be corrected — the record is wrong permanently and no route removes it. Locking the
+day is the only honest answer available, and an honest one: it stops new marks
+rather than pretending an existing mark can be amended.
+
+**Locking hides nothing.** The log, the roster badges and the SEN export all still
+show a locked day in full — verified, not assumed. Only new marks are refused. A lock
+that also hid the record of who came would trade a small problem for a much worse
+one.
+
+Deliberately **not** merged with `day_override`. That moves the present forward; this
+closes a day behind you. They are pressed at opposite moments — one in the morning,
+one at the end — and a single control whose meaning depends on when you touched it
+is how a day gets locked by accident.
+
+The write sends the whole intended set rather than a toggle, so a retry on a bad
+connection cannot reopen a day the organiser meant to close.
+
+Owner-only, like the override. A `gate` account can already mark whoever walks
+through the door on the live day, but letting a volunteer reopen a day that has
+already been exported would let them add names to a list that is already gone. When
+the live day is closed the scan panel says so and disables the scanner, rather than
+letting a queue discover it one refusal per badge — twelve identical errors read as
+a broken scanner, when it is working exactly as configured.
+
 The attendee dashboard changed most in meaning. It used to say "Attendance Marked"
 once. That told somebody who came on day two that they had been marked — full stop —
 and told somebody who came on day one only that they were marked for an event with a
@@ -433,6 +491,48 @@ keyboard over the camera preview on a phone, so the operator lost the view they
 were scanning with. Focus now returns only after a typed entry, where it helps: a
 USB barcode gun behaves like fast typing followed by Enter, so the next code
 should go straight in.
+
+### Name validation, and why emoji are refused
+
+A name must start with a letter and may then contain letters, combining marks, spaces,
+apostrophes, periods and hyphens — 2 to 60 characters.
+
+**There was no server-side name rule at all.** The register route took any non-empty
+string, which made the browser form the only thing enforcing a rule the API is
+supposed to own. Emoji, digits and a 200-character name all wrote straight through;
+the browser blocked emoji and the API returned `201`. `scripts/error-matrix.mjs`
+never caught it because `name` was the one field with no `serverCheck` passed to it —
+the parity check silently did not exist for it.
+
+Emoji are refused on purpose, and it is not a style preference. A name is read aloud
+at a door, printed on the roster an owner scans, and rendered beside a QR pass:
+
+- **Right-to-left overrides are an identity problem, not a cosmetic one.** A name
+  containing U+202E renders with its tail reversed, so the screen says something
+  different from what the badge says. A live example of exactly this was written to
+  the real roster by a hostile-input probe before the rule existed — the name read
+  `admin` on screen.
+- **Emoji are unreadable at arm's length**, which is the distance the gate operator is
+  working at.
+- **Skin tones, ZWJ sequences and flags are multi-code-point**, so a test matching a
+  single pictograph misses `👍🏽`, `👨‍👩‍👧` and `🇮🇳`. All of those are matched, along
+  with the variation selector and the joiner.
+
+Checked **before** the length rule, because a lone `✅` is one code point — a
+length-first order answers *"use at least 2 characters"* to somebody who typed a
+party hat on purpose.
+
+And the name must **start with a letter**: allowing a leading combining mark let a
+name made only of marks through, matching nothing else and rendering on the roster
+as an entry that looks blank. No script begins a word with a combining mark, so
+requiring a letter first costs nothing — Devanagari, Tamil, Telugu, Kannada,
+Malayalam, Bengali, Han, Arabic, Cyrillic and Greek all still pass, because their
+vowel signs come after the consonant. Verified against all of them.
+
+The rule is duplicated in `src/domain/name.ts` and `server/_lib/identifiers.ts`,
+because the two bundles are built by different toolchains. `error-matrix.mjs` now
+asserts they agree across **93 inputs**, including every emoji and invisible-character
+case above. That test is the only reason the duplication is safe.
 
 ### SEN validation
 
@@ -841,7 +941,7 @@ are zeroed explicitly.
 
 ## Testing
 
-430 assertions across 13 suites, plus a 250-input error matrix.
+434 assertions across 14 suites, plus a 291-case error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
@@ -852,9 +952,10 @@ are zeroed explicitly.
 | `test:roles`    | 34          | yes      | Every owner-only route refused to `gate`; an unrecognised role fails closed; the CLI's guards |
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
 | `test:perday`   | 28          | yes      | One record per attendee per day; both days recorded; the lock on future days |
+| `test:lock`     | 22          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
-| `test:errors`   | 250 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering |
-| `test:landing`  | 84          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
+| `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
+| `test:landing`  | 85          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |

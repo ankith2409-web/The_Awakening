@@ -77,6 +77,7 @@ export function AdminPortalView() {
     setEventPhase,
     setAgendaStatus,
     updateEventDay,
+    setLockedDays,
     clearError,
     clearLastScan,
   } = useAdmin()
@@ -104,6 +105,10 @@ export function AdminPortalView() {
   const totalDays = event?.totalDays ?? 1
   const activeDay = event?.activeDay ?? 1
   const selectedDay = viewDay ?? activeDay
+  const lockedDays = event?.lockedDays ?? []
+  // Whether the LIVE day is closed, which is what actually stops a scan. Distinct
+  // from whether the day being *viewed* is closed, which stops nothing.
+  const activeDayLocked = lockedDays.includes(activeDay)
   const dayRecords = useMemo(
     () => attendance.filter((record) => record.day === selectedDay),
     [attendance, selectedDay],
@@ -246,7 +251,19 @@ export function AdminPortalView() {
               activeDay={activeDay}
               totalDays={totalDays}
               overridden={event?.dayOverridden ?? false}
+              viewingDay={selectedDay}
+              isOwner={isOwner}
+              activeDayLocked={activeDayLocked}
               onScan={scanAttendance}
+              /*
+                Follow the record, not the operator's earlier choice.
+
+                Only ever called on a successful scan, and only ever moves the view
+                to where that record actually is. In normal operation the two days
+                already match and this is a no-op; it only does anything in the case
+                that read as a broken scanner.
+              */
+              onRecorded={setViewDay}
               onDismissScan={clearLastScan}
             />
             ) : null}
@@ -277,6 +294,7 @@ export function AdminPortalView() {
                 loading={loadingData}
                 onPhaseChange={(phase) => void setEventPhase(phase)}
                 onDayChange={(day) => void updateEventDay(day)}
+              onLockedDaysChange={(days) => void setLockedDays(days)}
                 onStatusChange={(id, status) => void setAgendaStatus(id, status)}
               />
             ) : null}
@@ -335,7 +353,7 @@ export function AdminPortalView() {
                         aria-pressed={selectedDay === day}
                         onClick={() => setViewDay(day)}
                         className={[
-                          'min-h-14 cursor-pointer px-5',
+                          'relative min-h-14 cursor-pointer px-5',
                           'text-sm font-bold uppercase tracking-[0.15em]',
                           'transition-colors duration-150 ease-linear',
                           selectedDay === day
@@ -344,6 +362,25 @@ export function AdminPortalView() {
                         ].join(' ')}
                       >
                         {day}
+                        {/*
+                          A closed day still shows its full attendance — locking
+                          stops new marks, it does not hide who came. Marked here so
+                          the state is visible from every tab without opening the
+                          Programme tab, and readable by a `gate` account that
+                          cannot change it.
+                        */}
+                        {lockedDays.includes(day) ? (
+                          <span
+                            title={`Attendance is closed for day ${day}`}
+                            className="absolute -right-px -top-px size-3 bg-swiss-accent-text"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                        {lockedDays.includes(day) ? (
+                          <span className="sr-only">
+                            (attendance closed)
+                          </span>
+                        ) : null}
                       </button>
                     ),
                   )}
@@ -396,7 +433,11 @@ function ScanPanel({
   activeDay,
   totalDays,
   overridden,
+  viewingDay,
+  isOwner,
+  activeDayLocked,
   onScan,
+  onRecorded,
   onDismissScan,
 }: {
   scanning: boolean
@@ -404,9 +445,35 @@ function ScanPanel({
   activeDay: number
   totalDays: number
   overridden: boolean
+  /** Which day the attendance log and the export are currently showing. */
+  viewingDay: number
+  /** Owner-only: only an owner can change which day scans record against. */
+  isOwner: boolean
+  /**
+   * Whether the LIVE day is closed for attendance.
+   *
+   * Stated as a panel state rather than left to the scan error, because a closed
+   * day produces one refusal per badge. Somebody running a queue through a closed
+   * day would get the same message a dozen times and conclude the scanner was
+   * broken — when in fact it is working exactly as configured.
+   */
+  activeDayLocked: boolean
   onScan: (
     sen: string,
   ) => Promise<{ name: string; sen: string; at: string; day: number } | null>
+  /**
+   * Called with the day a scan was actually recorded against.
+   *
+   * This exists because a successful scan could be invisible. The day a mark lands
+   * on is decided by the server from the calendar, while the day on screen is an
+   * operator choice — so scanning somebody while the log is set to another day put
+   * the record somewhere the operator was not looking. It read as a failed scan,
+   * which is the one conclusion the confirmation panel directly contradicts.
+   *
+   * The fix is to follow the record rather than to explain it. Telling somebody
+   * where their scan went is weaker than showing them the row it created.
+   */
+  onRecorded: (day: number) => void
   onDismissScan: () => void
 }) {
   const [value, setValue] = useState('')
@@ -429,10 +496,13 @@ function ScanPanel({
       const sen = raw.trim()
       if (sen === '' || scanning) return
       setValue('')
-      await onScan(sen)
+      const result = await onScan(sen)
+      // Only on success. A rejected SEN records nothing, so there is no day to
+      // follow and moving the view would be a lie.
+      if (result !== null) onRecorded(result.day)
       if (restoreFocus) inputRef.current?.focus()
     },
-    [onScan, scanning],
+    [onScan, onRecorded, scanning],
   )
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -475,14 +545,94 @@ function ScanPanel({
             Pinned by an organiser
           </span>
         ) : null}
+        {activeDayLocked ? (
+          <span className="border-2 border-swiss-accent-text bg-swiss-accent-text px-2 py-0.5 text-2xs font-bold uppercase tracking-[0.15em] text-swiss-paper">
+            Closed for attendance
+          </span>
+        ) : null}
       </div>
+
+      {/*
+        The closed state, stated before anybody scans.
+
+        Without this the only signal is the per-scan refusal that follows. Twelve
+        people in a queue each get "day 1 is closed", and a volunteer concludes the
+        scanner is broken rather than that the day is deliberately shut — the exact
+        inverse of what an owner locking a day intends to communicate.
+
+        The scanner is disabled rather than hidden: a control that vanishes is a
+        control somebody will go looking for, and the panel still needs to explain
+        itself.
+      */}
+      {activeDayLocked ? (
+        <div className="border-b-2 border-swiss-ink bg-swiss-muted px-6 py-5">
+          <p className="text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink">
+            Attendance for day {activeDay} is closed
+          </p>
+          <p className="mt-2 max-w-prose text-2xs font-medium leading-relaxed text-content-muted">
+            Nobody can be marked for this day any more, which is what you want once
+            its SEN list has gone out. Existing records are untouched — the log and
+            the export still show the day in full.
+            {isOwner
+              ? ' Reopen it on the Programme tab if this was a mistake.'
+              : ' Ask an organiser to reopen it if people are still arriving.'}
+          </p>
+        </div>
+      ) : null}
+
+      {/*
+        The mismatch warning, and the reason this component knows what the log is
+        showing at all.
+
+        Two different questions are being answered on this screen and they are easy
+        to conflate. "Which day am I LOOKING at" is the operator's choice, and it
+        moves the log and the export. "Which day am I WRITING to" is the server's,
+        from the calendar, and there is nothing at the door to set it.
+
+        When they disagree, a scan still succeeds — into the other day — and the
+        confirmation panel says so, but the row then does not appear in the log the
+        operator is looking at. Reported as "attendance is not marking". So it is
+        stated up front, before anyone scans, rather than only explained afterwards.
+      */}
+      {viewingDay !== activeDay ? (
+        <div
+          role="status"
+          className="border-b-2 border-swiss-accent-text bg-swiss-accent-text px-6 py-3"
+        >
+          <p className="text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-paper">
+            You are viewing day {viewingDay}. Scans are recorded for day {activeDay}
+            {/*
+              Says what happens rather than leaving it to be discovered: the view
+              follows a successful scan, so the record cannot end up off-screen.
+            */}
+            , and the view will follow any scan you make.
+          </p>
+          {/*
+            Only an owner can change the recording day, so only an owner is told
+            where. A `gate` volunteer has no such control and pointing at it would
+            send them looking for something that does not exist for them.
+
+            This line exists because the control that DOES change it lives on a
+            different tab under a different name — "Attendance Day" on Programme —
+            and switching the day here does not touch it. Reported as "attendance is
+            not marking" by somebody who had switched to day two expecting to record
+            day two.
+          */}
+          {isOwner ? (
+            <p className="mt-2 text-2xs font-medium uppercase leading-relaxed tracking-[0.15em] text-swiss-paper/85">
+              To record day {viewingDay} instead, change Attendance Day on the
+              Programme tab.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-col gap-6 p-6 lg:flex-row">
         {/* Camera first: it is what staff will actually use at the gate. */}
         <div className="lg:w-1/2">
           <BarcodeScanner
             onDetect={(text) => void record(text, false)}
-            disabled={scanning}
+            disabled={scanning || activeDayLocked}
           />
         </div>
 
@@ -507,10 +657,21 @@ function ScanPanel({
                 autoComplete="off"
                 spellCheck={false}
                 aria-describedby="scan-hint"
-                className="h-16 w-full border-2 border-swiss-ink bg-swiss-paper px-4 font-mono text-lg font-bold uppercase tracking-[0.1em] text-swiss-ink placeholder:text-sm placeholder:font-medium placeholder:normal-case placeholder:tracking-normal placeholder:text-neutral-400 focus:border-swiss-accent-text focus:outline-none"
+                // Disabled, not hidden — a USB scanner types into this field whether
+                // or not it is focusable, so the guard has to be here as well as on
+                // the button. The server refuses regardless; this stops the queue
+                // filling with refusals.
+                disabled={activeDayLocked}
+                className="h-16 w-full border-2 border-swiss-ink bg-swiss-paper px-4 font-mono text-lg font-bold uppercase tracking-[0.1em] text-swiss-ink placeholder:text-sm placeholder:font-medium placeholder:normal-case placeholder:tracking-normal placeholder:text-neutral-400 focus:border-swiss-accent-text focus:outline-none disabled:cursor-not-allowed disabled:border-content-muted/50 disabled:bg-swiss-muted disabled:text-content-muted/50"
               />
             </label>
-            <Button type="submit" variant="accent" size="lg" loading={scanning}>
+            <Button
+              type="submit"
+              variant="accent"
+              size="lg"
+              loading={scanning}
+              disabled={activeDayLocked}
+            >
               Mark
             </Button>
           </form>
@@ -891,14 +1052,17 @@ function ProgrammePanel({
   loading,
   onPhaseChange,
   onDayChange,
+  onLockedDaysChange,
   onStatusChange,
 }: {
   event: ReturnType<typeof useAdmin>['event']
   loading: boolean
   onPhaseChange: (phase: EventPhase) => void
   onDayChange: (day: number | null) => void
+  onLockedDaysChange: (days: readonly number[]) => void
   onStatusChange: (id: string, status: AgendaItem['status']) => void
 }) {
+  const locked = event?.lockedDays ?? []
   if (loading) return <Skeleton className="h-64 w-full" />
 
   if (!event) {
@@ -1007,6 +1171,73 @@ function ProgrammePanel({
                   Day {day}
                 </button>
               ),
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/*
+        Close attendance for a day that is finished.
+
+        A different control from "Attendance Day" above, and deliberately not merged
+        into it. That one moves the present forward; this one closes a day behind
+        you. They are pressed at opposite moments — one in the morning, one at the
+        end — and combining them would mean a single control whose meaning depends
+        on when you touched it.
+
+        Why it is needed at all: attendance is append-only, with no edit and no
+        delete anywhere in the product. So once a day's SEN list has gone out for
+        certificates, a late scan cannot be corrected — the record is wrong forever
+        and there is no route that removes it. Locking the day is the only honest
+        answer available, and it is a real one: it stops new marks rather than
+        pretending an existing one can be amended.
+
+        Locking hides nothing. The log, the roster badges and the SEN export all
+        still show the locked day in full; only new marks are refused.
+
+        Sends the whole intended set rather than a toggle, so a retry on a bad
+        connection cannot reopen a day the organiser meant to close.
+      */}
+      <section className="border-2 border-swiss-ink">
+        <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
+          Close Attendance
+        </h2>
+        <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
+          <p className="flex-1 text-2xs font-medium uppercase leading-relaxed tracking-[0.15em] text-content-muted">
+            {locked.length === 0
+              ? 'Every day is open. Nobody can be marked on a closed day.'
+              : `Closed: day ${locked.join(', day ')}. Those days still show in the log and the export.`}
+          </p>
+          <div className="flex gap-px bg-swiss-ink">
+            {Array.from({ length: event.totalDays }, (_, index) => index + 1).map(
+              (day) => {
+                const isLocked = locked.includes(day)
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    // The state is "closed", so the button says so. A toggle whose
+                    // pressed state means the opposite of its label is how a day
+                    // gets locked by accident.
+                    aria-pressed={isLocked}
+                    onClick={() =>
+                      onLockedDaysChange(
+                        isLocked ? locked.filter((d) => d !== day) : [...locked, day],
+                      )
+                    }
+                    className={[
+                      'min-h-11 cursor-pointer px-4 py-2',
+                      'text-2xs font-bold uppercase tracking-[0.2em]',
+                      'transition-colors duration-150 ease-linear',
+                      isLocked
+                        ? 'bg-swiss-ink text-swiss-paper'
+                        : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
+                    ].join(' ')}
+                  >
+                    Day {day} {isLocked ? 'closed' : 'open'}
+                  </button>
+                )
+              },
             )}
           </div>
         </div>

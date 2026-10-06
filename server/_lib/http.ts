@@ -19,6 +19,7 @@ export type ApiErrorCode =
   | 'invalid_ticket'
   | 'unknown_sen'
   | 'already_checked_in'
+  | 'day_locked'
   | 'not_found'
   | 'forbidden'
   | 'rate_limited'

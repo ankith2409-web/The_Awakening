@@ -152,6 +152,19 @@ export interface EventInfo {
   readonly dayOverridden: boolean
   /** The pinned day, or `null` to follow the calendar. Owner-only to set. */
   readonly dayOverride: number | null
+  /**
+   * Days attendance is closed for.
+   *
+   * Distinct from `dayOverride`: that moves the present forward, this closes a day
+   * behind you. Exists because attendance is append-only with no edit and no
+   * delete, so once a day's SEN list is gone for certificates there is no way to
+   * correct a late scan — the only honest option is to stop accepting them.
+   *
+   * Read-only surfaces are unaffected: the log and the export still show a locked
+   * day in full. This stops marks being written, it does not hide the record of
+   * who attended.
+   */
+  readonly lockedDays: readonly number[]
   readonly agenda: readonly AgendaItem[]
 }
 
@@ -275,6 +288,7 @@ export type PortalErrorCode =
   | 'invalid_ticket'
   | 'unknown_sen'
   | 'already_checked_in'
+  | 'day_locked'
   | 'not_found'
   | 'forbidden'
   | 'rate_limited'
@@ -290,6 +304,12 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
   invalid_ticket: 'This ticket is invalid or has already been used.',
   unknown_sen: 'No registered attendee matches that SEN.',
   already_checked_in: 'Attendance is already marked for that SEN.',
+  /*
+    A fallback for the case where the server's specific wording is lost. The scan
+    route always names the day, because "closed" without a day is not actionable —
+    but a generic message is better than rendering a machine code if it ever is.
+  */
+  day_locked: 'Attendance for that day is closed.',
   not_found: 'We could not find that record.',
   forbidden: 'You do not have access to that.',
   rate_limited: 'Too many attempts. Wait a moment and try again.',

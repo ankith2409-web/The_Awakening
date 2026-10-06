@@ -22,6 +22,7 @@
 import { VALIDATORS } from '../src/auth/validation.ts'
 import {
   isValidSen as serverIsValidSen,
+  nameProblem as serverNameProblem,
   normalisePhone as serverNormalisePhone,
   normaliseSen as serverNormaliseSen,
   passwordProblem as serverPasswordProblem,
@@ -82,7 +83,7 @@ function run(field, cases, serverCheck) {
 
 /* --------------------------------------------------------------- 50 per field */
 
-// NAME
+// NAME — the server is authoritative here too, and now actually has a rule
 run('name', [
   '',
   ' ',
@@ -136,7 +137,53 @@ run('name', [
   'Ankith\tKumar',
   'Ankith\nKumar',
   'Ankit—Kumar',
-])
+  // Emoji, and the sequences a single-pictograph test would miss.
+  '\u{1F389}\u{1F389}',
+  'Ankith \u{1F389}',
+  '\u{1F389} Ankith',
+  'Ankith\u{1F389}Kumar',
+  '\u{1F44D}',                    // thumbs up
+  '\u{1F44D}\u{1F3FD}',          // thumbs up + skin tone
+  '\u{1F468}\u200D\u{1F469}',    // man + ZWJ + woman
+  '\u{1F1EE}\u{1F1F3}',          // regional indicators -> a flag
+  '\u2764\uFE0F',                // heart + text presentation selector
+  '\u2705',                      // check mark button
+  '\u{1F3F4}\u{E0067}',          // waving black flag + tag
+  '\u26A0',                      // warning sign, no selector
+  '\u{1F600}',                   // grinning face
+  'ram \u{1F35F}',               // food emoji after real letters
+  '\u2705',                      // single code point -> emoji rule must win over length
+  // Invisible and bidirectional formatting. Escapes, never literals: a literal
+  // U+202E in source is invisible, so nobody can tell whether the case is even
+  // there, and one edit silently drops it.
+  'admin\u202Enimda',            // RLO reverses the rest of the string
+  'admin\u202C',                 // PDF
+  'Ankith\u200E',                // LRM
+  'Ankith\u200F',                // RLM
+  'Ankith\u2066',                // LRI isolate
+  'Ankith\u2067',                // RLI isolate
+  'Ankith\u2069',                // PDI
+  'Ankith\u200B',                // zero-width space
+  'Ankith\u2060',                // word joiner
+  'Ankith\uFEFF',                // BOM at the edge -- trimmed away
+  'Ankith\uFEFFKumar',           // BOM in the middle -- must not survive
+  'Ankith\u00AD',                // soft hyphen
+  'Ankith\u2011',                // non-breaking hyphen
+  'Ankith\u0000',                // NUL
+  '\u0301\u0301\u0301',           // combining marks only: renders blank
+  '\u0301Ankith',                // leading combining mark
+  // Scripts that must survive: every one composes vowel signs after the consonant.
+  'अंकित कुमार',         // Devanagari
+  'செல்வம்',                    // Tamil
+  'అంకిత్',                      // Telugu
+  'ಅಂಕಿತ್',                      // Kannada
+  'അങ്കിത്',                      // Malayalam
+  'অঙ্কিত',                      // Bengali
+  '山田太郎',                          // Han
+  'محمد',                              // Arabic
+  'Иван Петров',                       // Cyrillic
+  'Γιώργος',                           // Greek
+], serverNameProblem)
 
 // PHONE — the server is authoritative here
 const PHONE_CASES = [

@@ -44,6 +44,14 @@ export interface EventDayState {
    * day creates if nobody knows it is in force.
    */
   readonly overridden: boolean
+  /**
+   * Days an owner has closed attendance for.
+   *
+   * Reported here, from the same read as the active day, so the scan route gets the
+   * live day and whether it is open in one query rather than two that could disagree
+   * — a scan must never be refused because of a stale second read.
+   */
+  readonly lockedDays: readonly number[]
 }
 
 /*
@@ -142,6 +150,7 @@ export async function resolveEventDay(now: Date = new Date()): Promise<EventDayS
     date: string
     end_date: string | null
     day_override: number | null
+    locked_days: number[] | null
   }>(
     /*
       `to_char` on both dates, and this is load-bearing rather than a style choice.
@@ -158,7 +167,8 @@ export async function resolveEventDay(now: Date = new Date()): Promise<EventDayS
     */
     `select to_char(date, 'YYYY-MM-DD')     as date,
             to_char(end_date, 'YYYY-MM-DD') as end_date,
-            day_override
+            day_override,
+            locked_days
        from events order by date desc limit 1`,
   )
 
@@ -166,7 +176,13 @@ export async function resolveEventDay(now: Date = new Date()): Promise<EventDayS
   if (!event) {
     // No event means no schedule, so there is nothing to be day two of. Scanning
     // still has to work — this is what a fresh database looks like mid-setup.
-    return { activeDay: 1, calendarDay: 1, totalDays: 1, overridden: false }
+    return {
+      activeDay: 1,
+      calendarDay: 1,
+      totalDays: 1,
+      overridden: false,
+      lockedDays: [],
+    }
   }
 
   const totalDays = totalDaysFor(event.date, event.end_date)
@@ -188,10 +204,39 @@ export async function resolveEventDay(now: Date = new Date()): Promise<EventDayS
 
   const activeDay = override ?? fromCalendar
 
+  /*
+    Locks are filtered to days that exist, and de-duplicated.
+
+    A stale `locked_days` holding a day the event no longer has — from a schedule
+    that was shortened, or a hand-edited row — must not make the set look larger
+    than the event. It would render a lock badge against nothing and, worse, make
+    "is the live day locked?" depend on values nobody can see in the UI.
+  */
+  const lockedDays = [
+    ...new Set(
+      (event.locked_days ?? []).filter(
+        (day) => Number.isInteger(day) && day >= 1 && day <= totalDays,
+      ),
+    ),
+  ].sort((a, b) => a - b)
+
   return {
     activeDay,
     calendarDay: fromCalendar,
     totalDays,
     overridden: override !== null,
+    lockedDays,
   }
+}
+
+/**
+ * Whether attendance may still be recorded against a day.
+ *
+ * Separate from the future-day rule on purpose. That one is structural — the server
+ * picks the day, so a day that has not happened cannot be reached. This one is a
+ * human decision about a day that HAS happened, and it has to be checked explicitly
+ * because nothing about the calendar implies it.
+ */
+export function isDayLocked(state: EventDayState, day: number): boolean {
+  return state.lockedDays.includes(day)
 }

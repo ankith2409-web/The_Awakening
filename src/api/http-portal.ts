@@ -179,6 +179,10 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('PATCH', '/admin/event', { dayOverride })
   }
 
+  async setLockedDays(lockedDays: readonly number[]): Promise<EventInfo> {
+    return this.#request('PATCH', '/admin/event', { lockedDays })
+  }
+
   /* --------------------------------------------------------- transport */
 
   async #request<T>(

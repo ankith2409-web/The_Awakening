@@ -121,6 +121,15 @@ export interface PortalApi {
    * Independent of `phase`, so setting one does not clear the other.
    */
   updateEventDay(dayOverride: number | null): Promise<EventInfo>
+  /**
+   * Replaces the whole set of days attendance is closed for.
+   *
+   * Takes the intended final set rather than a single day to toggle, so the write
+   * is idempotent — which is what makes it safe to retry on a flaky connection at a
+   * busy door. Sending "unlock day 1" as a delta needs the client to hold the
+   * current set and get it right under exactly the conditions where it matters.
+   */
+  setLockedDays(lockedDays: readonly number[]): Promise<EventInfo>
   updateAgendaItem(
     id: string,
     patch: Partial<Pick<EventInfo['agenda'][number], 'status'>>,

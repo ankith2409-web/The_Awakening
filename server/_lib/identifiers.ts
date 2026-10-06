@@ -108,3 +108,82 @@ export function passwordProblem(password: string): string | null {
   if (!/\d/.test(password)) return 'Include at least one number.'
   return null
 }
+
+/**
+ * Says what is wrong with a display name, or null when it is fine.
+ *
+ * This did not exist. The register route took any non-empty string as a name, so
+ * the browser's rule was the only thing enforcing it — and anything that did not go
+ * through the browser form wrote straight through. Emoji are the visible case: the
+ * client refused them while `POST /attendee/register` returned 201.
+ *
+ * Why it matters beyond tidiness: a name is what a gate volunteer reads aloud, what
+ * appears on the roster an owner reads, and what is rendered on the dashboard next
+ * to a QR pass. A row of pictographs is unreadable at a desk, and a name containing
+ * a right-to-left override renders as the *end* of somebody else's name — the badge
+ * says one thing and the screen says another.
+ *
+ * The pattern is `\p{L}\p{M}`, letters and combining marks, so `José`, `Ankit é` and
+ * `山田太郎` all pass while digits, punctuation, symbols and emoji do not. `\p{M}`
+ * is required rather than optional: without it a name in a script that composes its
+ * accents — Devanagari, Tamil, Malayalam — is rejected for its own vowel signs.
+ *
+ * Mirrored in `src/auth/validation.ts`. `scripts/error-matrix.mjs` asserts the two
+ * agree on accept/reject across 50 inputs, which is the only reason a duplicated
+ * rule is safe here.
+ */
+export function nameProblem(raw: string): string | null {
+  const trimmed = raw.trim()
+
+  if (trimmed === '') return 'Name is required.'
+
+  /*
+    Emoji before the length check, deliberately.
+
+    A single `✅` is one code point, so a length-first order answers "Use at least 2
+    characters" — which sends somebody who typed a party hat on purpose looking for
+    a length problem they do not have.
+  */
+  if (hasEmoji(trimmed)) return 'No emoji in a name, please.'
+
+  if (trimmed.length < 2) return 'Use at least 2 characters.'
+  if (trimmed.length > 60) return 'Use 60 characters or fewer.'
+
+  if (!NAME_PATTERN.test(trimmed)) return 'Use letters only.'
+
+  return null
+}
+
+/**
+ * Letters and combining marks, and the name must START with a letter.
+ *
+ * The leading `\p{L}` rather than `\p{L}\p{M}` is what rejects a name made only of
+ * combining marks. Those pass a marks-allowed pattern, match nothing else, and
+ * render as an entry that looks blank on the roster — accepted, and useless.
+ *
+ * No script begins a word with a combining mark, so requiring a letter first costs
+ * nothing: Devanagari, Tamil, Telugu, Kannada, Malayalam and Bengali all still pass,
+ * because their vowel signs come after the consonant.
+ */
+const NAME_PATTERN = /^[\p{L}][\p{L}\p{M}.' -]*$/u
+
+/**
+ * Detects emoji, including the parts that are not pictographs on their own.
+ *
+ * A naive `/\p{Extended_Pictographic}/u` misses the sequences that matter most in
+ * practice, because the pictograph is only one code point of several:
+ *
+ *   👍🏽          U+1F44D U+1F3FD   skin-tone modifier
+ *   👨‍👩‍👧       U+1F468 200D ...     zero-width joiner gluing a family together
+ *   🇮🇳          U+1F1EE U+1F1F3   regional indicators forming a flag
+ *   ❤️           U+2764 FE0F        text presentation selector
+ *
+ * So the modifiers are matched as well. `\p{Extended_Pictographic}` covers the
+ * pictographs and, since Unicode 11, the regional indicators; the explicit ranges
+ * catch dingbats and the joiner.
+ */
+function hasEmoji(value: string): boolean {
+  return /[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{200D}\u{FE0F}\u{20E3}\u{1F1E6}-\u{1F1FF}]/u.test(
+    value,
+  )
+}

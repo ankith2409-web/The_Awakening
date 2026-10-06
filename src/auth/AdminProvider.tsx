@@ -275,6 +275,20 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     [toError],
   )
 
+  const setLockedDays = useCallback(
+    async (days: readonly number[]) => {
+      setError(null)
+      try {
+        // Whole `EventInfo` back, so the lock badges, the scan panel state and the
+        // programme all reflect the change from one response.
+        setEvent(await portalApi.setLockedDays(days))
+      } catch (cause) {
+        toError(cause)
+      }
+    },
+    [toError],
+  )
+
   const clearError = useCallback(() => setError(null), [])
   const clearLastScan = useCallback(() => setLastScan(null), [])
 
@@ -298,6 +312,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setAttendeePassword,
       setEventPhase,
       updateEventDay,
+      setLockedDays,
       setAgendaStatus,
       clearError,
       clearLastScan,
@@ -320,6 +335,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setAttendeePassword,
       setEventPhase,
       updateEventDay,
+      setLockedDays,
       setAgendaStatus,
       clearError,
       clearLastScan,

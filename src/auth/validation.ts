@@ -1,4 +1,5 @@
 import { isValidSen, normalisePhone, phoneProblem } from '@/domain/phone'
+import { nameProblem } from '@/domain/name'
 
 /**
  * Client-side validation.
@@ -11,16 +12,10 @@ export type FieldErrors<T extends string> = Partial<Record<T, string>>
 
 export const VALIDATORS = {
   name(value: string): string | null {
-    const trimmed = value.trim()
-    if (trimmed === '') return 'Name is required.'
-    if (trimmed.length < 2) return 'Use at least 2 characters.'
-    if (trimmed.length > 60) return 'Use 60 characters or fewer.'
-    // Names are matched case-insensitively at login, but rejecting obvious
-    // junk here saves everyone a confusing failure later.
-    if (!/^[\p{L}\p{M}][\p{L}\p{M}.' -]*$/u.test(trimmed)) {
-      return 'Use letters only.'
-    }
-    return null
+    // One rule, in one place. It used to be inlined here and there was no server
+    // counterpart at all, so the browser was the only thing enforcing it — and the
+    // API happily accepted an emoji name.
+    return nameProblem(value)
   },
 
   phone(value: string): string | null {

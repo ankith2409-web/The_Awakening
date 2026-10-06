@@ -321,6 +321,33 @@ alter table events add column if not exists organiser_host text;
 */
 alter table events add column if not exists day_override smallint;
 
+/*
+  `locked_days` — the days attendance is CLOSED for.
+
+  A separate idea from `day_override`, and the two are deliberately not merged:
+
+    day_override  WHICH day is live. Moves the present forward.
+    locked_days   WHICH days are finished. Stops new marks landing on them.
+
+  The need is the export. Attendance is append-only with no edit and no delete, so
+  once a day's SEN list has been handed over for certificates, any later scan is a
+  correction nobody can make — the record is wrong forever and there is no way to
+  remove it. Locking the day is the only available answer, and it is honest: it
+  refuses new marks rather than pretending an existing one can be edited.
+
+  Read-only surfaces are NOT affected. The log, the roster badges and the SEN export
+  all keep showing a locked day in full. Locking stops attendance being *marked*;
+  hiding the record of who did attend would be a different and much worse decision.
+
+  An array rather than a boolean per day, because `totalDays` is derived from the
+  date range and this must not need a migration when the event gains a day.
+
+  Owner-only, like `day_override`. A `gate` account can already mark whoever walks
+  through the door on the live day, but letting a volunteer reopen a day that has
+  already been exported would let them add names to a list that is already gone.
+*/
+alter table events add column if not exists locked_days smallint[] not null default '{}';
+
 create table if not exists agenda (
   id         text primary key,
   event_id   text        not null references events (id) on delete cascade,

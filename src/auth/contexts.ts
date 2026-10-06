@@ -147,6 +147,13 @@ export interface AdminContextValue {
    * arrives, or for a schedule that has slipped.
    */
   updateEventDay: (day: number | null) => Promise<void>
+  /**
+   * Replaces the set of days attendance is closed for.
+   *
+   * Takes the final set, not a toggle, so a retry cannot unlock a day the operator
+   * meant to keep closed.
+   */
+  setLockedDays: (days: readonly number[]) => Promise<void>
   setAgendaStatus: (id: string, status: AgendaItem['status']) => Promise<void>
   /** Clears the current error banner. */
   clearError: () => void

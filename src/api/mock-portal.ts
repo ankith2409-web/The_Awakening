@@ -502,6 +502,29 @@ export class MockPortalApi implements PortalApi {
     return structuredClone(this.#store.event)
   }
 
+  async setLockedDays(lockedDays: readonly number[]): Promise<EventInfo> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+
+    const total = this.#store.event.totalDays
+    const requested = lockedDays.map(Number)
+
+    if (requested.some((day) => !Number.isInteger(day) || day < 1 || day > total)) {
+      throw new PortalError(
+        'unknown',
+        total === 1 ? 'This is a one-day event.' : `Choose a day between 1 and ${total}.`,
+      )
+    }
+
+    // Same canonical shape the server stores, so the mock cannot drift into
+    // rendering a different locked set for the same intent.
+    const sorted = [...new Set(requested)].sort((a, b) => a - b)
+    this.#store.event = { ...this.#store.event, lockedDays: sorted }
+    persist(this.#store)
+
+    return structuredClone(this.#store.event)
+  }
+
   /* ------------------------------------------------------------- guards */
 
   #requireAttendee(): AttendeeWithSecret {

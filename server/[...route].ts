@@ -23,13 +23,14 @@ import {
 } from './_lib/http.ts'
 import {
   isValidSen,
+  nameProblem,
   normalisePhone,
   normaliseSen,
   passwordProblem,
   phoneProblem,
 } from './_lib/identifiers.ts'
 import { readTicket, signSen } from './_lib/ticket.ts'
-import { resolveEventDay } from './_lib/eventDay.ts'
+import { resolveEventDay, isDayLocked } from './_lib/eventDay.ts'
 // Only the reset-attempt ledger purge survives; the limiter itself went with the
 // endpoint it protected. See `_lib/reset.ts`.
 import { purgeOldResetAttempts } from './_lib/reset.ts'
@@ -254,6 +255,17 @@ async function route(
         const phoneProblemMessage = phoneProblem(phone)
         if (phoneProblemMessage !== null) {
           throw unprocessable('unknown', phoneProblemMessage)
+        }
+
+        /*
+          The name was previously only checked for being a non-empty string, which
+          made the browser form the sole enforcement of a rule that the API is
+          supposed to own. Emoji, digits and a 200-character name all wrote straight
+          through.
+        */
+        const nameProblemMessage = nameProblem(name)
+        if (nameProblemMessage !== null) {
+          throw unprocessable('unknown', nameProblemMessage)
         }
         if (!isValidSen(sen)) {
           throw unprocessable('unknown', 'Enter a valid SEN, e.g. A866175000012.')
@@ -648,6 +660,27 @@ async function route(
         const day = dayState.activeDay
 
         /*
+          A LOCKED day refuses new marks, before the insert and not after it.
+
+          Checked here rather than by a constraint so the refusal can carry copy a
+          volunteer can act on. The wording matters more than usual here, because the
+          person holding the badge has done nothing wrong: the door is not broken,
+          attendance for that day is simply closed. Saying "day 1 is locked, ask an
+          organiser to reopen it" tells a volunteer what to do next; a bare
+          `day_locked` code tells them nothing.
+
+          Checked BEFORE the attendee lookup would change which error an unregistered
+          SEN gets, so it stays after: an unknown SEN is still `unknown_sen` whoever
+          the day is.
+        */
+        if (isDayLocked(dayState, day)) {
+          throw conflict(
+            'day_locked',
+            `Attendance for day ${day} is closed. Ask an organiser to reopen it.`,
+          )
+        }
+
+        /*
           ATOMIC, and on (attendee_id, day).
 
           The unique index is the real guard, so two scanners hitting the same
@@ -720,8 +753,8 @@ async function route(
         const body = await readJson<Record<string, unknown>>(req)
 
         /*
-          `phase` and `dayOverride` are both optional and independent, so the
-          Programme panel can set one without clobbering the other.
+          `phase`, `dayOverride` and `lockedDays` are all optional and independent,
+          so a panel can set one without clobbering the others.
         */
         let phase: 'registration' | 'live' | 'completed' | undefined
         if (body.phase !== undefined) {
@@ -743,12 +776,7 @@ async function route(
             // `resolveEventDay` refuses an out-of-range override on read, so an
             // unvalidated write here would be silently ignored and the panel
             // would appear to have done nothing.
-            const { rows } = await db().query<{ n: number }>(
-              `select greatest(
-                 (coalesce(end_date, date) - date) + 1, 1
-               )::int as n from events order by date desc limit 1`,
-            )
-            const total = rows[0]?.n ?? 1
+            const total = await eventTotalDays()
             if (requested < 1 || requested > total) {
               throw badRequest(
                 'unknown',
@@ -759,7 +787,41 @@ async function route(
           }
         }
 
-        return sendEvent(res, phase, dayOverride)
+        /*
+          `lockedDays` replaces the whole set, rather than adding to it.
+
+          A toggle UI has to express "unlock day 1" somehow, and "add/remove one"
+          needs the client to hold the current set and get it right. Sending the
+          intended final set makes the server's write idempotent, which is what lets
+          the control be safe to retry on a flaky connection at a busy door.
+        */
+        let lockedDays: number[] | undefined
+        if (body.lockedDays !== undefined) {
+          if (!Array.isArray(body.lockedDays)) {
+            throw badRequest('unknown', 'Invalid days.')
+          }
+
+          const total = await eventTotalDays()
+          const requested = body.lockedDays.map((value) => Number(value))
+
+          if (requested.some((day) => !Number.isInteger(day))) {
+            throw badRequest('unknown', 'Invalid days.')
+          }
+
+          const outOfRange = requested.filter((day) => day < 1 || day > total)
+          if (outOfRange.length > 0) {
+            throw badRequest(
+              'unknown',
+              total === 1 ? 'This is a one-day event.' : `Choose a day between 1 and ${total}.`,
+            )
+          }
+
+          // De-duplicated and sorted, so the stored row has one canonical shape
+          // whatever order the client sent.
+          lockedDays = [...new Set(requested)].sort((a, b) => a - b)
+        }
+
+        return sendEvent(res, phase, dayOverride, lockedDays)
       }
 
       case 'GET /admin/agenda':
@@ -813,10 +875,28 @@ async function route(
 
 /* ----------------------------------------------------------------- helpers */
 
+/**
+ * How many days the event spans, straight from the row.
+ *
+ * Computed in SQL rather than in JS, because this is the check that decides whether
+ * a requested day is real. Deriving it in JavaScript means a second implementation
+ * of the same rule — and the two already disagree once, in `eventDay.ts`, where
+ * node-pg's DATE conversion made `totalDaysFor` silently answer 1 for a two-day
+ * event. There is one place that turns a range into a number, and this is it.
+ */
+async function eventTotalDays(): Promise<number> {
+  const { rows } = await db().query<{ n: number }>(
+    `select greatest((coalesce(end_date, date) - date) + 1, 1)::int as n
+       from events order by date desc limit 1`,
+  )
+  return rows[0]?.n ?? 1
+}
+
 async function sendEvent(
   res: VercelResponse,
   phase?: 'registration' | 'live' | 'completed',
   dayOverride?: number | null,
+  lockedDays?: number[],
 ): Promise<void> {
   if (phase) {
     await db().query('update events set phase = $1 where id = $2', [
@@ -828,6 +908,13 @@ async function sendEvent(
   if (dayOverride !== undefined) {
     await db().query('update events set day_override = $1 where id = $2', [
       dayOverride,
+      'evt_awakening_2026',
+    ])
+  }
+
+  if (lockedDays !== undefined) {
+    await db().query('update events set locked_days = $1 where id = $2', [
+      lockedDays,
       'evt_awakening_2026',
     ])
   }
@@ -899,6 +986,10 @@ async function sendEvent(
     totalDays: dayState.totalDays,
     dayOverride: event.day_override ?? null,
     dayOverridden: dayState.overridden,
+    // From `resolveEventDay`, not the raw column: that already dropped any day the
+    // event no longer has. The UI must not render a lock against a day that does
+    // not exist.
+    lockedDays: dayState.lockedDays,
     agenda: agenda.map((item: Record<string, unknown>) => ({
       id: item.id,
       day: item.day,
