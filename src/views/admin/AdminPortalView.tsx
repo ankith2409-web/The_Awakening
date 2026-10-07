@@ -1206,7 +1206,9 @@ function ProgrammePanel({
           <p className="flex-1 text-2xs font-medium uppercase leading-relaxed tracking-[0.15em] text-content-muted">
             {locked.length === 0
               ? 'Every day is open. Nobody can be marked on a closed day.'
-              : `Closed: day ${locked.join(', day ')}. Those days still show in the log and the export.`}
+              : locked.length >= event.totalDays
+                ? 'Every day is closed — nobody can be marked at all right now.'
+                : `Closed: day ${locked.join(', day ')}. Those days still show in the log and the export.`}
           </p>
           <div className="flex gap-px bg-swiss-ink">
             {Array.from({ length: event.totalDays }, (_, index) => index + 1).map(

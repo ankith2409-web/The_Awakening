@@ -87,11 +87,27 @@ async function setOverride(day) {
 
 async function cleanup() {
   if (!db) return
+
+  /*
+    Restore the day and the locks FIRST, and unconditionally.
+
+    The day restore and the lock clear are the two that change what the live portal
+    does, so they must not sit behind a fixture purge that can throw. An earlier
+    version purged first, unguarded — a throw there left the event pinned and every
+    scan filing into the wrong day, which is how `day_override` was found set to 2
+    on 2026-10-07, eight days before the event.
+  */
+  try {
+    await setLocks([])
+    await setOverride(originalOverride)
+  } catch (error) {
+    console.error(`\n  FATAL: could not restore the event day — ${error.message}`)
+    console.error('  Run:  update events set day_override = null, locked_days = \'{}\';')
+    process.exitCode = 1
+    return
+  }
+
   await purgeTestAttendees(db)
-  // Always restore, whatever the run did. A leftover lock would refuse every scan
-  // on the live site until somebody noticed.
-  await setLocks([])
-  await setOverride(originalOverride)
 }
 
 async function main() {
@@ -113,6 +129,27 @@ async function main() {
     `select day_override from events where id = 'evt_awakening_2026'`,
   )
   originalOverride = ev[0]?.day_override ?? null
+
+  /*
+    Refuse to ADOPT a pin this suite did not set.
+
+    Same reason as `test:perday`: faithfully restoring whatever it finds is how a
+    stale pin survives every run. Found set to 2 on 2026-10-07, eight days before the
+    event, with the portal filing every scan under day two.
+
+    Asserted, then reset rather than restored — a stale pin misfiles real attendance,
+    which is worse than a failing test.
+  */
+  if (originalOverride !== null) {
+    check(
+      'the event was not already pinned to a day',
+      false,
+      `day_override was already ${originalOverride} — a previous run was interrupted. Reset to Auto (done) and re-run.`,
+    )
+    originalOverride = null
+  } else {
+    check('the event was not already pinned to a day', true)
+  }
 
   // Start from a known state: day one live, nothing locked.
   await setOverride(1)

@@ -386,8 +386,12 @@ async function main() {
   )
   check(
     'and it names the day it was recorded against',
-    markedRecords[0]?.day === 1,
-    `day=${markedRecords[0]?.day}`,
+    // The event's OWN active day, not a hard-coded 1. This used to assert day === 1,
+    // which passed only while the calendar said day one — so on the morning of day
+    // two it failed for a reason that had nothing to do with the code, and three
+    // suites' worth of red looked like a regression rather than a stale expectation.
+    markedRecords[0]?.day === event.body?.activeDay,
+    `record says day ${markedRecords[0]?.day}, event says ${event.body?.activeDay}`,
   )
 
   await call(anon, 'POST', '/attendee/logout')

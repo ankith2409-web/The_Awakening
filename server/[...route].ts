@@ -352,6 +352,19 @@ async function route(
           activeDay: dayState.activeDay,
           totalDays: dayState.totalDays,
           overridden: dayState.overridden,
+          /*
+            Needed here, not just in the admin payload.
+
+            Without it the dashboard cannot tell the difference between "day one has
+            not happened yet" and "day one is closed", and it says the same thing for
+            both: show your pass at the gate. On a day that can no longer be marked
+            that instruction can never succeed, so somebody who missed it would sit
+            watching a status that will never change, told it updates on its own.
+
+            It is not sensitive. It is the same set of day numbers the public event
+            payload already carries.
+          */
+          lockedDays: dayState.lockedDays,
         })
       }
 
@@ -713,11 +726,26 @@ async function route(
         const record = inserted[0]
         if (!record) {
           /*
-            Already marked for this day. The message names the day because on day
-            two the same badge may well succeed — and "already checked in" with no
-            day attached would read as a dead end to somebody holding a valid pass
-            for today.
+            Nothing came back, and that has TWO causes which need different answers.
+
+            The obvious one is the `(attendee_id, day)` conflict: already marked
+            today. But the INSERT is `select … from attendees where id = $1`, so if
+            the attendee row was deleted between the lookup above and this statement
+            — by `remove-attendee.mjs`, or by a fixture purge — it also inserts
+            nothing. Reading every empty result as a conflict told a volunteer that
+            somebody who no longer exists was "already checked in", which is the one
+            answer that should never be given about an unregistered SEN: it reads as
+            proof they are on the list.
+
+            One extra query, and only on the failure path, so the happy path is
+            untouched.
           */
+          const { rowCount: stillThere } = await db().query(
+            'select 1 from attendees where id = $1',
+            [attendee.id],
+          )
+          if (stillThere === 0) throw unprocessable('unknown_sen')
+
           throw conflict(
             'already_checked_in',
             day > 1 ? `Already marked for day ${day}.` : undefined,

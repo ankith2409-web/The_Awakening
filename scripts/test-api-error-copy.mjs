@@ -72,6 +72,11 @@ async function main() {
   }
 
   /* -- register one attendee to collide with ------------------------------- */
+  // The event's own day state, so per-day copy assertions hold on day two as well
+  // as day one instead of quietly assuming day one.
+  const eventInfo = (await call('GET', '/api/event', undefined, admin.cookie)).json ?? {}
+  const activeDay = eventInfo.activeDay ?? 1
+
   const stamp = Date.now().toString().slice(-7)
   const phone = `9${stamp}`.padEnd(10, '0').slice(0, 10)
   // ZTEST-prefixed so the cleanup at the end can find and remove it. This used to
@@ -139,13 +144,33 @@ async function main() {
 
   const scanTwo = await call('POST', '/api/admin/attendance', { sen }, admin.cookie)
   check('second scan is refused', scanTwo.status === 409, `got ${scanTwo.status}`)
-  check('second scan omits the redundant message',
-    scanTwo.json.message === undefined, `message=${JSON.stringify(scanTwo.json.message)}`)
-  check('second scan renders as human copy',
-    rendered(scanTwo.json) === PORTAL_ERROR_MESSAGES.already_checked_in,
+
+  /*
+    The invariant, not the day-one shape.
+
+    This asserted `message === undefined`, which was true only while the calendar
+    said day one: on day two the route deliberately sends "Already marked for day
+    2." because the same badge will succeed later, and a bare code reads as a dead
+    end to somebody holding a valid pass for today.
+
+    So the rule is not "no message" — it is "never the code repeated back". That
+    holds on every day, which is what makes it worth asserting.
+  */
+  check('second scan never repeats the machine code as its message',
+    scanTwo.json.message !== 'already_checked_in',
+    `message=${JSON.stringify(scanTwo.json.message)}`)
+  check('second scan renders as human copy, not a code',
+    typeof rendered(scanTwo.json) === 'string' &&
+      rendered(scanTwo.json).length > 0 &&
+      rendered(scanTwo.json) !== 'already_checked_in',
     `rendered "${rendered(scanTwo.json)}"`)
-  check('second scan does not render as a machine code',
-    rendered(scanTwo.json) !== 'already_checked_in', `rendered "${rendered(scanTwo.json)}"`)
+  check('second scan names the day when the live day is not the first',
+    // Day one deliberately sends no message, so the client renders the generic
+    // fallback — and on a single-day event, or on day one of a two-day one, naming
+    // the day would add nothing. It only matters from day two, where the same badge
+    // will succeed later and a bare code reads as a dead end.
+    activeDay <= 1 || /day \d/i.test(scanTwo.json.message ?? ''),
+    `activeDay=${activeDay} message=${JSON.stringify(scanTwo.json.message)}`)
 
   /* -- deliberate wording must survive ------------------------------------- */
 

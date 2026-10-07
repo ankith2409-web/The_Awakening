@@ -47,6 +47,7 @@ export function AttendancePanel({
   for (const record of records) byDay.set(record.day, record)
 
   const days = Array.from({ length: totalDays }, (_, index) => index + 1)
+  const lockedDays = attendance?.lockedDays ?? []
 
   return (
     <Frame>
@@ -59,6 +60,7 @@ export function AttendancePanel({
               day={day}
               record={record ?? null}
               isToday={day === activeDay}
+              isLocked={lockedDays.includes(day)}
             />
           )
         })}
@@ -82,12 +84,22 @@ function DayRow({
   day,
   record,
   isToday,
+  isLocked,
 }: {
   readonly day: number
   readonly record: CheckIn | null
   readonly isToday: boolean
+  readonly isLocked: boolean
 }) {
   const marked = record !== null
+  /*
+    Only meaningful when there is no record.
+
+    A locked day somebody WAS marked on is history and reads exactly as it should —
+    "marked", with a time. Locking stops new marks; it does not undo or diminish
+    the old ones.
+  */
+  const missedAndClosed = !marked && isLocked
 
   return (
     <li
@@ -124,12 +136,25 @@ function DayRow({
               marked ? 'text-swiss-accent-text' : 'text-content-muted',
             ].join(' ')}
           >
-            {marked ? 'Marked' : 'Not marked yet'}
+            {marked ? 'Marked' : missedAndClosed ? 'Closed' : 'Not marked yet'}
           </p>
 
           {record === null ? (
+            /*
+              Two different situations that used to share one sentence.
+
+              "Not marked yet" plus "show your pass at the gate, this updates on its
+              own" is right for a day still to come and wrong for a day an organiser
+              has closed. On a closed day that instruction can never succeed, so
+              somebody who missed it would sit watching a status that will never
+              change, having been told it updates by itself. The fix is not to make
+              the panel lie less — it is to stop telling them to do something that
+              will not work, and to say who can still act.
+            */
             <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
-              Show your pass at the gate on day {day}. This updates on its own.
+              {missedAndClosed
+                ? `Attendance for day ${day} is closed, so it can no longer be marked. Email ankith2409@gmail.com if you think this is a mistake.`
+                : `Show your pass at the gate on day ${day}. This updates on its own.`}
             </p>
           ) : (
             /*

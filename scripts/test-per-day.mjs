@@ -82,6 +82,29 @@ async function cleanup() {
   if (!db) return
 
   /*
+    Restore the day FIRST, and unconditionally.
+
+    Two things were wrong here. The attendee purge ran first and unguarded, so a
+    throw there skipped the restore entirely — leaving the live event pinned and
+    every subsequent scan filing into the wrong day. And the restore was last, which
+    made it the thing most likely to be lost.
+
+    The day is the more damaging of the two by far: a stale attendee is one row on a
+    roster, a stale pin misfiles a whole day's attendance. So it goes first and it
+    goes regardless.
+  */
+  try {
+    await db.query(`update events set day_override = $1 where id = 'evt_awakening_2026'`, [
+      originalOverride,
+    ])
+  } catch (error) {
+    console.error(`\n  FATAL: could not restore day_override — ${error.message}`)
+    console.error('  Run:  update events set day_override = null;')
+    process.exitCode = 1
+    return
+  }
+
+  /*
     By PREFIX, not by this run's SEN — the shared helper in `_fixtures.mjs`, which
     every live suite now uses.
 
@@ -93,12 +116,6 @@ async function cleanup() {
     one, and doing it once per suite is how the same leak reappeared three times.
   */
   await purgeTestAttendees(db)
-
-  // Always restore, whatever the run did. A leftover pin would misfile every
-  // scan on the live site until somebody noticed.
-  await db.query(`update events set day_override = $1 where id = 'evt_awakening_2026'`, [
-    originalOverride,
-  ])
 }
 
 async function setOverride(day) {
@@ -123,6 +140,35 @@ async function main() {
     `select day_override from events where id = 'evt_awakening_2026'`,
   )
   originalOverride = existing[0]?.day_override ?? null
+
+  /*
+    Refuse to ADOPT a pin this suite did not set.
+
+    This suite captures whatever override it finds and faithfully restores it at the
+    end. That is correct behaviour and it is exactly how a stale pin survives: a
+    previous run was interrupted between "set" and "restore", leaving the live event
+    pinned to a day. The next run reads that value, decides it is the original, and
+    puts it back — so the corruption is preserved indefinitely and no assertion ever
+    sees it, because every assertion inside the suite passes.
+
+    That happened. `day_override` was found set to 2 on 2026-10-07, eight days before
+    the event, meaning the portal was filing every scan under day two.
+
+    So a pre-existing pin is a failure, not a starting condition. Asserted loudly,
+    and reset rather than restored: leaving a stale pin changes which day real
+    attendance lands in, which is worse than a red test.
+  */
+  if (originalOverride !== null) {
+    check(
+      'the event was not already pinned to a day',
+      false,
+      `day_override was already ${originalOverride} — a previous run was interrupted. Reset to Auto (done) and re-run.`,
+    )
+    originalOverride = null
+  } else {
+    check('the event was not already pinned to a day', true)
+  }
+
   await cleanup()
 
   /* -- an owner, and the event's own idea of the day ----------------------- */

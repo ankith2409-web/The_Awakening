@@ -97,6 +97,19 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
       attendance?.records?.some((record) => record.day === today) ?? false
     if (markedForToday) return
 
+    /*
+      Stop if the day being waited on is closed.
+
+      Polling exists for one reason: the gate marks this attendee on a different
+      device, and nothing pushes that here. But on a day an organiser has closed, no
+      mark can ever arrive — so the poll is asking a question whose answer cannot
+      change, once every `ATTENDANCE_POLL_MS`, for as long as the tab is open.
+
+      That is somebody's phone battery, on a screen they are holding at a venue,
+      spent on a request that cannot succeed.
+    */
+    if (attendance?.lockedDays?.includes(today)) return
+
     let cancelled = false
 
     const poll = async () => {

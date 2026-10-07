@@ -261,6 +261,14 @@ export interface MyAttendance {
   readonly activeDay: number
   readonly totalDays: number
   readonly overridden: boolean
+  /**
+   * Days attendance is closed for.
+   *
+   * Carried here so the dashboard can tell "not yet" apart from "no longer
+   * possible". Both otherwise read the same, and the panel would go on telling
+   * somebody to show a pass for a day that can never be marked again.
+   */
+  readonly lockedDays: readonly number[]
 }
 
 /**

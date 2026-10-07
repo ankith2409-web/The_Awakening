@@ -941,7 +941,7 @@ are zeroed explicitly.
 
 ## Testing
 
-434 assertions across 14 suites, plus a 291-case error matrix.
+436 assertions across 14 suites, plus a 291-case error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
@@ -951,8 +951,8 @@ are zeroed explicitly.
 | `test:desk`     | 57          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
 | `test:roles`    | 34          | yes      | Every owner-only route refused to `gate`; an unrecognised role fails closed; the CLI's guards |
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
-| `test:perday`   | 28          | yes      | One record per attendee per day; both days recorded; the lock on future days |
-| `test:lock`     | 22          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
+| `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
+| `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
 | `test:landing`  | 85          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
@@ -986,6 +986,43 @@ hands to whoever issues certificates, so junk in it is junk handed on.
 `test:perday` had fixed this for itself with a private `PDAY%` rule; doing it once
 per suite is how the same leak came back three times. The legacy prefix is still
 swept, so stragglers from older runs disappear on the next run.
+
+### A test must never adopt state it did not create
+
+`test:perday` and `test:lock` move the live event's day and close its days. Both
+capture whatever they find and restore it — which is correct, and is exactly how a
+**stale pin survives forever**.
+
+Found on 2026-10-07, eight days before the event: `day_override` set to `2`. The
+portal believed it was Day 2 of 2, so **every scan was filing under day two**. A run
+had been interrupted between "set" and "restore"; the next run read the leftover
+value, decided it was the original, and put it back. No assertion ever saw it,
+because every assertion *inside* the suite passed.
+
+Three things changed:
+
+- **A pre-existing pin is now a failure, not a starting condition.** Asserted loudly,
+  naming the value and the remedy.
+- **It is reset, not restored.** A stale pin changes which day real attendance lands
+  in; that is worse than a red test.
+- **The day is restored first, and unconditionally.** The attendee purge used to run
+  first and unguarded, so a throw there skipped the restore entirely. The day is the
+  more damaging of the two by far — a stale attendee is one row on a roster, a stale
+  pin misfiles a whole day — so it goes first and it goes regardless. A failure
+  there prints the exact SQL to fix it.
+
+### The suites must not assume it is day one
+
+`test:api` asserted a scan records `day === 1`, and `test:copy` asserted a duplicate
+scan carries no message. Both are true only while the calendar says day one. On the
+morning of day two they failed for reasons that had nothing to do with the code —
+three suites' worth of red that looks like a regression and is actually a stale
+expectation.
+
+Both now read the event's own `activeDay`. Verified by pinning the live event to day
+2 and re-running: everything green. And `test:copy`'s duplicate-scan assertion now
+tests the real invariant — *never the machine code repeated back* — which holds on
+every day, rather than the day-one shape.
 
 There is also a one-off administrative tool for removing a single attendee — see
 [Removing an attendee](#removing-an-attendee).
@@ -1220,6 +1257,15 @@ rather than rejecting it, so the failure mode under a rush is slow, not down.
   force is expensive but not blocked. Worth adding if the portal is public before
   the event — and it matters more now, since removing the reset endpoint took away
   the only unauthenticated route that was ever heavily probed.
+- **`day_override` has no expiry and no owner.** It is one global switch on the live
+  event, and nothing in the product can tell a deliberate pin from a leftover one —
+  a stale pin silently changes which day every scan files under, which is how the
+  live event was found pinned to day two on 2026-10-07. The scan panel says "Pinned
+  by an organiser", so it is visible, but there is no way to ask *how long it has
+  been pinned*. A `pinned_at` column and an "auto-expire at the end of the event"
+  default would remove the whole class. Until then: **check the Programme tab shows
+  Attendance Day on `Auto`** before the event, and after any test run against
+  production.
 - **An owner can take over any attendee account by design.** Setting a password
   is a privileged act, and the audit trail records who did it rather than
   preventing it. That is inherent to desk-mediated recovery; the compensating

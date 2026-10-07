@@ -323,7 +323,15 @@ export class MockPortalApi implements PortalApi {
       .filter((entry) => entry.attendeeId === attendeeId)
       .sort((a, b) => a.day - b.day)
     const day = this.#dayState()
-    return { records: structuredClone(records), ...day }
+    return {
+      records: structuredClone(records),
+      ...day,
+      // Filtered to days that exist, matching the server, so the mock cannot show a
+      // lock badge for a day the event does not have.
+      lockedDays: this.#store.event.lockedDays.filter(
+        (d) => d >= 1 && d <= this.#store.event.totalDays,
+      ),
+    }
   }
 
   /**
