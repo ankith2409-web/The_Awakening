@@ -274,7 +274,15 @@ async function main() {
   */
   const spacedName = 'Mary  Ann'
   const spacedPhone = `7${runId}20202`.slice(0, 10)
-  const spacedSen = `T${runId}202`
+  /*
+    `testSen`, not a hand-rolled prefix.
+
+    An earlier version of this used `T${runId}202`, which no cleanup rule recognises
+    — so it put four stray attendees on the LIVE roster on every run, and they are
+    not fixtures any script can sweep. Every fixture in every suite goes through
+    `testSen`, precisely so this cannot happen quietly.
+  */
+  const spacedSen = testSen(`SPACE${runId}`)
   await call(makeJar(), 'POST', '/attendee/register', {
     name: spacedName, phone: spacedPhone, sen: spacedSen, password: 'grid2026',
   })
