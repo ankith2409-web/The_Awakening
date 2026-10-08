@@ -260,6 +260,48 @@ async function main() {
   })
   check('wrong name rejected (no enumeration)', wrongName.status === 401 && wrongName.body?.code === 'invalid_credentials')
 
+  /*
+    Case and whitespace are typing habits, not identity.
+
+    This was a live lockout. Registration accepts a name with internal double
+    spacing — the validator allows it — but the login compared the name exactly, so
+    somebody who registered as "Mary  Ann" and then typed "Mary Ann", the most
+    natural way to type it, was refused with no way back but emailing the organiser.
+    Days before an event, with a pass they had just been issued.
+
+    The name stays a real second factor: a different name, a different spelling, or
+    an added middle initial must still fail.
+  */
+  const spacedName = 'Mary  Ann'
+  const spacedPhone = `7${runId}20202`.slice(0, 10)
+  const spacedSen = `T${runId}202`
+  await call(makeJar(), 'POST', '/attendee/register', {
+    name: spacedName, phone: spacedPhone, sen: spacedSen, password: 'grid2026',
+  })
+
+  const singleSpaced = await call(makeJar(), 'POST', '/attendee/login', {
+    name: 'Mary Ann', phone: spacedPhone, password: 'grid2026',
+  })
+  check(
+    'a name typed with different spacing still gets in',
+    singleSpaced.status === 200,
+    `got ${singleSpaced.status} — registered "${spacedName}", logged in as "Mary Ann"`,
+  )
+
+  const padded = await call(makeJar(), 'POST', '/attendee/login', {
+    name: '  mary   ann  ', phone: spacedPhone, password: 'grid2026',
+  })
+  check('surrounding and repeated whitespace is ignored too', padded.status === 200, `got ${padded.status}`)
+
+  const middleInitial = await call(makeJar(), 'POST', '/attendee/login', {
+    name: 'Mary A Ann', phone: spacedPhone, password: 'grid2026',
+  })
+  check(
+    'but an added middle initial is still a different name',
+    middleInitial.status === 401,
+    `got ${middleInitial.status}`,
+  )
+
   const fresh = makeJar()
   const login = await call(fresh, 'POST', '/attendee/login', {
     name: 'test attendee', phone, password: 'grid2026', remember: true,

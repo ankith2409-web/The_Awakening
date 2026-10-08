@@ -761,6 +761,26 @@ Details that each cost a row of somebody's real data:
 - **`.xls` is refused by name**, with "save it as .xlsx", rather than failing later
   with a ZIP error nobody can interpret.
 
+### Getting back in: how an attendee is identified
+
+Login is **phone number + password**, with the **name as a second factor**. The name
+is there so that knowing somebody's number is not enough to walk in with their pass,
+and every failure returns one identical message so the endpoint cannot be used to
+discover which numbers are registered.
+
+The name is compared on `nameKey` — lowercased, whitespace collapsed — rather than
+exactly. **This was a live lockout.** Registration accepts a name with internal
+double spacing (`Mary  Ann` is valid, and is in the error matrix), but the login used
+to compare the name character for character, so the same person typing `Mary Ann`
+— the most natural way to type it — was refused. There is no self-service recovery,
+so that is an emailed plea to the organiser, days before an event, for a pass they
+had just been issued.
+
+What still fails, and must: a different name, a different spelling, and an added
+middle initial. Collapsing case and spacing does not weaken the second factor, it
+stops it punishing a typing habit. Asserted in `test:api` on all three sides of
+that line.
+
 ### Password recovery is by email
 
 There is no self-service password reset, and its absence is deliberate.
@@ -1098,11 +1118,11 @@ decoration, and the page says so rather than silently showing a still.
 
 ## Testing
 
-540 assertions across 16 suites, plus a 291-case error matrix.
+532 assertions across 16 suites, plus a 291-case error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
-| `test:api`      | 60          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards  |
+| `test:api`      | 63          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards, and that case/whitespace never lock an attendee out of their own pass |
 | `test:gate`     | 28          | yes      | Signature verification, the `printed` fallback, admin-mediated recovery and its audit trail |
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
 | `test:desk`     | 57          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
@@ -1114,7 +1134,7 @@ decoration, and the page says so rather than silently showing a still.
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
-| `test:landing`  | 85          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
+| `test:landing`  | 89          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |

@@ -24,6 +24,7 @@ import {
 } from './_lib/http.ts'
 import {
   isValidSen,
+  nameKey,
   nameProblem,
   normalisePhone,
   normaliseSen,
@@ -235,8 +236,13 @@ async function route(
 
         // One message for every failure, so the endpoint cannot be used to
         // discover which phone numbers are registered.
-        const nameMatches =
-          row !== undefined && row.name.toLowerCase() === name.toLowerCase()
+        //
+        // Compared on `nameKey`, not raw. Case and spacing are typing habits, not
+        // identity: somebody who registered as "Mary  Ann" and then typed "Mary Ann"
+        // was locked out of their own pass with no way back but emailing the
+        // organiser. A different name, a different spelling, or an added middle
+        // initial still fails, so the name remains a real second factor.
+        const nameMatches = row !== undefined && nameKey(row.name) === nameKey(name)
 
         if (!nameMatches || !(await verifyPassword(password, row.password_hash))) {
           throw unauthorized('Those credentials do not match our records.')

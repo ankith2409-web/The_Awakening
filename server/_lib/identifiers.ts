@@ -110,6 +110,27 @@ export function passwordProblem(password: string): string | null {
 }
 
 /**
+ * Reduces a name to a form safe to COMPARE, without changing what is stored.
+ *
+ * Case and runs of whitespace are not part of somebody's name. The difference is
+ * only in how it got typed, and treating it as part of the identity locks people out
+ * of their own account.
+ *
+ * This was a live lockout. Registration accepts `Mary  Ann` — the validator allows
+ * internal spacing — but the login compared the name exactly, so the same person
+ * typing `Mary Ann` was refused with no way back: the only route is emailing the
+ * organiser. The most natural way to type a name is the way that failed.
+ *
+ * Lowercased and whitespace-collapsed, nothing else. A misspelling, a different
+ * spelling, or an added middle initial still fails, which is the point of having a
+ * name as a second factor at all — knowing somebody's phone number should not be
+ * enough to walk in with their pass.
+ */
+export function nameKey(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/**
  * Says what is wrong with a display name, or null when it is fine.
  *
  * This did not exist. The register route took any non-empty string as a name, so
