@@ -37,6 +37,7 @@ node dev-api.mjs            # serves the serverless function on :3000
 | `npm run db:setup`    | Apply `db/schema.sql` and `db/seed.sql`, create the admin  |
 | `npm run lint`        | oxlint                                                    |
 | `npm run test:api`    | End-to-end suite against a running API                    |
+| `npm run test:reel`   | Optics and framing for the motion sequence at `/reel`     |
 | `npm run prepublish`  | Secret scan — run before every push                       |
 
 ## Configuration
@@ -71,15 +72,24 @@ src/
   lib/
     exportAttendance.ts    SEN-only CSV download
     motion.ts              Stagger cap, the one place it is defined
+  lib/reel/               The motion sequence. Framework-free, no React.
+    timeline.ts              t in, one Frame out. The director.
+    camera.ts                Lens and camera track — real focal lengths, real stops
+    project.ts               One pinhole model, used by every layer and the reflection
+    scene.ts                 Glass, fibres, Boids swarm, the particle field
+    lockup.ts                The closing mark, and the glyph mask the cubes aim at
+    renderer.ts              Draws one Frame: reflect layer, scene, bloom, post
   components/            Design-system primitives
     EventMark.tsx          The mark and its glitch cycle
     BarcodeScanner.tsx     Camera scanner (ZXing, lazy-loaded)
+    ReelStage.tsx          Canvas host for the motion sequence: clock, transport
     SiteFooter.tsx         Host block, connect links, legal line
     Button.tsx  Field.tsx  Typography.tsx  QrTicket.tsx  Skeleton.tsx  …
   views/
     LandingView.tsx        The public front door
     AuthViews.tsx          Log in + Register
     DashboardView.tsx      QR pass, attendance, event status
+    ReelView.tsx           The motion design sequence (`/reel`)
     admin/
       AdminLoginView.tsx   The separate staff door
       AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Teams, Programme
@@ -141,6 +151,7 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | `staff_changes`            | append-only audit of who changed which staff account          |
 | `password_changes`         | append-only audit of admin-mediated password changes          |
 | `password_reset_attempts`  | retired; retained as a record of the old endpoint's probing   |
+| `event_roster`             | the guest list an organiser uploaded; SEN is the key          |
 | `events`                   | one row; `day_override` pins the live day, `locked_days` closes days |
 | `agenda`                   | per-event items with `day`, `sort_order` and `status`         |
 | `teams`                    | read-only; there is no team write route                       |
@@ -674,6 +685,82 @@ the full roster. Letting them see the log while forbidding the export is a
 convenience and a speed bump, not a security boundary. If the log has to be closed
 too, that is a deliberate decision and one line of change.
 
+### The guest list
+
+An owner can upload a spreadsheet of names and SENs from **Programme → Guest List**,
+after which registration is restricted to exactly those students.
+
+**Off until it is switched on.** `events.roster_required` is a separate flag, not
+derived from "the table has rows". Those are different decisions: an organiser
+uploads a list in order to *look* at it, and re-uploads a corrected one without
+leaving registration closed in the meantime. It also means the portal behaves
+exactly as it did before the feature existed until somebody chooses otherwise,
+rather than changing the moment a file is selected.
+
+**Keyed by SEN alone, and the uploaded name is never compared to anything.** A name
+is what a volunteer mishears, what a student types with one letter wrong, and what
+two people share. Matching on it would lock out real students over spelling — and
+the name on a college list is exactly the field that gets transcribed wrong. The
+SEN is the one identifier both sides agree on, and it is already the gate's.
+
+**Replaced wholesale, never merged.** An upload is a statement about who may
+register *now*, and someone who has left must stop being able to. Merging would make
+a list impossible to shrink, which is the correction an organiser most often needs.
+
+**All-or-nothing.** Every row is validated *before* anything is written, and the
+delete plus the insert run in one transaction. A partially-applied list would lock
+out whichever students did not land, and the symptom they would see is "you are not
+on the list" — which points at the list rather than at the upload that broke it.
+
+**The list is never returned whole.** `GET /admin/roster` gives a count and a sample
+of eight. The full thing is every student's name and SEN in one response, which is
+exactly what a `gate` account must never receive; the owner has the file they
+uploaded, so nothing is lost. The route is owner-only.
+
+**Already-registered accounts are untouched.** The check is on registration only, so
+enforcing a list never invalidates somebody who signed up before it was uploaded.
+
+#### Reading the spreadsheet, without a spreadsheet library
+
+`.csv` and real `.xlsx`, both parsed in the browser, **with no dependency added**.
+
+The obvious choice is SheetJS. The version npm serves is 0.18.5 — frozen in 2022,
+with SheetJS themselves moved off npm, and two unpatched advisories on it: a
+prototype-pollution bug (CVE-2023-30533) and a ReDoS (CVE-2024-22363). This
+feature's entire job is to parse a file somebody hands it, which is precisely the
+input those two are about. `exceljs` has no such history and is 22MB.
+
+An `.xlsx` is a ZIP of XML, and every browser since 2023 ships
+`DecompressionStream`, which inflates a raw deflate stream natively. That is the
+only hard part, and `src/lib/roster/parse.ts` is about a hundred lines of ZIP
+reading on top of it. The ZIP **central directory** is read rather than the local
+headers, because only the central directory records real sizes — a file from a
+streaming writer leaves zeros in the local header until a data descriptor follows.
+
+The file is parsed in the browser and only the rows are POSTed, so the server never
+handles a spreadsheet: a format bug cannot take registration down, and the preview
+is of exactly the rows that will be stored. The server then re-validates every row
+with the same functions registration uses, so a client that skipped the checks gains
+nothing.
+
+Details that each cost a row of somebody's real data:
+
+- **Column order is not assumed.** Headers are matched by name — `sen`, `student id`,
+  `roll no`, `reg no`, `usn` — because no two spreadsheets agree on order.
+- **A quote only opens a field when it is the field's first character.** A name like
+  `Grace O"Hopper`, written unquoted (which Excel allows), used to flip the parser
+  into quoted mode mid-word and swallow the comma after it. The SEN disappeared and
+  the row was reported as *having no SEN* — a parser bug presenting as bad data.
+- **The preview validates the SEN shape.** It says "N students ready", which is a
+  promise. Checking only for a non-empty cell let a shifted column claim every row
+  was fine and then the server refused the whole upload.
+- **A per-run preview, never auto-uploaded.** The panel shows the first rows and the
+  count and waits for a button — there is no confirmation dialog on top, because a
+  second "are you sure" trains people to click through dialogs, which is worse here
+  rather than better when the action locks students out.
+- **`.xls` is refused by name**, with "save it as .xlsx", rather than failing later
+  with a ZIP error nobody can interpret.
+
 ### Password recovery is by email
 
 There is no self-service password reset, and its absence is deliberate.
@@ -925,6 +1012,76 @@ visitor still sits through the full accumulated stagger before anything appears,
 which is the opposite of what they asked for. Stagger delays and the skeleton loop
 are zeroed explicitly.
 
+### The motion design sequence (`/reel`)
+
+A 24-second four-act title sequence for GDG × Fetch.ai: the blueprint, the
+autonomous awakening, the synergy, the lockup. It lives at `/reel`, guarded
+`when="any"` like the landing page — it has no attendee data in it, and the only
+person who cannot see a piece the project made should not be the person who
+built it.
+
+**It is rendered, not filmed.** There is no video file. The sequence is drawn live
+into a canvas from the scene description, because the brief is a prompt document
+written for Sora, Runway and Houdini and none of those are available here. So the
+brief is *implemented* instead of transcribed, which is a real deliverable rather
+than a placeholder:
+
+| Element | How |
+| --- | --- |
+| Lens changes | Real focal lengths through `fovFromFocal` — 130→92mm macro, 58→35mm, 14mm, 50mm |
+| F-stops | Real circle-of-confusion blur per layer, so Act I dissolves and Act III does not |
+| The Google four | Emitted from inside the glass, quantised so they *cycle* rather than sweep to a rainbow |
+| Fetch cyan | Emitted by the agents, on a **shared phase** with the Google pulse — two independent beats would read as two systems that coexist rather than as a synthesis |
+| Boids | A real flocking sim (separation, alignment, cohesion) plus a travelling flow attractor, so the swarm weaves through the geometry rather than past it |
+| The climax | 8,000 cubes whose drag is integrated **in closed form**, so any frame can be evaluated without having simulated the ones before it |
+| The lockup | Rasterised once, then the **lit pixels are read back** as particle targets — so the cubes form the actual letterforms, with the type's own counters and stroke weight |
+
+The last row is the one worth keeping. Sampling the mask rather than
+approximating the logo is what makes the ending work: the D has a hole because
+the mask had a hole.
+
+**Three things about how it is built.**
+
+*Stateless where it can be.* The camera, the glass, the fibres and the 8,000
+cubes are pure functions of `t`, so scrubbing is free and a frame at 0:16.4 is
+identical whether it was reached by playing forward or dragging back. The swarm is
+the exception — Boids is a feedback system with no closed form — so seeking
+backwards **replays it from the start** rather than jumping, because a jump would
+land on a state that never existed.
+
+*No React state per frame.* The clock advances 60 times a second; the timecode and
+the scrubber are written straight to the DOM through refs. React state carries
+only discrete facts: playing, which act, whether the film has finished.
+
+*Draw calls are batched, because 22,000 a frame is not 60fps.* The obvious
+implementations of the trails (one stroke per segment) and the dust (1,800
+`arc`+`fill` pairs) were each a third of the frame budget on their own. Both are
+now banded — three width bands for trails, four alpha bands for dust — for a
+twelfth of the cost with no visible difference on a two-pixel line. The cubes
+batch by colour × brightness, 24 fills, because one fill cannot carry per-cube
+alpha and a field that pulses as one flat mass defeats the point of the sync
+pulse.
+
+**Two bugs this suite caught that a screenshot never would have.** The projection
+computed depth as `z - dolly` when the camera sits at `z = -dolly`, so every
+piece of geometry resolved to a negative distance, got clamped to the near plane,
+and projected from one shared depth — the brackets, the fibres, the swarm and the
+lockup were *all* invisible, in every frame, with no error and no blank canvas.
+And the cube birth stagger was compared against an absolute clock instead of an
+offset from the burst, so all 8,000 cubes were fully expanded the instant they
+were first drawn and the staggered burst was a single-frame pop. Neither is
+visible by eye; both are ordinary wrong numbers, which is what `test:reel` asserts
+on.
+
+**It is exempt from the motion rules above, deliberately and explicitly** — the
+same way the logo glitch cycle is. A 24-second piece of looping light is pure
+decoration, and the four rules in this section say decoration does not belong. It
+belongs here because it is the work, not an accent on it, so it is isolated on its
+own route rather than permitted to animate inside the portal. Under
+`prefers-reduced-motion` it holds a single settled frame and disables its
+transport: a held frame is the only version of this piece that is not
+decoration, and the page says so rather than silently showing a still.
+
 ### Accessibility
 
 - Focus is a 2px accent outline with offset; inputs use an accent border, no glow.
@@ -941,7 +1098,7 @@ are zeroed explicitly.
 
 ## Testing
 
-436 assertions across 14 suites, plus a 291-case error matrix.
+540 assertions across 16 suites, plus a 291-case error matrix.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
@@ -953,6 +1110,8 @@ are zeroed explicitly.
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
 | `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
+| `test:guestlist`| 34          | yes      | Upload replaces the list wholesale; enforcement blocks unregistered SENs; a refused upload changes nothing at all; `gate` cannot read or change it |
+| `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
 | `test:landing`  | 85          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
@@ -960,6 +1119,7 @@ are zeroed explicitly.
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
 | `test:dates`    | 18          | no       | Two-day range and per-day headings, timezone-safe          |
+| `test:reel`    | 58          | no       | Optics and framing for the motion sequence: lens table, circle-of-confusion depth of field, act boundaries, projection scale, particle finiteness, swarm determinism |
 
 ### Test fixtures must not outlive the run
 

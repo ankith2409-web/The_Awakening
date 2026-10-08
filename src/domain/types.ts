@@ -248,6 +248,29 @@ export interface DayState {
 }
 
 /**
+ * The guest list an organiser has uploaded.
+ *
+ * A count and a sample rather than every student: the full roster is every student's
+ * name and SEN in one response, and there is no reason to hand it to a browser when
+ * the owner already has the file. The API never returns the whole thing.
+ */
+export interface RosterState {
+  readonly count: number
+  /** Whether registration is actually restricted to this list. */
+  readonly required: boolean
+  readonly uploadedAt: string | null
+  readonly sample: readonly { sen: string; name: string }[]
+}
+
+/** What an upload did, including what it refused and why. */
+export interface RosterUploadResult {
+  readonly imported: number
+  readonly skipped: number
+  readonly problems: readonly string[]
+  readonly required: boolean
+}
+
+/**
  * The signed-in attendee's own attendance, per day.
  *
  * An array rather than a single record: attendance used to be once-in-a-lifetime,
@@ -297,6 +320,7 @@ export type PortalErrorCode =
   | 'unknown_sen'
   | 'already_checked_in'
   | 'day_locked'
+  | 'not_on_list'
   | 'not_found'
   | 'forbidden'
   | 'rate_limited'
@@ -318,6 +342,16 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
     but a generic message is better than rendering a machine code if it ever is.
   */
   day_locked: 'Attendance for that day is closed.',
+  /*
+    Says what to DO, not just what happened.
+
+    "That SEN is not registered" would be wrong — they may well be a student, just
+    not on the list this organiser uploaded — and it sends them off to make an
+    account somewhere else. Naming the list, and the person who holds it, is what
+    turns a dead end into an email.
+  */
+  not_on_list:
+    'That SEN is not on the guest list for this event. Email ankith2409@gmail.com and it can be added.',
   not_found: 'We could not find that record.',
   forbidden: 'You do not have access to that.',
   rate_limited: 'Too many attempts. Wait a moment and try again.',

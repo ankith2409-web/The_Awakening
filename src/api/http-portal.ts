@@ -16,6 +16,7 @@ import {
   type Ticket,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
+import type { RosterState, RosterUploadResult } from '@/domain/types'
 
 /**
  * Real HTTP implementation.
@@ -183,10 +184,33 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('PATCH', '/admin/event', { lockedDays })
   }
 
+  async getRoster(): Promise<RosterState> {
+    return this.#request('GET', '/admin/roster')
+  }
+
+  /*
+    The rows are POSTed as structured JSON rather than the file being uploaded.
+
+    Two reasons. The file has already been parsed in the browser, so the server never
+    has to understand CSV or xlsx — which is the whole reason there is no spreadsheet
+    library on the server. And the server then validates every row with the same
+    functions registration uses, so a client that skipped the checks gains nothing.
+  */
+  async uploadRoster(
+    rows: readonly { name: string; sen: string }[],
+    required: boolean,
+  ): Promise<RosterUploadResult> {
+    return this.#request('POST', '/admin/roster', { rows, required })
+  }
+
+  async clearRoster(): Promise<RosterState> {
+    return this.#request('DELETE', '/admin/roster')
+  }
+
   /* --------------------------------------------------------- transport */
 
   async #request<T>(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
     timeoutMs: number = HttpPortalApi.#REQUEST_TIMEOUT_MS,

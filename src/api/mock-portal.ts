@@ -16,6 +16,8 @@ import {
   type CheckIn,
   type EventInfo,
   type MyAttendance,
+  type RosterState,
+  type RosterUploadResult,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -47,6 +49,10 @@ interface Store {
   event: EventInfo
   teams: Team[]
   checkIns: CheckIn[]
+  /** The uploaded guest list. Absent on stores seeded before this feature. */
+  roster?: { sen: string; name: string }[]
+  /** Whether registration is actually restricted to `roster`. */
+  rosterRequired?: boolean
   /**
    * Fingerprint of the seed this store was built from.
    *
@@ -533,6 +539,71 @@ export class MockPortalApi implements PortalApi {
     return structuredClone(this.#store.event)
   }
 
+  /* ------------------------------------------------------------- roster */
+
+  async getRoster(): Promise<RosterState> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 4)
+    return this.#rosterState()
+  }
+
+  async uploadRoster(
+    rows: readonly { name: string; sen: string }[],
+    required: boolean,
+  ): Promise<RosterUploadResult> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+
+    const problems: string[] = []
+    const seen = new Set<string>()
+    const accepted: { sen: string; name: string }[] = []
+
+    rows.forEach((row, index) => {
+      const sen = normaliseSen(row.sen)
+      if (!isValidSen(sen)) {
+        problems.push(`row ${index + 2}: not a valid SEN`)
+        return
+      }
+      if (seen.has(sen)) {
+        problems.push(`row ${index + 2}: duplicate`)
+        return
+      }
+      seen.add(sen)
+      accepted.push({ sen, name: row.name.trim().slice(0, 80) })
+    })
+
+    if (accepted.length === 0) {
+      throw new PortalError('unknown', `No usable rows. First problem: ${problems[0] ?? 'the file is empty'}`)
+    }
+
+    this.#store.roster = accepted
+    this.#store.rosterRequired = required
+    persist(this.#store)
+
+    return { imported: accepted.length, skipped: problems.length, problems, required }
+  }
+
+  async clearRoster(): Promise<RosterState> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 4)
+    this.#store.roster = []
+    this.#store.rosterRequired = false
+    persist(this.#store)
+    return this.#rosterState()
+  }
+
+  #rosterState(): RosterState {
+    // Optional on stores seeded before this feature existed, so a local `persist`
+    // from an older session cannot make the panel crash on `undefined.length`.
+    const roster = this.#store.roster ?? []
+    return {
+      count: roster.length,
+      required: this.#store.rosterRequired ?? false,
+      uploadedAt: roster.length > 0 ? this.#store.event.date : null,
+      sample: roster.slice(0, 8),
+    }
+  }
+
   /* ------------------------------------------------------------- guards */
 
   #requireAttendee(): AttendeeWithSecret {
@@ -685,6 +756,8 @@ function loadOrSeed(): Store {
     event: structuredClone(SEED_EVENT),
     teams: structuredClone(SEED_TEAMS) as Team[],
     checkIns: [],
+    roster: [],
+    rosterRequired: false,
     seedFingerprint: currentSeedFingerprint(),
   }
 

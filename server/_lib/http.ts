@@ -20,6 +20,7 @@ export type ApiErrorCode =
   | 'unknown_sen'
   | 'already_checked_in'
   | 'day_locked'
+  | 'not_on_list'
   | 'not_found'
   | 'forbidden'
   | 'rate_limited'

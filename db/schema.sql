@@ -273,6 +273,42 @@ create index if not exists password_reset_attempts_phone_idx
 create index if not exists password_reset_attempts_ip_idx
   on password_reset_attempts (ip, created_at desc);
 
+/*
+  The guest list — the students an organiser has allowed to register.
+  -----------------------------------------------------------------------------
+  An upload of names and SENs, after which registration is restricted to them.
+
+  KEYED BY SEN ALONE, and that is the whole design. A name is what a volunteer
+  mishears, what a student types with one letter wrong, and what two people share.
+  Matching on it would lock out real students over spelling. The uploaded name is
+  kept for the organiser's reference and is never compared against anything.
+
+  Normalised on the way in — `upper()`, and the SEN stored exactly as
+  `normaliseSen` produces it — so the lookup is a plain equality hit on a primary
+  key rather than a scan with a `like`.
+
+  REPLACED WHOLESALE, never merged. An upload is a statement about who may
+  register *now*, and someone who left the school must stop being able to. Merging
+  would make a list impossible to shrink, which is the one thing an organiser most
+  needs to be able to do.
+*/
+create table if not exists event_roster (
+  sen       text primary key,
+  name      text        not null,
+  added_at  timestamptz not null default now()
+);
+
+-- How many are on the list, and whether it is being enforced.
+--
+-- A separate flag rather than deriving enforcement from "the table has rows",
+-- because those are different decisions. An organiser uploads a list to *see* it
+-- before committing to it, and to be able to re-upload a corrected one without
+-- leaving registration closed in between. It also means the portal behaves exactly
+-- as it did before the feature existed until somebody chooses otherwise, rather
+-- than changing the moment a file is selected.
+alter table events add column if not exists roster_required boolean not null default false;
+alter table events add column if not exists roster_uploaded_at timestamptz;
+
 -- -----------------------------------------------------------------------------
 -- Programme — event, agenda, teams.
 -- -----------------------------------------------------------------------------

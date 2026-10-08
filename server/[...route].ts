@@ -12,6 +12,7 @@ import {
   ApiError,
   badRequest,
   conflict,
+  field,
   forbidden,
   isTrue,
   json,
@@ -273,6 +274,36 @@ async function route(
         const problem = passwordProblem(password)
         if (problem) throw unprocessable('weak_password', problem)
 
+        /*
+          The guest list, when an organiser has asked for one.
+
+          Checked against the roster by SEN only. Matching on the uploaded NAME as
+          well would lock out real students over a spelling difference — and the
+          name on a college list is exactly the field that gets transcribed wrong.
+          The SEN is the one identifier both sides agree on, and it is already the
+          gate's.
+
+          Checked BEFORE the uniqueness probes, so somebody not on the list is told
+          that rather than being walked through "that phone number is already
+          registered" for a stranger's number.
+
+          The refusal does not say whether a list exists, how long it is, or who is
+          on it. "Not on the guest list" is enough for the student to go and ask, and
+          anything more turns registration into an oracle for who is attending.
+        */
+        const { rows: gate } = await db().query<{ on_list: boolean; required: boolean }>(
+          `select exists (select 1 from event_roster where sen = $1) as on_list,
+                  coalesce(
+                    (select roster_required from events order by date desc limit 1),
+                    false
+                  ) as required`,
+          [sen],
+        )
+
+        if (gate[0]?.required === true && gate[0].on_list !== true) {
+          throw unprocessable('not_on_list')
+        }
+
         // Unique constraints on phone and sen are the real guard; this check
         // only exists to return a specific error instead of a 500.
         const clash = await db().query(
@@ -524,6 +555,204 @@ async function route(
           'select id, name, phone, sen, password_hash, created_at from attendees order by created_at',
         )
         return json(res, 200, rows.map(publicAttendee))
+      }
+
+      /*
+        The guest list: who is allowed to register.
+
+        Owner-only, and read-only in the sense that matters — it returns a COUNT and
+        a SAMPLE, not the whole list. The full roster is every student's name and
+        SEN, which is exactly the data a `gate` account must never receive, and an
+        owner who needs to see the lot can download the sheet they uploaded. There
+        is no route that returns all of it.
+      */
+      case 'GET /admin/roster': {
+        requireOwner()
+
+        const { rows: counts } = await db().query<{
+          n: string
+          required: boolean
+          uploaded_at: Date | null
+        }>(
+          `select (select count(*) from event_roster)::text          as n,
+                  coalesce(roster_required, false)                    as required,
+                  roster_uploaded_at
+             from events order by date desc limit 1`,
+        )
+        const state = counts[0]
+
+        const { rows: sample } = await db().query<{ sen: string; name: string }>(
+          'select sen, name from event_roster order by sen limit 8',
+        )
+
+        return json(res, 200, {
+          count: Number(state?.n ?? 0),
+          required: state?.required ?? false,
+          uploadedAt: state?.uploaded_at ? state.uploaded_at.toISOString() : null,
+          sample,
+        })
+      }
+
+      /*
+        Replace the guest list.
+
+        All-or-nothing, and that is the entire point. Registration depends on this
+        table, so a partially-applied upload would lock out whichever half did not
+        land — a failure nobody could diagnose from the symptom, because those
+        students would simply be told they are not on the list. So every row is
+        validated BEFORE anything is written, and the delete plus the insert happen
+        in one transaction.
+
+        Replaces rather than merges: an upload is a statement about who may register
+        now, and someone who has left must stop being able to. Merging would make a
+        list impossible to shrink, which is the correction an organiser most often
+        needs to make.
+      */
+      case 'POST /admin/roster': {
+        requireOwner()
+        const body = await readJson<Record<string, unknown>>(req)
+
+        const rawRows = body.rows
+        if (!Array.isArray(rawRows)) {
+          throw badRequest('unknown', 'No rows found in the upload.')
+        }
+
+        /*
+          A hard ceiling, well above this event's ~500 students.
+
+          The endpoint buffers the request body, so an unbounded array is an
+          unbounded allocation. Refusing early is better than accepting 200 000 rows
+          and failing later in a way that leaves nothing written and no clue why.
+        */
+        if (rawRows.length > 5000) {
+          throw badRequest('unknown', 'That file has more rows than this portal can hold.')
+        }
+
+        const problems: string[] = []
+        const accepted: { sen: string; name: string }[] = []
+        const seen = new Map<string, number>()
+
+        for (let i = 0; i < rawRows.length; i += 1) {
+          const row = rawRows[i] as Record<string, unknown>
+          const lineNumber = i + 2 // +2: one-based, and row 1 is the header
+
+          const sen = normaliseSen(field(row.sen))
+          // `name` here is the ORGANISER's data, not something a student typed, so it
+          // is not held to the registration name rule. It is trimmed and capped so
+          // the column cannot hold unbounded text, and stripped of control
+          // characters so a spreadsheet cell cannot inject line breaks into the
+          // admin roster display.
+          const name = field(row.name)
+            .replace(/[\u0000-\u001F\u007F]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 80)
+
+          if (!isValidSen(sen)) {
+            problems.push(`row ${lineNumber}: "${field(row.sen).slice(0, 24)}" is not a valid SEN`)
+            continue
+          }
+          if (name === '') {
+            problems.push(`row ${lineNumber}: missing a name`)
+            continue
+          }
+
+          const firstSeen = seen.get(sen)
+          if (firstSeen !== undefined) {
+            /*
+              A duplicate is a warning, not a rejection.
+
+              The same student twice in one sheet is a spreadsheet slip, and the
+              outcome they want is one row — not a failed upload over something the
+              organiser cannot see. It is still surfaced, because a sheet with 400
+              rows where half are duplicates usually means the wrong range was
+              exported.
+            */
+            problems.push(`row ${lineNumber}: duplicate of row ${firstSeen} (${sen}) — kept the first`)
+            continue
+          }
+
+          seen.set(sen, lineNumber)
+          accepted.push({ sen, name })
+        }
+
+        /*
+          Every row bad means nothing is written, and the reason is returned in full.
+
+          The common cause is a header the parser did not recognise, which produces
+          one "not a valid SEN" per row — so the first few problems plus the count
+          is far more use than a generic rejection.
+        */
+        if (accepted.length === 0) {
+          throw unprocessable('unknown', `No usable rows. First problem: ${problems[0] ?? 'the file is empty'}`)
+        }
+
+        const client = await db().connect()
+        try {
+          await client.query('begin')
+          await client.query('delete from event_roster')
+          await client.query(
+            `insert into event_roster (sen, name)
+             select * from unnest($1::text[], $2::text[])`,
+            [accepted.map((r) => r.sen), accepted.map((r) => r.name)],
+          )
+          /*
+            `required` is settable on its own so the toggle can be flipped without
+            re-uploading, and left alone when absent so an upload never silently
+            changes who may register.
+          */
+          if (body.required !== undefined) {
+            await client.query(
+              `update events set roster_required = $1, roster_uploaded_at = now()
+                where id = 'evt_awakening_2026'`,
+              [isTrue(body.required)],
+            )
+          } else {
+            await client.query(
+              `update events set roster_uploaded_at = now() where id = 'evt_awakening_2026'`,
+            )
+          }
+          await client.query('commit')
+        } catch (error) {
+          await client.query('rollback').catch(() => {})
+          throw error
+        } finally {
+          client.release()
+        }
+
+        return json(res, 200, {
+          imported: accepted.length,
+          skipped: problems.length,
+          problems: problems.slice(0, 10),
+          required: isTrue(body.required),
+        })
+      }
+
+      /*
+        Clear the list and reopen registration.
+
+        Separate from uploading an empty file, because "remove every student" and
+        "I uploaded a blank sheet" are different mistakes and only one of them
+        should be one click away from done.
+      */
+      case 'DELETE /admin/roster': {
+        requireOwner()
+        const client = await db().connect()
+        try {
+          await client.query('begin')
+          await client.query('delete from event_roster')
+          await client.query(
+            `update events set roster_required = false, roster_uploaded_at = null
+              where id = 'evt_awakening_2026'`,
+          )
+          await client.query('commit')
+        } catch (error) {
+          await client.query('rollback').catch(() => {})
+          throw error
+        } finally {
+          client.release()
+        }
+        return json(res, 200, { count: 0, required: false, uploadedAt: null, sample: [] })
       }
 
       /*

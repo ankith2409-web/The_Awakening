@@ -9,6 +9,7 @@ import { Alert, SectionLabel } from '@/components/Typography'
 import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
+import { GuestListPanel } from './GuestListPanel'
 import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
 
 /**
@@ -1244,6 +1245,16 @@ function ProgrammePanel({
           </div>
         </div>
       </section>
+
+      {/*
+        The guest list, with the programme rather than in the Desk tab.
+
+        It is a registration control, not a record about somebody who has already
+        registered, so it belongs beside the other "who is affected by today's
+        decisions" controls. Putting it next to the roster would also mean the roster
+        loads for `gate` accounts just to render a tab they cannot open.
+      */}
+      <GuestListPanel />
 
       <section className="border-2 border-swiss-ink">
         <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">

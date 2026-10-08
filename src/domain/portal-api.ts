@@ -11,6 +11,8 @@ import type {
   DayState,
   EventInfo,
   MyAttendance,
+  RosterState,
+  RosterUploadResult,
   Team,
   Ticket,
 } from './types'
@@ -130,6 +132,29 @@ export interface PortalApi {
    * current set and get it right under exactly the conditions where it matters.
    */
   setLockedDays(lockedDays: readonly number[]): Promise<EventInfo>
+
+  /**
+   * The guest list: who is allowed to register.
+   *
+   * A COUNT and a SAMPLE, never the whole list — the full roster is every student's
+   * name and SEN, which is exactly what a `gate` account must never receive. The
+   * owner has the file they uploaded, so nothing is lost by not echoing it back.
+   */
+  getRoster(): Promise<RosterState>
+
+  /**
+   * Replaces the guest list wholesale.
+   *
+   * `required` is passed explicitly rather than inferred, so uploading a file never
+   * silently changes who may register. That decision belongs to the organiser.
+   */
+  uploadRoster(
+    rows: readonly { name: string; sen: string }[],
+    required: boolean,
+  ): Promise<RosterUploadResult>
+
+  /** Empties the list and reopens registration. */
+  clearRoster(): Promise<RosterState>
   updateAgendaItem(
     id: string,
     patch: Partial<Pick<EventInfo['agenda'][number], 'status'>>,

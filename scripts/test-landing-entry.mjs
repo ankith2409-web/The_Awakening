@@ -276,7 +276,31 @@ check(
   'the recovery panel is leaking a stack trace to the attendee',
 )
 
-/* -- 8. touch targets are unharmed ------------------------------------------ */
+/* -- 8. the guest-list refusal tells someone what to do -------------------- */
+
+/*
+  When registration is restricted, a student who is not on the list is refused at the
+  form with no self-service route to fix it. The server deliberately sends no
+  `message` for that — `ApiError` defaults it to the code and the handler omits a
+  redundant one — so the copy they actually read is this string. If it does not name
+  the contact address, the only outcome is a dead end and an abandoned registration.
+
+  Asserted here because `test:guestlist` can only check the CODE: the human wording
+  lives on the client and is never on the wire.
+*/
+const portalTypes = readCode('src/domain/types.ts')
+check(
+  'the not-on-list message names the contact address',
+  /not_on_list:[\s\S]{0,220}@/.test(portalTypes),
+  'the refusal would leave a student with nowhere to go',
+)
+check(
+  'the not-on-list message says the list exists, rather than denying registration',
+  /not_on_list:[\s\S]{0,120}guest list/i.test(portalTypes),
+  'the copy must distinguish "not on the list" from "not registered"',
+)
+
+/* -- 9. touch targets are unharmed ------------------------------------------ */
 
 /*
   Three CTAs now, not two: "Your pass" for a signed-in visitor alongside the
