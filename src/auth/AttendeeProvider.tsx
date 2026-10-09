@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { portalApi, PortalError, PORTAL_ERROR_MESSAGES } from '@/api'
-import type { Attendee, EventInfo, MyAttendance, Ticket } from '@/domain/types'
+import type { Attendee, CheckIn, EventInfo, MyAttendance, Ticket } from '@/domain/types'
 import { normalisePhone, normaliseSen } from '@/domain/phone'
 import { AttendeeContext, type AttendeeContextValue } from './contexts'
+import { LIVE_POLL_MS, eventChanged } from './liveEvent'
+import { probeSession } from './probeSession'
 
 /**
  * How often the dashboard re-checks for its attendance record.
@@ -25,21 +27,33 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
 
-    portalApi
-      .getAttendeeSession()
-      .then((session) => {
-        if (cancelled) return
-        if (session) {
-          setAttendee(session.attendee)
+    /*
+      A failed probe is NOT anonymous — see `probeSession`.
+
+      This used to `.catch(() => setStatus('anonymous'))`, which turned one slow
+      request on venue wifi into a redirect to /login with a valid cookie still in
+      the jar. Manual refresh was the reliable way to reproduce it, because a
+      refresh is a cold serverless start on a phone that has just woken up: the
+      single most likely request in the whole session to be slow.
+
+      Two failures, then anonymous — enough to ride out a blip, not so many that a
+      genuinely offline visitor sits on a boot screen for the better part of a
+      minute. If the retry DOES find a session, the status flips to `active` and the
+      route guard sends them to the dashboard on its own.
+    */
+    void probeSession(() => portalApi.getAttendeeSession()).then((result) => {
+      if (cancelled) return
+      if (result.known) {
+        if (result.value) {
+          setAttendee(result.value.attendee)
           setStatus('active')
         } else {
           setStatus('anonymous')
         }
-      })
-      .catch(() => {
-        // A failed probe must never lock anyone out of the sign-in screen.
-        if (!cancelled) setStatus('anonymous')
-      })
+      } else {
+        setStatus('anonymous')
+      }
+    })
 
     return () => {
       cancelled = true
@@ -55,24 +69,71 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
     name, phone, SEN and password, and only then read "registration is closed" —
     four fields of effort to be told something the page could have said on arrival.
 
-    `GET /event` is public, uncached-by-nobody and already on the critical path for
-    the dashboard, so the cost is one small request for a visitor who has not yet
-    signed in, and it replaces the separate fetch the register view would otherwise
-    have made for itself.
+    `GET /event` is public and already on the critical path for the dashboard, so the
+    cost is one small request for a visitor who has not yet signed in, and it replaces
+    the separate fetch the register view would otherwise have made for itself.
+
+    This effect is superseded by the poll below, which subsumes the initial load.
   */
+
+  /**
+   * Keeps the event live, for everyone, for ever.
+   *
+   * This is the one thing that makes an organiser's switch show up on somebody else's
+   * phone without a reload: closing registration, opening or closing a day, moving
+   * the day override, changing the phase, or correcting a speaker in the agenda all
+   * land here within `LIVE_POLL_MS`.
+   *
+   * It runs for anonymous visitors too, not only signed-in ones. The register form
+   * is precisely where a stale value is most expensive — somebody filling in four
+   * fields against a portal that has already been shut.
+   *
+   * Three rules, each of which is the fix for a specific way this goes wrong:
+   *
+   *   - Never stop for a settled state. An earlier version of the attendance poll
+   *     stopped once the attendee was marked; that is right for records and was
+   *     actively harmful for everything else, because "nothing more to learn" is a
+   *     property of a record and never of the event.
+   *   - Never apply an identical payload. See `eventSignature`.
+   *   - Never poll a hidden tab. An attendee holding their pass has this tab in the
+   *     background, and an idle phone should not be spending a database on it. The
+   *     first thing that happens on becoming visible is a fetch, so nothing is lost
+   *     by skipping the ticks — the `visibilitychange` listener covers the case
+   *     where the tab has been asleep for an hour.
+   */
   useEffect(() => {
     let cancelled = false
-    portalApi
-      .getEvent()
-      .then((loaded) => {
-        if (!cancelled) setEvent(loaded)
-      })
-      .catch(() => {
-        // Non-fatal. The register form falls back to showing the fields rather than
-        // refusing on the strength of a request that failed.
-      })
+
+    const poll = async () => {
+      try {
+        const next = await portalApi.getEvent()
+        if (cancelled) return
+        // Compared against the value already held, so an unchanged event costs a
+        // request and nothing else. Overwriting unconditionally would re-render the
+        // whole dashboard every five seconds regardless.
+        setEvent((current) => (eventChanged(current, next) ? next : current))
+      } catch {
+        // Never surfaced. A failed poll on somebody's phone must not become an error
+        // banner over their pass, and the next tick retries. Leaving the last good
+        // value on screen is the correct failure: slightly stale beats blank.
+      }
+    }
+
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void poll()
+    }, LIVE_POLL_MS)
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void poll()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+
     return () => {
       cancelled = true
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
     }
   }, [])
 
@@ -118,6 +179,12 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
    * until they manually reloaded — after walking through the gate again. The
    * log is append-only and records are immutable, so a record for today's day is
    * genuinely the last thing a poll can learn.
+   *
+   * Stopping here is safe ONLY because this poll now carries nothing but records.
+   * It used to return the day state as well, and stopping froze that too: reopening
+   * a closed day left every already-marked attendee reading "Closed" until they
+   * reloaded. Day state is polled unconditionally in the effect above and is read
+   * from `event`, never from here.
    */
   useEffect(() => {
     if (status !== 'active' || loadingData) return
@@ -138,14 +205,26 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
       That is somebody's phone battery, on a screen they are holding at a venue,
       spent on a request that cannot succeed.
     */
-    if (attendance?.lockedDays?.includes(today)) return
+    if (event?.lockedDays?.includes(today)) return
 
     let cancelled = false
 
     const poll = async () => {
       try {
         const current = await portalApi.getMyAttendance()
-        if (!cancelled && current !== null) setAttendance(current)
+        if (cancelled || current === null) return
+        /*
+          Only applied when the records actually differ.
+
+          An append-only log means an unchanged result is the common case, and writing
+          it anyway would replace the object and re-render the dashboard on every
+          tick. The comparison is on SEN and day together: the log is keyed by both,
+          and a repeated scan is refused server-side rather than inserted twice.
+        */
+        setAttendance((held) => {
+          if (held !== null && sameRecords(held.records, current.records)) return held
+          return current
+        })
       } catch {
         // A failed poll is not worth surfacing — it would flash an error at
         // someone who is only holding their phone up. The next tick retries.
@@ -172,9 +251,34 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onVisible)
     }
-  }, [status, attendance, loadingData, event?.activeDay])
+  }, [status, attendance, loadingData, event?.activeDay, event?.lockedDays])
 
-  /** Stable: only touches `setError`, which React guarantees is stable. */
+  /**
+ * Whether two attendance records are the same set.
+ *
+ * The poll runs every few seconds and the log is append-only, so "nothing new" is by
+ * far the common answer. Replacing the object on every tick would re-render the
+ * dashboard for no reason several times a minute, for as long as somebody has it
+ * open on their phone.
+ *
+ * Compared on SEN and day together rather than by reference: those are the log's
+ * keys, a record is immutable once written, and the server refuses a repeat scan, so
+ * a matching set means nothing changed. A `null` is "not loaded yet", which is never
+ * equal to a loaded empty list.
+ */
+function sameRecords(
+  current: readonly CheckIn[],
+  next: readonly CheckIn[],
+): boolean {
+  if (current.length !== next.length) return false
+  for (let index = 0; index < current.length; index += 1) {
+    if (current[index]?.sen !== next[index]?.sen) return false
+    if (current[index]?.day !== next[index]?.day) return false
+  }
+  return true
+}
+
+/** Stable: only touches `setError`, which React guarantees is stable. */
   const toError = useCallback((cause: unknown): never => {
     setError(
       cause instanceof PortalError
@@ -203,25 +307,51 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
     [toError],
   )
 
+  /*
+    Registration hands back the password the PORTAL chose.
+
+    It is returned to the caller rather than kept here, because it exists exactly once
+    and the only place it can be is the screen the attendee is looking at. Holding it
+    in context would put a plaintext credential in a place that survives navigation
+    and a re-render, for no gain.
+
+    The attendee is NOT made `active` here. The register view stays in control of what
+    happens next — the read-back, then the offer to change it — and only navigates to
+    the dashboard once that is done. `setStatus` happens in the view, deliberately, so
+    the guard cannot redirect out from under the read-back step.
+  */
   const register = useCallback(
-    async (name: string, phone: string, password: string, sen: string) => {
+    async (name: string, phone: string, sen: string) => {
       setError(null)
       try {
-        const session = await portalApi.attendeeRegister({
+        const result = await portalApi.attendeeRegister({
           name,
           phone: normalisePhone(phone),
-          password,
           sen: normaliseSen(sen),
-          remember: true,
         })
-        setAttendee(session.attendee)
-        setStatus('active')
+        setAttendee(result.attendee)
+        return result
       } catch (cause) {
+        // Rethrown, so the type is `AttendeeRegistration` rather than
+        // `AttendeeRegistration | undefined`. The view never reaches the line after
+        // a failure — `toError` sets the banner and throws — so nothing has to
+        // handle an `undefined` that cannot occur.
         toError(cause)
+        throw cause
       }
     },
     [toError],
   )
+
+  /**
+   * Ends the read-back and lets the attendee through to their pass.
+   *
+   * Separate from `register` so the account is created and the session issued in one
+   * place, while the decision to navigate is the view's.
+   */
+  const completeRegistration = useCallback(() => {
+    setStatus('active')
+  }, [])
 
   const logout = useCallback(async () => {
     setError(null)
@@ -247,6 +377,7 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
       error,
       login,
       register,
+      completeRegistration,
       logout,
       clearError,
     }),
@@ -260,6 +391,7 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
       error,
       login,
       register,
+      completeRegistration,
       logout,
       clearError,
     ],

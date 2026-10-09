@@ -6,6 +6,7 @@ import {
   type Attendee,
   type AttendeeLoginInput,
   type AttendeeRegisterInput,
+  type AttendeeRegistration,
   type AttendeeSession,
   type CheckIn,
   type DayState,
@@ -18,6 +19,7 @@ import {
 import type { PortalApi } from '@/domain/portal-api'
 import type {
   RegistrationMode,
+  RosterRows,
   RosterState,
   RosterUploadResult,
 } from '@/domain/types'
@@ -81,16 +83,27 @@ export class HttpPortalApi implements PortalApi {
     })
   }
 
-  attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeSession> {
+  attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration> {
+    // No password field. The portal generates one and returns it once.
     return this.#request('POST', '/attendee/register', {
       name: input.name,
       phone: input.phone,
-      password: input.password,
       // Required. Attendance is keyed on SEN, so omitting it fails the request
       // outright — and the in-memory mock tolerated the omission, so this only
       // surfaced against the real database.
       sen: input.sen,
     })
+  }
+
+  async verifyAttendeePassword(password: string): Promise<{ matches: boolean }> {
+    return this.#request('POST', '/attendee/verify-password', { password })
+  }
+
+  async changeOwnPassword(input: {
+    currentPassword: string
+    newPassword: string
+  }): Promise<{ ok: true }> {
+    return this.#request('POST', '/attendee/change-password', input)
   }
 
   attendeeLogout(): Promise<void> {
@@ -204,6 +217,10 @@ export class HttpPortalApi implements PortalApi {
 
   async getRoster(): Promise<RosterState> {
     return this.#request('GET', '/admin/roster')
+  }
+
+  listRosterRows(): Promise<RosterRows> {
+    return this.#request('GET', '/admin/roster/rows')
   }
 
   /*

@@ -4,6 +4,7 @@ import type {
   AdminUser,
   AgendaItem,
   Attendee,
+  AttendeeRegistration,
   CheckIn,
   EventInfo,
   MyAttendance,
@@ -38,12 +39,29 @@ export interface AttendeeContextValue {
   readonly error: ErrorState | null
 
   login: (name: string, phone: string, password: string, remember: boolean) => Promise<void>
+
+  /**
+   * Creates the account and returns the password the portal generated.
+   *
+   * No password argument: the attendee does not choose one. See
+   * `AttendeeRegistration` for why it comes back rather than being kept here.
+   */
   register: (
     name: string,
     phone: string,
-    password: string,
     sen: string,
-  ) => Promise<void>
+  ) => Promise<AttendeeRegistration>
+
+  /**
+   * Ends the read-back step and sends the attendee to their pass.
+   *
+   * The view calls this once the generated password has been confirmed, or once the
+   * attendee has declined to change it. Deliberately separate from `register` so a
+   * route guard cannot redirect to the dashboard before the password has been read
+   * back — that would show it exactly never.
+   */
+  completeRegistration: () => void
+
   logout: () => Promise<void>
   clearError: () => void
 }

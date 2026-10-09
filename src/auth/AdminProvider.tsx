@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { portalApi, PortalError, PORTAL_ERROR_MESSAGES } from '@/api'
 import type {
   AdminUser,
@@ -10,6 +10,18 @@ import type {
   Team,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
+import { LIVE_POLL_MS, eventChanged } from './liveEvent'
+import { probeSession } from './probeSession'
+
+/**
+ * How often the control room re-reads the event and the attendance log.
+ *
+ * This is the gap between an owner pressing "Close Day 1" on the laptop and a
+ * volunteer's phone at the gate showing it. Without it, the phone keeps offering to
+ * scan into a day that is closed, and the volunteer finds out by being refused —
+ * with a queue watching.
+ */
+const ADMIN_POLL_MS = LIVE_POLL_MS
 
 export function AdminProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AdminContextValue['status']>('initialising')
@@ -33,23 +45,31 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   */
   const [lastScan, setLastScan] = useState<AdminContextValue['lastScan']>(null)
 
+  /**
+   * Counts writes, so the poll can recognise its own answer as stale.
+   *
+   * A ref rather than state because it must be readable inside a callback and must
+   * not itself cause a render. Bumped by every mutation, before the request is sent.
+   */
+  const writeSeq = useRef(0)
+
+  /** Mirrors `scanning` for the poll's interval callback, which closes over nothing. */
+  const scanningRef = useRef(false)
+  scanningRef.current = scanning
+
   useEffect(() => {
     let cancelled = false
 
-    portalApi
-      .getAdminSession()
-      .then((session) => {
-        if (cancelled) return
-        if (session) {
-          setAdmin(session.admin)
-          setStatus('active')
-        } else {
-          setStatus('anonymous')
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setStatus('anonymous')
-      })
+    /* A failed probe is not anonymous — see `probeSession`. */
+    void probeSession(() => portalApi.getAdminSession()).then((result) => {
+      if (cancelled) return
+      if (result.known && result.value) {
+        setAdmin(result.value.admin)
+        setStatus('active')
+      } else {
+        setStatus('anonymous')
+      }
+    })
 
     return () => {
       cancelled = true
@@ -92,6 +112,80 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     if (status === 'active') void refresh()
     // Synchronisation with an external system on session resolve.
   }, [status, refresh])
+
+  /*
+    Keeps this device live.
+
+    Two devices is the normal setup on the day: an owner with the laptop managing
+    phase, locks and registration, and a volunteer with a phone at the door. Every
+    change the owner makes is invisible to the phone until something re-reads it, so
+    a volunteer scans into a day that was closed an hour ago, or keeps telling a queue
+    that registration is open after it has been shut.
+
+    Only the event and the log are polled. The attendee ROSTER is not, on purpose: it
+    changes when somebody registers, which is not a door-side event, and it is the
+    one response that carries every attendee's name, phone and SEN. Refetching that
+    every five seconds to chase a registration would put the whole roll through the
+    network of every open owner device for no benefit. Adding somebody by hand
+    refreshes it, and the Refresh button is there.
+
+    `loadingData` is deliberately NOT touched. A poll that flipped the skeletons on
+    and off every five seconds would make the whole portal strobe.
+
+    `lastScan` is deliberately NOT touched either. It is the confirmation a volunteer
+    is reading aloud to somebody standing in front of them, and a background refresh
+    must never take it away mid-sentence.
+  */
+  useEffect(() => {
+    if (status !== 'active') return
+
+    let cancelled = false
+
+    const poll = async () => {
+      // Captured before the requests go out. If a write lands while they are in
+      // flight, their answer describes the past and is discarded rather than being
+      // allowed to undo the write — the classic stale-response flicker, which on a
+      // switch would show the old position until the next tick.
+      const seq = writeSeq.current
+
+      const [eventResult, attendanceResult] = await Promise.allSettled([
+        portalApi.getEvent(),
+        portalApi.listAttendance(),
+      ])
+
+      if (cancelled || seq !== writeSeq.current) return
+
+      if (eventResult.status === 'fulfilled') {
+        const next = eventResult.value
+        setEvent((current) => (eventChanged(current, next) ? next : current))
+      }
+      if (attendanceResult.status === 'fulfilled') {
+        const next = attendanceResult.value
+        setAttendance((current) => (sameLog(current, next) ? current : next))
+      }
+    }
+
+    const id = window.setInterval(() => {
+      // A scan in flight owns the screen. It resolves in well under a second and
+      // appends locally, so there is nothing to gain from racing it.
+      if (document.visibilityState === 'visible' && !scanningRef.current) void poll()
+    }, ADMIN_POLL_MS)
+
+    // Somebody switching back to the tab after a meeting, an hour after the owner
+    // changed something, must not have to wait out the interval to see it.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && !scanningRef.current) void poll()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [status])
 
   /** Stable: only touches `setError`, which React guarantees is stable. */
   const toError = useCallback((cause: unknown): never => {
@@ -201,6 +295,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const setAttendeePassword = useCallback(
     async (sen: string, password: string) => {
       setError(null)
+      writeSeq.current += 1
       try {
         const result = await portalApi.adminSetAttendeePassword({ sen, password })
         return { name: result.attendee.name, sen: result.attendee.sen }
@@ -231,6 +326,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const setEventPhase = useCallback(
     async (phase: EventInfo['phase']) => {
       setError(null)
+      writeSeq.current += 1
       try {
         setEvent(await portalApi.updateEventPhase(phase))
       } catch (cause) {
@@ -243,6 +339,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const setAgendaStatus = useCallback(
     async (id: string, agendaStatus: AgendaItem['status']) => {
       setError(null)
+      writeSeq.current += 1
       try {
         await portalApi.updateAgendaItem(id, { status: agendaStatus })
         setEvent((current) =>
@@ -265,6 +362,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const updateEventDay = useCallback(
     async (day: number | null) => {
       setError(null)
+      writeSeq.current += 1
       try {
         // The whole `EventInfo` comes back, so the day change and the agenda agree
         // immediately rather than drifting until the next refresh.
@@ -279,6 +377,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const setRegistrationMode = useCallback(
     async (mode: RegistrationMode) => {
       setError(null)
+      writeSeq.current += 1
       try {
         // Whole `EventInfo` back, so the switch, the guest list panel and the
         // registration form all reflect the change from one response.
@@ -293,6 +392,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const setLockedDays = useCallback(
     async (days: readonly number[]) => {
       setError(null)
+      writeSeq.current += 1
       try {
         // Whole `EventInfo` back, so the lock badges, the scan panel state and the
         // programme all reflect the change from one response.
@@ -370,4 +470,25 @@ function stripAttendee(record: CheckIn & { attendee: Attendee }): CheckIn {
   // the roster.
   const { id, sen, attendeeId, at, method, day, attendeeName } = record
   return { id, sen, attendeeId, at, method, day, attendeeName }
+}
+
+/**
+ * Whether two attendance logs are the same set of records.
+ *
+ * The poll runs every few seconds and the log is append-only, so "nothing new" is by
+ * far the common answer. Replacing the array on every tick would re-render the whole
+ * control room for no reason, several times a minute, for as long as it is open.
+ *
+ * Compared on `id` and length rather than by reference: the server assigns `id`, the
+ * log only ever grows, and a record is immutable so an existing id never changes
+ * meaning. A gate account and an owner therefore see the same comparison, and neither
+ * has to be trusted to be in step.
+ */
+function sameLog(current: readonly CheckIn[], next: readonly CheckIn[]): boolean {
+  if (current === next) return true
+  if (current.length !== next.length) return false
+  for (let index = 0; index < current.length; index += 1) {
+    if (current[index]?.id !== next[index]?.id) return false
+  }
+  return true
 }

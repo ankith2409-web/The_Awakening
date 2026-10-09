@@ -225,10 +225,33 @@ async function main() {
     Array.isArray(myAttendance.body?.records) && myAttendance.body.records.length === 0,
     `got ${JSON.stringify(myAttendance.body)}`,
   )
+  /*
+    The day state is NOT repeated here any more.
+
+    `/attendee/attendance` used to carry `totalDays`, `activeDay`, `overridden` and
+    `lockedDays` as well as its records. It now carries records only, and the
+    dashboard reads day state from `GET /event`.
+
+    The reason is specific and worth keeping in the suite: the poll for attendance
+    STOPS once this attendee is marked for the day being scanned into, which is
+    correct — a record is append-only, so there is nothing further for it to learn.
+    But it also froze the duplicated day state. Reopening a closed day left every
+    already-marked attendee reading "Closed" until they reloaded by hand.
+
+    So this asserts the shape that keeps that from coming back.
+  */
   check(
-    'and reports the day count, so the dashboard can render per-day rows',
-    typeof myAttendance.body?.totalDays === 'number' && myAttendance.body.totalDays >= 1,
-    `totalDays=${myAttendance.body?.totalDays}`,
+    'and reports records only — the day state is not duplicated here',
+    Object.keys(myAttendance.body ?? {}).join(',') === 'records',
+    `keys=${Object.keys(myAttendance.body ?? {}).join(',')}`,
+  )
+  check(
+    'the day state the dashboard needs comes from the event instead',
+    typeof event.body?.totalDays === 'number' &&
+      typeof event.body?.activeDay === 'number' &&
+      Array.isArray(event.body?.lockedDays),
+    `totalDays=${event.body?.totalDays} activeDay=${event.body?.activeDay} ` +
+      `lockedDays=${JSON.stringify(event.body?.lockedDays)}`,
   )
 
   const anonAttendance = await call(makeJar(), 'GET', '/attendee/attendance')

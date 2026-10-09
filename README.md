@@ -37,6 +37,7 @@ node dev-api.mjs            # serves the serverless function on :3000
 | `npm run db:setup`    | Apply `db/schema.sql` and `db/seed.sql`, create the admin  |
 | `npm run lint`        | oxlint                                                    |
 | `npm run test:api`    | End-to-end suite against a running API                    |
+| `npm run test:live`   | The live-update wiring, asserted from source              |
 | `npm run prepublish`  | Secret scan — run before every push                       |
 
 ## Configuration
@@ -68,6 +69,8 @@ src/
     mock-portal.ts         In-memory backend, same signatures
     index.ts               THE SWITCH
   auth/                  AttendeeProvider and AdminProvider — two separate doors
+    liveEvent.ts           What a poll compares, so an unchanged event is free
+    probeSession.ts        A failed probe is "unknown", not "logged out"
   lib/
     exportAttendance.ts    SEN-only CSV download
     motion.ts              Stagger cap, the one place it is defined
@@ -173,7 +176,9 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | `GET`   | `/teams`                   | —                                     | public          |
 | `GET`   | `/attendee/session`        | —                                     | optional        |
 | `POST`  | `/attendee/login`          | `{ name, phone, password, remember }` | —               |
-| `POST`  | `/attendee/register`       | `{ name, phone, password, sen }`      | —               |
+| `POST`  | `/attendee/register`       | `{ name, phone, sen }`                | —               |
+| `POST`  | `/attendee/verify-password`| `{ password }`                         | attendee        |
+| `POST`  | `/attendee/change-password`| `{ currentPassword, newPassword }`      | attendee        |
 | `POST`  | `/attendee/logout`         | —                                     | attendee        |
 | `GET`   | `/attendee/ticket`         | —                                     | attendee        |
 | `GET`   | `/attendee/attendance`     | —                                     | attendee        |
@@ -186,6 +191,7 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | `GET`   | `/admin/attendance`        | —                                     | admin           |
 | `POST`  | `/admin/attendance`        | `{ sen }`                             | admin           |
 | `GET`   | `/admin/roster`            | —                                     | **owner**       |
+| `GET`   | `/admin/roster/rows`       | —                                     | **owner**       |
 | `POST`  | `/admin/roster`            | `{ rows, registrationMode }`          | **owner**       |
 | `DELETE`| `/admin/roster`            | —                                     | **owner**       |
 | `PATCH` | `/admin/agenda/:id`        | `{ status }`                          | **owner**       |
@@ -831,6 +837,176 @@ Details that each cost a row of somebody's real data:
 - **`.xls` is refused by name**, with "save it as .xlsx", rather than failing later
   with a ZIP error nobody can interpret.
 
+### The portal is live
+
+Nothing in this portal requires a reload, on either side. Closing registration,
+opening or closing a day, pinning the day override, changing the phase, moving a
+session in the agenda, and marking somebody present at the gate all reach every other
+open device within five seconds.
+
+Two devices is the normal arrangement on the day — an owner with the laptop managing
+the switches, a volunteer with a phone at the door — and without this the phone has no
+idea any of it happened until somebody reloads it in front of a queue.
+
+**One event poll, and it never stops.** `GET /event` already carries everything the
+portal shows about the event, so a single request per tick keeps the phase, the day,
+the locks, the registration mode and the agenda current. It runs for anonymous
+visitors too, not only signed-in ones: the register form is where a stale value is
+most expensive, since somebody may be part-way through typing against a portal that
+has already been shut.
+
+**It applies nothing when nothing changed.** `eventSignature` compares a fixed list of
+the fields the UI reads. `JSON.stringify(event)` would compare key insertion order as
+well as content, so any response assembled in a different order would look permanently
+different and the dashboard would re-render every five seconds for as long as it was
+open. The named list is also the answer to "what does this poll actually keep fresh?",
+which is not otherwise a question the code can answer.
+
+**It skips hidden tabs and re-reads on return.** An attendee holding their pass has
+this tab in the background, and an idle phone should not be spending a database on it.
+The `visibilitychange` listener covers the case where the tab has been asleep an hour:
+the first thing that happens on becoming visible is a fetch, so nothing is lost by
+skipping the ticks.
+
+**A stale response cannot undo a write.** Every mutation bumps a counter before it
+sends its request, and a poll captures that counter before its own requests go out. If
+a write landed in between, the poll's answer describes the past and is discarded.
+Without this, closing a day flickers back to open for up to a tick.
+
+**The roster is deliberately not polled.** It changes when somebody registers, which
+is not a door-side event, and it is the one response carrying every attendee's name,
+phone and SEN. Refetching it every five seconds on every open owner device would put
+the whole roll through the network for no benefit. Adding somebody by hand refreshes
+it, and the Refresh button is there.
+
+### Day state has exactly one home
+
+`EventInfo` is the only place `activeDay`, `totalDays`, `dayOverridden` and
+`lockedDays` live.
+
+`/attendee/attendance` used to return them alongside its records. It no longer does,
+and that is a fix rather than a simplification. The poll for attendance **stops** once
+this attendee is marked for the day being scanned into — correctly, because a record is
+append-only and immutable, so there is genuinely nothing further for it to learn. But
+it stopped the duplicated day state too. An organiser reopened Day 2, and every
+attendee who had already been marked on Day 1 went on reading "Closed" on Day 2 until
+they reloaded by hand.
+
+Two copies of one fact is two things that can disagree, and they did. The records poll
+now carries records; the day state poll never stops.
+
+### A refresh must not log anybody out
+
+A failed session probe is **unknown**, not anonymous.
+
+The probe has an 8-second timeout, because a stalled connection would otherwise leave
+the boot screen up for ever — a deliberate and correct trade. But routing its *failure*
+to `anonymous` meant one slow request on venue wifi turned a perfectly valid cookie
+into a redirect to `/login`. To the person experiencing it, that is "the portal logged
+me out".
+
+It was most reliable on a manual refresh, which is the worst possible moment: a refresh
+is a cold serverless start on a phone that has just come off a lock screen, so it is
+the single most likely request in the session to be slow.
+
+So the probe is retried once, and only a second failure concludes anything. One retry
+and not a backoff loop, because each attempt can burn the full probe budget — three
+attempts is up to 24 seconds of boot screen plus the gaps, which is worse than showing
+the sign-in form. If the retry *does* find a session, the status flips to `active` and
+the route guard sends the attendee to the dashboard on its own.
+
+Cookie persistence was never the problem and was checked: `Max-Age` in seconds,
+`Expires` alongside it, `HttpOnly`, `SameSite=Lax`, and 30 days when "remember me" is
+on.
+
+**A self-service password change keeps the session in use.** The admin password route
+deletes every session for the attendee, which is right there — the administrator is not
+the person at the other end. Doing the same to a self-service change signs the attendee
+out of the tab they are standing in, at the exact moment they have just proved they
+know their password, and it is indistinguishable from the portal signing people out by
+itself. `revokeOtherSessions` excludes the caller's own token.
+
+### The password is the portal's, and it is read back
+
+Registration does not ask for a password. The portal generates one, hands it over, and
+the attendee types it back before they are let through.
+
+The old form asked for a password and then made them type it twice, on a phone, at a
+desk, in a queue. A single mistyped character locked them out of their own pass, with
+no self-service recovery — the recovery path is an organiser at a desk, which means
+queueing again. Generated-and-read-back takes the typing off the critical path: there
+is nothing to mistype, because the attendee never chose it.
+
+**The generated shape is dictated by being read aloud** over a noisy room:
+
+| Rule | Why |
+| --- | --- |
+| No `0`/`O`, `1`/`l`/`I` | indistinguishable in most sans-serif faces, and the commonest way a read-back goes wrong |
+| No punctuation but the group dash | every symbol is a thing to name out loud |
+| Lower case only | nothing to distinguish, so nothing to get wrong |
+| Digits `2`–`9` | no look-alikes |
+| Three groups of three | short enough to read one character at a time, and to hold in your head while typing |
+
+31 characters per position, so 31³ ≈ 2.6e13 — about 44 bits. Ample for a credential
+whose real lifetime is one weekend, and not worth a longer string that is harder to
+read correctly, which is the failure mode that actually costs somebody their place.
+`randomInt` from `node:crypto`, not `Math.random`, whose internal state can be
+recovered from a handful of outputs and would make every password it ever issued
+predictable.
+
+**The read-back is checked twice, in two different ways.** Requiring the two boxes to
+match each other catches a typo in one of them. It cannot catch a typo in *both* —
+somebody who misreads the generated password and then faithfully types the same wrong
+thing twice passes the client check and cannot log in tomorrow. So the second check
+compares against the stored hash, and it is the only thing that catches that case. A
+mismatch answers `{ matches: false }` rather than erroring: it is the expected result
+of reading something aloud, not a fault.
+
+**It is shown once, and only once.** The password comes back in the registration
+response and only its bcrypt hash is ever stored. There is deliberately no route that
+can return it again — a "resend my password" endpoint would make the portal a
+credential oracle for anyone who knows a name and a phone number. An attendee who loses
+it asks at the desk.
+
+**Changing it is offered, not imposed.** Two buttons and no default: somebody happy
+with the password they were handed should be able to walk past the question in one tap,
+and the surest way to stop them doing that is to put a form in front of them first.
+
+`password` is still accepted on the register endpoint, and validated identically when
+present. That is not a hole — a supplied password must still pass `passwordProblem`
+exactly as a generated one does — and it keeps the API usable by the test suites,
+which have to register a known password in order to log back in with it. The browser
+form never sends the field, and the response does not echo it as though it had been
+generated.
+
+### Reading the guest list back
+
+`GET /admin/roster` returns a count and a sample of eight. That is the right default —
+the panel header wants to know whether anything landed, not to hold five hundred
+students in memory to say "yes, 500" — but it left an organiser unable to do the one
+thing they uploaded a list to do, which is look at it.
+
+`GET /admin/roster/rows` is a separate owner-only route for that, fetched only when
+the panel's **Check all N names** control is opened. The upload preview shows what the
+*parser* made of the file; this shows what the *database* ended up holding, which is
+the question that matters before enforcing — the row where a column shifted, the SEN
+that lost a digit, the name that became the SEN. A count cannot tell you any of that.
+
+Owner-only is not incidental: the full list is every student's name and SEN in one
+response, which is precisely what a `gate` account must never receive.
+`requireOwner()` runs before the query, so the rows are not even read for an account
+that may not have them.
+
+Capped at 5,000 rows, and the cap is **reported** rather than applied silently.
+Truncating a check would produce "I looked at every name and they are all correct" for
+whatever rows happened to be returned, which is worse than not offering the check at
+all.
+
+The list is a bounded-height scroll with a filter above it, matching on name **or**
+SEN. Scrolling 500 rows to spot one mistake is how the mistake survives; and the two
+failures an organiser is hunting for are different, so matching on name alone would
+make a mangled SEN invisible.
+
 ### Getting back in: how an attendee is identified
 
 Login is **phone number + password**, with the **name as a second factor**. The name
@@ -1173,6 +1349,8 @@ are zeroed explicitly.
 | `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
+| `test:registration` | 36     | yes      | The generated password's shape, the read-back caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
+| `test:live`      | 32          | no       | The live-update wiring itself: both polls, the change check, the write-ordering guard, the retrying probe, and that day state has exactly one home |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |

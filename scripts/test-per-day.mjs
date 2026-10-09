@@ -278,11 +278,31 @@ async function main() {
     'both records carry their day',
     (mine.body?.records ?? []).every((row) => row.day === 1 || row.day === 2),
   )
-  check('they are told how many days the event has', mine.body?.totalDays === totalDays)
+  /*
+    The day state is read from the event, not from the attendance payload.
+
+    `/attendee/attendance` returns records only now. It used to repeat `totalDays`
+    and `activeDay` as well, and the attendance poll stops once this attendee is
+    marked for the day being scanned into — correctly, because a record is immutable.
+    That also froze the duplicate, so reopening a closed day left an already-marked
+    attendee reading stale day state until they reloaded.
+
+    So the assertion is that `GET /event` follows the override, which is the single
+    place the dashboard reads it from, and that the attendance payload does not
+    quietly grow the field back.
+  */
+  check('they are told how many days the event has', event.body?.totalDays === totalDays)
+  // Re-read: the `event` above was fetched before the override was pinned.
+  const eventAfterOverride = await call('GET', '/event')
   check(
-    'they are told which day is current',
-    mine.body?.activeDay === 2,
-    `activeDay=${mine.body?.activeDay}`,
+    'they are told which day is current, from the event',
+    eventAfterOverride.body?.activeDay === 2,
+    `activeDay=${eventAfterOverride.body?.activeDay}`,
+  )
+  check(
+    'the attendance payload carries records only',
+    Object.keys(mine.body ?? {}).join(',') === 'records',
+    `keys=${Object.keys(mine.body ?? {}).join(',')}`,
   )
 
   /* -- an attendee who came to one day only --------------------------------- */
@@ -314,9 +334,9 @@ async function main() {
     `day=${partial.body?.records?.[0]?.day}`,
   )
   check(
-    'while still being told the event runs for two days',
-    partial.body?.totalDays === totalDays,
-    `totalDays=${partial.body?.totalDays}`,
+    'while the event still reports two days',
+    event.body?.totalDays === totalDays,
+    `totalDays=${event.body?.totalDays}`,
   )
 
   await cleanup()

@@ -1,4 +1,4 @@
-import type { CheckIn, MyAttendance } from '@/domain/types'
+import type { CheckIn, EventInfo, MyAttendance } from '@/domain/types'
 import { Skeleton } from './Skeleton'
 
 /**
@@ -19,12 +19,23 @@ import { Skeleton } from './Skeleton'
  *
  * Days with no record render as "not yet" rather than being hidden. An absence the
  * attendee can see is information; an absence that is not visible is not.
+ *
+ * DAY STATE COMES FROM event, not from ttendance.
+ *
+ * Both used to carry it, and the attendance poll stops once this attendee is marked
+ * for the day being scanned into — correctly, because a record is append-only. That
+ * also froze the duplicate: an organiser reopened a closed day, and every attendee
+ * already marked kept reading "Closed" because the only copy this panel read was no
+ * longer being fetched. The event is polled unconditionally and never stops, so the
+ * locks it carries are the freshest thing on the page.
  */
 export function AttendancePanel({
   attendance,
+  event,
   loading,
 }: {
   attendance: MyAttendance | null
+  event: EventInfo | null
   loading: boolean
 }) {
   if (loading) {
@@ -35,8 +46,8 @@ export function AttendancePanel({
     )
   }
 
-  const totalDays = attendance?.totalDays ?? 1
-  const activeDay = attendance?.activeDay ?? 1
+  const totalDays = event?.totalDays ?? 1
+  const activeDay = event?.activeDay ?? 1
   const records = attendance?.records ?? []
 
   /*
@@ -47,7 +58,7 @@ export function AttendancePanel({
   for (const record of records) byDay.set(record.day, record)
 
   const days = Array.from({ length: totalDays }, (_, index) => index + 1)
-  const lockedDays = attendance?.lockedDays ?? []
+  const lockedDays = event?.lockedDays ?? []
 
   return (
     <Frame>

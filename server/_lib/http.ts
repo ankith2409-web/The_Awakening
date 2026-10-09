@@ -103,6 +103,20 @@ export function requireString(body: Record<string, unknown>, key: string): strin
   return value
 }
 
+/**
+ * A present, non-empty string field, or null.
+ *
+ * For fields a caller may legitimately omit, as opposed to `requireString`, which
+ * refuses the request when one is missing. The distinction matters: `password` on
+ * registration is optional now that the portal generates one, and treating a missing
+ * value as an empty string would validate the empty string instead of falling back.
+ */
+export function optionalString(body: Record<string, unknown>, key: string): string | null {
+  const value = body[key]
+  if (typeof value !== 'string' || value.trim() === '') return null
+  return value
+}
+
 export function isTrue(value: unknown): boolean {
   return value === true || value === 'true' || value === 1
 }

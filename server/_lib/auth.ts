@@ -158,4 +158,29 @@ export async function purgeExpiredSessions(): Promise<void> {
   await db().query(`delete from sessions where expires_at <= now()`)
 }
 
+/**
+ * Revokes every session for somebody EXCEPT the one making this request.
+ *
+ * Used when an attendee changes their own password. The admin route deletes all of
+ * them, which is right there — the administrator is not the person at the other end.
+ * Doing the same to a self-service change logs the person out of the tab they are
+ * standing in, at the exact moment they have just proved they know their password,
+ * and it is indistinguishable from the portal spontaneously signing them out.
+ *
+ * Kept here rather than in the route because `sha256` is module-private, and the
+ * point of it being private is that no caller can forge a token hash.
+ */
+export async function revokeOtherSessions(
+  req: IncomingMessage,
+  kind: 'attendee' | 'admin',
+  subjectId: string,
+): Promise<void> {
+  const token = readCookie(req, COOKIE_PREFIX + kind)
+  await db().query(
+    `delete from sessions
+      where kind = $1 and subject_id = $2 and token_hash is distinct from $3`,
+    [kind, subjectId, token === null ? '' : sha256(token)],
+  )
+}
+
 export { MAX_SESSION_MS }

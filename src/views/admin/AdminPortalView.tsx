@@ -386,6 +386,7 @@ export function AdminPortalView() {
                   <AddAttendeePanel onAdded={() => void refresh()} />
                   <GuestListPanel
                     mode={event?.registrationMode ?? 'open'}
+                    rosterCount={event?.rosterCount ?? 0}
                     onModeChange={(mode) => void setRegistrationMode(mode)}
                   />
                 </div>

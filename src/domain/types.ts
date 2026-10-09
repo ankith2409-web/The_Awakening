@@ -73,9 +73,31 @@ export interface AttendeeLoginInput {
   readonly remember: boolean
 }
 
-export interface AttendeeRegisterInput extends AttendeeLoginInput {
-  /** Student Enrolment Number — the identity their barcode carries. */
+/**
+ * Registration does NOT take a password.
+ *
+ * `AttendeeLoginInput` is not extended, deliberately. The portal chooses the password
+ * and hands it over; making it a field would mean the form collected one and the
+ * server quietly ignored it, which is the kind of thing that reads as a bug to whoever
+ * opens the form later.
+ */
+export interface AttendeeRegisterInput {
+  readonly name: string
+  readonly phone: string
   readonly sen: string
+}
+
+/**
+ * What registration returns.
+ *
+ * `generatedPassword` is present exactly once, in this response. Only a bcrypt hash is
+ * stored, and there is deliberately no route that can return it again — a "resend my
+ * password" endpoint would make the portal a credential oracle for anyone who knows a
+ * name and a phone number. An attendee who loses it asks at the desk.
+ */
+export interface AttendeeRegistration {
+  readonly attendee: Attendee
+  readonly generatedPassword: string
 }
 
 export interface AdminLoginInput {
@@ -289,27 +311,43 @@ export interface RosterUploadResult {
 }
 
 /**
+ * The whole guest list, for checking that every name and SEN landed.
+ *
+ * Owner-only, and fetched only when somebody asks to see it — never as part of the
+ * panel's default state.
+ *
+ * `truncated` exists because a cap is a cap. A silently shortened list would let
+ * somebody report "I checked every name" about the rows that happened to be returned,
+ * which is the exact opposite of what the check is for.
+ */
+export interface RosterRows {
+  readonly total: number
+  readonly truncated: boolean
+  readonly rows: readonly { readonly sen: string; readonly name: string }[]
+}
+
+/**
  * The signed-in attendee's own attendance, per day.
  *
  * An array rather than a single record: attendance used to be once-in-a-lifetime,
  * and returning "the first row" would tell somebody who came on day two that they
- * arrived on day one. `totalDays` is included so the dashboard can render a row
- * for a day with no record yet — an absence the attendee can read as "not yet"
- * rather than as nothing at all.
+ * arrived on day one.
+ *
+ * RECORDS ONLY. This deliberately does not repeat the day state.
+ *
+ * `activeDay`, `totalDays`, `overridden` and `lockedDays` used to be here as well
+ * as on `EventInfo`. Two copies of one fact is two things that can disagree, and they
+ * did: the poll for attendance stops once this attendee is marked for the day being
+ * scanned into — correctly, because a record is append-only and immutable — which
+ * silently froze the duplicated day state along with it. An organiser reopened Day 2
+ * and every attendee already marked on Day 1 went on reading "Closed" until they
+ * reloaded by hand.
+ *
+ * `EventInfo` is the only place day state lives now, and the portal keeps it current
+ * by polling it.
  */
 export interface MyAttendance {
   readonly records: readonly CheckIn[]
-  readonly activeDay: number
-  readonly totalDays: number
-  readonly overridden: boolean
-  /**
-   * Days attendance is closed for.
-   *
-   * Carried here so the dashboard can tell "not yet" apart from "no longer
-   * possible". Both otherwise read the same, and the panel would go on telling
-   * somebody to show a pass for a day that can never be marked again.
-   */
-  readonly lockedDays: readonly number[]
 }
 
 /**

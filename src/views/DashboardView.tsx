@@ -5,6 +5,7 @@ import { AttendancePanel } from '@/components/AttendancePanel'
 import { EventMark } from '@/components/EventMark'
 import { EventStatusPanel } from '@/components/EventStatusPanel'
 import { QrTicket } from '@/components/QrTicket'
+import { SiteFooter } from '@/components/SiteFooter'
 import { formatPhone } from '@/domain/phone'
 import { formatEventDateRange } from '@/lib/eventDate'
 
@@ -17,13 +18,18 @@ import { formatEventDateRange } from '@/lib/eventDate'
  *
  * Teams are deliberately absent: they are an organiser concern and live only
  * in the admin portal.
+ *
+ * The root is a flex column with `main` as `flex-1`, which is what lets the site
+ * footer sit at the bottom of the viewport on a short page instead of floating
+ * halfway up under the pass. `SiteFooter` is `mt-auto`, so it only claims the
+ * slack.
  */
 export function DashboardView() {
   const { attendee, event, attendance, ticket, loadingData, error, logout } =
     useAttendee()
 
   return (
-    <div className="min-h-dvh">
+    <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b-4 border-swiss-ink bg-swiss-paper px-4 py-4 sm:gap-4 sm:px-10 lg:px-14">
         <EventMark />
 
@@ -45,7 +51,7 @@ export function DashboardView() {
         </div>
       </header>
 
-      <main className="px-6 py-10 sm:px-10 lg:px-14 lg:py-14">
+      <main className="flex-1 px-6 py-10 sm:px-10 lg:px-14 lg:py-14">
         <div className="mx-auto max-w-[92rem]">
           <div className="flex flex-col gap-6 border-b-2 border-swiss-ink pb-8 lg:flex-row lg:items-end lg:justify-between">
             <div>
@@ -103,12 +109,18 @@ export function DashboardView() {
             </div>
 
             <div className="flex flex-col gap-8 lg:col-span-7">
-              <AttendancePanel attendance={attendance} loading={loadingData} />
+              <AttendancePanel
+                attendance={attendance}
+                event={event}
+                loading={loadingData}
+              />
               <EventStatusPanel event={event} loading={loadingData} />
             </div>
           </div>
         </div>
       </main>
+
+      <SiteFooter />
     </div>
   )
 }

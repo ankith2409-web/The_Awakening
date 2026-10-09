@@ -27,7 +27,9 @@
     "test:export": "node --experimental-strip-types --no-warnings scripts/check-export.mjs",
     "test:lock": "node scripts/test-day-lock.mjs",
     "test:parse": "esbuild scripts/test-roster-parse.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --external:node:zlib --outfile=node_modules/.tmp/test-roster-parse.mjs --log-level=error && node node_modules/.tmp/test-roster-parse.mjs",
-    "test:guestlist": "node scripts/test-guest-list.mjs"
+    "test:guestlist": "node scripts/test-guest-list.mjs",
+    "test:registration": "node scripts/test-registration.mjs",
+    "test:live": "node scripts/test-live-update.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

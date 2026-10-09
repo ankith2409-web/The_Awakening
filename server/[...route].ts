@@ -6,6 +6,7 @@ import {
   destroySession,
   hashPassword,
   purgeExpiredSessions,
+  revokeOtherSessions,
   verifyPassword,
 } from './_lib/auth.ts'
 import {
@@ -17,6 +18,7 @@ import {
   isTrue,
   json,
   notFound,
+  optionalString,
   readJson,
   requireString,
   unauthorized,
@@ -32,6 +34,7 @@ import {
   phoneProblem,
 } from './_lib/identifiers.ts'
 import { readTicket, signSen } from './_lib/ticket.ts'
+import { generatePassword } from './_lib/password.ts'
 import { resolveEventDay, isDayLocked } from './_lib/eventDay.ts'
 // Only the reset-attempt ledger purge survives; the limiter itself went with the
 // endpoint it protected. See `_lib/reset.ts`.
@@ -256,8 +259,26 @@ async function route(
         const body = await readJson<Record<string, unknown>>(req)
         const name = requireString(body, 'name').trim()
         const phone = normalisePhone(requireString(body, 'phone'))
-        const password = requireString(body, 'password')
         const sen = normaliseSen(requireString(body, 'sen'))
+
+        /*
+          The password is the PORTAL'S to choose.
+
+          Registration used to ask the attendee for one and then make them type it
+          again, on a phone, at a desk, in a queue — where a single mistyped character
+          locked them out of their own pass with no way back but finding an organiser.
+          The generated one is handed over on screen and read back, which takes the
+          typing error off the critical path entirely. The attendee can replace it
+          immediately afterwards if they would rather have their own.
+
+          `password` is still accepted, and validated identically when present. That
+          is not a hole: a supplied password must still pass `passwordProblem` exactly
+          as a generated one does. It keeps the API usable by the test suites, which
+          have to register a known password in order to log back in with it. The
+          browser form never sends the field.
+        */
+        const supplied = optionalString(body, 'password')
+        const password = supplied ?? generatePassword()
 
         const phoneProblemMessage = phoneProblem(phone)
         if (phoneProblemMessage !== null) {
@@ -342,7 +363,104 @@ async function route(
         // need their QR pass again on the day, which may be weeks away. Signing
         // them out when the browser closes would lose the pass.
         await createSession(res, 'attendee', created.id, true)
-        return json(res, 201, { attendee: publicAttendee(created) })
+
+        /*
+          The generated password comes back ONCE, in this response, and is never
+          stored in a readable form — only the bcrypt hash exists. There is no
+          "resend my password" route, deliberately: it would turn the portal into a
+          credential oracle for anyone who knows a name and a phone number. If the
+          attendee loses it, the desk sets a new one.
+        */
+        return json(res, 201, {
+          attendee: publicAttendee(created),
+          ...(supplied === null ? { generatedPassword: password } : {}),
+        })
+      }
+
+      /*
+        Read-back: did the attendee transcribe their new password correctly?
+
+        The form requires both boxes to match each other, which catches a typo in one
+        of them. It cannot catch a typo in BOTH — somebody who misread the generated
+        password and then faithfully typed the same wrong thing twice passes the client
+        check and cannot log in tomorrow. This compares against the stored hash, so
+        that case is caught here instead, while the password is still on their screen.
+
+        Answers `{ matches: false }` rather than erroring. A mismatch is the expected
+        outcome of a read-back, not a fault, and reusing `invalid_credentials` would
+        give it copy about "records" that is wrong in this context.
+      */
+      case 'POST /attendee/verify-password': {
+        const id = requireSession()
+        const body = await readJson<Record<string, unknown>>(req)
+        const attempt = requireString(body, 'password')
+
+        const { rows } = await db().query<{ password_hash: string }>(
+          'select password_hash from attendees where id = $1',
+          [id],
+        )
+        const row = rows[0]
+        if (!row) throw notFound()
+
+        return json(res, 200, { matches: await verifyPassword(attempt, row.password_hash) })
+      }
+
+      /*
+        Change one's own password, immediately after registering.
+
+        Distinct from the admin-mediated reset on purpose. An attendee who has just
+        been handed a generated password is being offered a replacement on the same
+        screen, with the old one already in their hands — that is not the situation the
+        admin route exists for, which is somebody locked out entirely.
+
+        The current password is still required. The read-back above establishes that
+        they can reproduce it, but that check is one HTTP call and an attacker holding a
+        stolen session could skip straight to this one.
+
+        Other sessions are revoked, this one is NOT. Deleting them all would sign the
+        attendee out of the tab they are standing in, at the moment they have just
+        proved they know their password — which looks exactly like the portal logging
+        people out on their own.
+      */
+      case 'POST /attendee/change-password': {
+        const id = requireSession()
+        const body = await readJson<Record<string, unknown>>(req)
+        const current = requireString(body, 'currentPassword')
+        const next = requireString(body, 'newPassword')
+
+        const { rows } = await db().query<{ password_hash: string }>(
+          'select password_hash from attendees where id = $1',
+          [id],
+        )
+        const row = rows[0]
+        if (!row) throw notFound()
+
+        if (!(await verifyPassword(current, row.password_hash))) {
+          throw unauthorized('That is not your current password.')
+        }
+
+        // The same rule the registration form applies. A generated password already
+        // satisfies it; a hand-chosen replacement must earn it.
+        const problem = passwordProblem(next)
+        if (problem) throw unprocessable('weak_password', problem)
+
+        const client = await db().connect()
+        try {
+          await client.query('begin')
+          await client.query('update attendees set password_hash = $2 where id = $1', [
+            id,
+            await hashPassword(next),
+          ])
+          await revokeOtherSessions(req, 'attendee', id)
+          await client.query('commit')
+        } catch (cause) {
+          await client.query('rollback').catch(() => {})
+          throw cause
+        } finally {
+          client.release()
+        }
+
+        return json(res, 200, { ok: true })
       }
 
       case 'POST /attendee/logout': {
@@ -376,10 +494,8 @@ async function route(
           [session.subject_id],
         )
 
-        const dayState = await resolveEventDay()
-
         /*
-          Every record, not just the first, and the day state alongside them.
+          Every record, not just the first.
 
           This used to return a single row or null, which was correct while
           attendance was once-in-a-lifetime. With a record per day, "the first one"
@@ -387,29 +503,23 @@ async function route(
           and somebody who came on day one only would be told they are marked for
           an event they have not attended yet.
 
-          The dashboard needs `totalDays` to render rows for days that have no
-          record yet, so an attendee can see "day two — not yet" rather than an
-          absence that reads like nothing at all.
+          RECORDS ONLY.
+
+          `activeDay`, `totalDays`, `overridden` and `lockedDays` used to ride along
+          here as well as on `GET /event`, and having them in both places is what made
+          the dashboard go stale. The attendance poll stops once this attendee is
+          marked for the day being scanned into — correctly, because a record is
+          append-only and immutable, so there is genuinely nothing further for it to
+          learn. But that same stop froze the duplicated day state too: an organiser
+          reopened Day 2, and every attendee who had already been marked on Day 1 kept
+          reading "Closed" on Day 2 until they reloaded by hand.
+
+          Day state now comes from `GET /event` and only from there. It is the same
+          public payload every visitor already loads, it is what the poll for it
+          always keeps current, and it is not sensitive: `lockedDays` is a set of day
+          numbers the public event payload already carries.
         */
-        return json(res, 200, {
-          records: rows,
-          activeDay: dayState.activeDay,
-          totalDays: dayState.totalDays,
-          overridden: dayState.overridden,
-          /*
-            Needed here, not just in the admin payload.
-
-            Without it the dashboard cannot tell the difference between "day one has
-            not happened yet" and "day one is closed", and it says the same thing for
-            both: show your pass at the gate. On a day that can no longer be marked
-            that instruction can never succeed, so somebody who missed it would sit
-            watching a status that will never change, told it updates on its own.
-
-            It is not sensitive. It is the same set of day numbers the public event
-            payload already carries.
-          */
-          lockedDays: dayState.lockedDays,
-        })
+        return json(res, 200, { records: rows })
       }
 
       /*
@@ -590,6 +700,46 @@ async function route(
         put a credential on a screen a passer-by can see, which is the reason the
         desk flow asks staff to read it aloud instead.
       */
+      /*
+        The whole guest list, so the names can actually be checked.
+
+        `GET /admin/roster` deliberately returns a count and a sample of eight. That
+        is the right default — the panel header wants to know whether anything landed,
+        not to hold five hundred students in memory to say "yes, 500" — but it left an
+        organiser unable to do the one thing they uploaded a list to do, which is look
+        at it. Seeing that every row parsed correctly is how you find the row where a
+        column shifted, before you enforce the list and lock somebody out.
+
+        So this is a separate route, owner-only, fetched only when the panel's
+        "check the names" control is opened, rather than a bigger default response.
+
+        Owner-only is not incidental and not a formality: the full list is every
+        student's name and SEN in one response, which is precisely what a `gate`
+        account must never receive. `requireOwner()` runs before the query, so the
+        rows are never read for an account that may not have them.
+
+        Capped, and the cap is reported rather than applied silently. Truncating a
+        check would produce "I looked at every name and they are all correct" for the
+        rows that happened to be returned, which is worse than not offering the check
+        at all. `total` is the true count and `truncated` says whether the cap was
+        hit, so the panel can state it.
+      */
+      case 'GET /admin/roster/rows': {
+        requireOwner()
+
+        const { rows } = await db().query<{ sen: string; name: string }>(
+          'select sen, name from event_roster order by sen',
+        )
+
+        const shown = rows.slice(0, ROSTER_ROWS_CAP)
+
+        return json(res, 200, {
+          total: rows.length,
+          truncated: rows.length > shown.length,
+          rows: shown,
+        })
+      }
+
       case 'POST /admin/attendees': {
         const adminId = requireOwner()
         const body = await readJson<Record<string, unknown>>(req)
@@ -1242,6 +1392,16 @@ async function route(
 
   throw notFound('No such endpoint.')
 }
+
+/**
+ * How many roster rows one request may return.
+ *
+ * Generous enough for a college cohort — five thousand students is beyond any single
+ * Amity programme — while still being a number rather than "all of them". The panel
+ * reports truncation rather than hiding it, so this is a bound on one response and
+ * never a silent cut.
+ */
+const ROSTER_ROWS_CAP = 5_000
 
 /** The three things "who may register" can mean. */
 const REGISTRATION_MODES = ['open', 'restricted', 'closed'] as const

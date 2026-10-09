@@ -6,12 +6,14 @@ import type {
   Attendee,
   AttendeeLoginInput,
   AttendeeRegisterInput,
+  AttendeeRegistration,
   AttendeeSession,
   CheckIn,
   DayState,
   EventInfo,
   MyAttendance,
   RegistrationMode,
+  RosterRows,
   RosterState,
   RosterUploadResult,
   Team,
@@ -28,7 +30,43 @@ export interface PortalApi {
   /* -- attendee -------------------------------------------------------- */
   getAttendeeSession(): Promise<AttendeeSession | null>
   attendeeLogin(input: AttendeeLoginInput): Promise<AttendeeSession>
-  attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeSession>
+
+  /**
+   * Registers, and returns the password the PORTAL chose.
+   *
+   * The attendee does not pick one. They used to, and then typed it twice on a phone
+   * at a desk in a queue, where one mistyped character locked them out of their own
+   * pass. The generated password comes back ONCE, here, and only its bcrypt hash is
+   * ever stored.
+   */
+  attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration>
+
+  /**
+   * Confirms the attendee can reproduce the password they were just given.
+   *
+   * Separate from the client-side "do the two boxes match" check, which cannot catch
+   * somebody who misread the password and then faithfully typed the same wrong thing
+   * twice. Session-gated, and a mismatch is an answer rather than an error — it is
+   * the expected result of reading something aloud.
+   */
+  verifyAttendeePassword(password: string): Promise<{ readonly matches: boolean }>
+
+  /**
+   * Replaces one's own password, immediately after registering.
+   *
+   * NOT the recovery path. Somebody locked out entirely has no self-service route and
+   * must ask at the desk — see the note on `resetAttendeePassword` below. This is for
+   * somebody being offered a replacement for a password they already hold.
+   *
+   * Other sessions are revoked; the one making the request is kept, because signing
+   * the attendee out of the tab they are standing in is indistinguishable from the
+   * portal logging people out by itself.
+   */
+  changeOwnPassword(input: {
+    currentPassword: string
+    newPassword: string
+  }): Promise<{ readonly ok: true }>
+
   attendeeLogout(): Promise<void>
 
   /*
@@ -188,6 +226,21 @@ export interface PortalApi {
    * everybody as a side effect of tidying up.
    */
   clearRoster(): Promise<RosterState>
+
+  /**
+   * Every row on the guest list, owner-only, so the names can be checked.
+   *
+   * A SEPARATE call from `getRoster`, which stays a count and an eight-row sample.
+   * The panel header only needs to know whether the upload worked; holding five
+   * hundred students in memory to report "500" is not worth it, and the full list is
+   * every student's name and SEN, which must never reach a `gate` device.
+   *
+   * `truncated` is part of the contract rather than an implementation detail: if a cap
+   * is ever hit the check is incomplete and has to say so, because "I looked at the
+   * names and they are all correct" is a claim somebody will act on.
+   */
+  listRosterRows(): Promise<RosterRows>
+
   updateAgendaItem(
     id: string,
     patch: Partial<Pick<EventInfo['agenda'][number], 'status'>>,

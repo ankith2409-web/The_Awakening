@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { SiteFooter } from './SiteFooter'
 
 /**
  * The auth layout.
@@ -13,6 +14,17 @@ import type { ReactNode } from 'react'
  * because all three share this shell. It documented the design system rather
  * than serving the person signing in, so it has been removed. The geometric
  * identity still lives in the masthead mark and the texture utilities.
+ *
+ * It also carries the site footer, because a footer belongs to the page rather
+ * than to whatever is in the middle of it, and the shell already owns the flex
+ * column (`main` is `flex-1`, the footer is `mt-auto`) that pushes one to the
+ * bottom. Adding it here rather than to each view keeps it off the radar of the
+ * next auth page somebody writes.
+ *
+ * It is OPT-IN and defaults to off, so the shared admin sign-in is unaffected.
+ * A default that added a public "Hosted by" block to the staff door would be the
+ * wrong way round: the safe state is no change, and every attendee page says yes
+ * on purpose.
  */
 export function AuthShell({
   logo,
@@ -21,6 +33,7 @@ export function AuthShell({
   description,
   children,
   footer,
+  showSiteFooter = false,
 }: {
   /** Masthead mark. Passed in so callers own the identity, not the shell. */
   logo: ReactNode
@@ -29,6 +42,8 @@ export function AuthShell({
   description: string
   children: ReactNode
   footer?: ReactNode
+  /** Attendee pages pass true. The admin sign-in deliberately does not. */
+  showSiteFooter?: boolean
 }) {
   return (
     <div className="flex min-h-dvh flex-col">
@@ -72,6 +87,8 @@ export function AuthShell({
           ) : null}
         </div>
       </main>
+
+      {showSiteFooter ? <SiteFooter /> : null}
     </div>
   )
 }

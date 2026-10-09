@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/Button'
+import { Field } from '@/components/Field'
 import { portalApi } from '@/api'
-import type { RegistrationMode, RosterState } from '@/domain/types'
+import type { RegistrationMode, RosterRows, RosterState } from '@/domain/types'
 import { parseRosterFile, type ParsedRoster } from '@/lib/roster/parse'
 
 /**
@@ -27,10 +28,21 @@ import { parseRosterFile, type ParsedRoster } from '@/lib/roster/parse'
  */
 export function GuestListPanel({
   mode,
+  rosterCount,
   onModeChange,
 }: {
   /** The live registration mode, so the upload can set it in the same action. */
   mode: RegistrationMode
+  /**
+   * The live count, straight off the polled event.
+   *
+   * Passed in rather than read from this panel's own fetch, because the switch above
+   * reads the same number from `event` and the two would otherwise disagree on screen:
+   * the header saying "4 students on the list" while this panel said "0". Two copies
+   * of one fact, updating at different moments — the failure this codebase keeps
+   * fixing.
+   */
+  rosterCount: number
   onModeChange: (mode: RegistrationMode) => void
 }) {
   const [roster, setRoster] = useState<RosterState | null>(null)
@@ -39,6 +51,30 @@ export function GuestListPanel({
   const [fileName, setFileName] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
+
+  /* -- reading the stored rows back -------------------------------------- */
+
+  const [rowsOpen, setRowsOpen] = useState(false)
+  const [rows, setRows] = useState<RosterRows | null>(null)
+  const [rowsProblem, setRowsProblem] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+
+  /*
+    Filtered in the browser, over the rows already fetched.
+
+    Name OR SEN, because the two failures an organiser is looking for are different:
+    a name that came out wrong is found by name, and a SEN that lost a character is
+    found by SEN. Matching on name alone would make the second invisible.
+  */
+  const filtered = useMemo(() => {
+    const all = rows?.rows ?? []
+    const needle = filter.trim().toLowerCase()
+    if (needle === '') return all
+    return all.filter(
+      (row) =>
+        row.name.toLowerCase().includes(needle) || row.sen.toLowerCase().includes(needle),
+    )
+  }, [rows, filter])
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -49,6 +85,10 @@ export function GuestListPanel({
     context would mean every admin render — including a `gate` account's, which must
     never receive a student's name — carries the field. Keeping it local means the
     request only happens when this panel is on screen.
+
+    Re-read whenever `rosterCount` changes, which is the event poll telling us the list
+    was replaced from another device. Without that, an upload on the laptop left the
+    phone showing the previous list until it was reloaded.
   */
   useEffect(() => {
     let cancelled = false
@@ -63,7 +103,7 @@ export function GuestListPanel({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [rosterCount])
 
   const current = roster
 
@@ -136,6 +176,34 @@ export function GuestListPanel({
     So this clears, and says plainly what it did and did not do — and when the
     consequence is "nobody can now register", it offers the one click that undoes it.
   */
+  /*
+    Reads the whole list, on demand, and only while it is open.
+
+    Fetched when the control is pressed rather than with the panel, and discarded when
+    it is closed: the response is every student's name and SEN, and there is no reason
+    for it to sit in memory on a device that has moved on. Toggling shut and open again
+    re-reads, which is right — the list may have been replaced in another tab.
+  */
+  async function toggleRows() {
+    if (rowsOpen) {
+      setRowsOpen(false)
+      setRows(null)
+      setFilter('')
+      setRowsProblem(null)
+      return
+    }
+
+    setRowsOpen(true)
+    setRowsProblem(null)
+    try {
+      setRows(await portalApi.listRosterRows())
+    } catch (error) {
+      setRowsProblem(
+        error instanceof Error ? error.message : 'Could not read the list.',
+      )
+    }
+  }
+
   async function clear() {
     setBusy(true)
     setProblem(null)
@@ -178,11 +246,11 @@ export function GuestListPanel({
         */}
         <div className="border-l-4 border-swiss-ink bg-swiss-muted p-4">
           <p className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
-            {current === null
+            {current === null && rosterCount === 0
               ? 'Checking…'
-              : current.count === 0
+              : rosterCount === 0
                 ? 'No guest list uploaded'
-                : `${current.count} student${current.count === 1 ? '' : 's'} on the list`}
+                : `${rosterCount} student${rosterCount === 1 ? '' : 's'} on the list`}
           </p>
 
           {/*
@@ -190,7 +258,7 @@ export function GuestListPanel({
             is the difference between an organiser understanding why registration is
             still open and wondering whether their upload silently failed.
           */}
-          {current !== null && current.count > 0 && mode !== 'restricted' ? (
+          {rosterCount > 0 && mode !== 'restricted' ? (
             <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
               The list is uploaded but registration is not set to use it. Choose
               &ldquo;Guest list&rdquo; above to close registration to everyone not on
@@ -202,7 +270,8 @@ export function GuestListPanel({
             <>
               {/*
                 A sample, not the list. The owner uploaded the file; echoing 500 rows
-                back into the browser serves nobody.
+                back into the browser serves nobody — and the "Check all N names"
+                control below is how they see the lot, on demand.
               */}
               <ul className="mt-3 flex flex-col gap-1">
                 {current.sample.map((row) => (
@@ -348,9 +417,115 @@ export function GuestListPanel({
           </div>
         ) : null}
 
+        {/* -- check the names ---------------------------------------------- */}
+
+        {/*
+          Reading the list back.
+
+          The upload preview shows what the PARSER made of the file. This shows what
+          the DATABASE ended up holding, which is a different question and the one
+          that actually matters before enforcing: the row where a column shifted, the
+          SEN that lost a digit, the name that became the SEN. A count cannot tell you
+          any of that — only reading the rows can.
+
+          Fetched on demand rather than with the panel. The panel header needs to know
+          whether anything landed, not to hold five hundred students to say "yes, 500",
+          and this response is every student's name and SEN, which has no business on a
+          device that is not an owner's. That is why it is a separate owner-only route
+          and not a bigger default.
+
+          Bounded height with its own scrollbar, rather than the page growing to five
+          hundred rows. The panel is one of five stacked sections on the People tab;
+          a list that made the whole tab ten thousand pixels tall would push everything
+          else off the screen on a phone, which is the thing this panel is trying to
+          avoid.
+
+          A filter as well as the scroll, because scrolling 500 rows to spot one
+          mistake is how the mistake survives. It matches on both name and SEN so it
+          can find either kind of problem, and it says how many rows survived the
+          filter rather than leaving an empty-looking list ambiguous.
+        */}
+        {rosterCount > 0 ? (
+          <div className="border-t-2 border-swiss-ink pt-4">
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={busy}
+              onClick={() => void toggleRows()}
+            >
+              {rowsOpen ? 'Hide the list' : `Check all ${rosterCount} names`}
+            </Button>
+
+            {rowsOpen ? (
+              <div className="mt-4 flex flex-col gap-4">
+                {rowsProblem !== null ? (
+                  <p
+                    role="alert"
+                    className="border-l-4 border-swiss-accent-text bg-swiss-muted p-3 text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink"
+                  >
+                    {rowsProblem}
+                  </p>
+                ) : null}
+
+                {rows !== null && rows.rows.length > 0 ? (
+                  <>
+                    <Field
+                      label="Find someone"
+                      name="roster-filter"
+                      value={filter}
+                      onChange={(event) => setFilter(event.target.value)}
+                      placeholder="Name or SEN"
+                      autoComplete="off"
+                    />
+
+                    <p className="text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
+                      {filter.trim() === ''
+                        ? `Showing all ${rows.rows.length} of ${rows.total}`
+                        : `${filtered.length} of ${rows.rows.length} match`}
+                    </p>
+
+                    {/*
+                      The cap made visible. A short list presented as a complete one
+                      is worse than no check at all, because somebody will say they
+                      have looked at every name.
+                    */}
+                    {rows.truncated ? (
+                      <p className="border-l-4 border-swiss-accent-text bg-swiss-muted p-3 text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink">
+                        Only the first {rows.rows.length} of {rows.total} rows are
+                        shown. Check the file for the rest.
+                      </p>
+                    ) : null}
+
+                    <ul className="max-h-96 overflow-y-auto border-2 border-swiss-ink">
+                      {filtered.map((row) => (
+                        <li
+                          key={row.sen}
+                          className="flex flex-col gap-0.5 border-b border-swiss-ink/15 px-4 py-2 last:border-b-0"
+                        >
+                          <span className="text-sm font-bold text-swiss-ink">
+                            {row.name}
+                          </span>
+                          <span className="font-mono text-2xs text-content-muted">
+                            {row.sen}
+                          </span>
+                        </li>
+                      ))}
+                      {filtered.length === 0 ? (
+                        <li className="px-4 py-4 text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
+                          Nobody matches that
+                        </li>
+                      ) : null}
+                    </ul>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* -- clear --------------------------------------------------------- */}
 
-        {current !== null && current.count > 0 ? (
+        {rosterCount > 0 ? (
           <div className="border-t-2 border-swiss-ink pt-4">
             <Button variant="secondary" size="md" disabled={busy} onClick={() => void clear()}>
               Clear the list

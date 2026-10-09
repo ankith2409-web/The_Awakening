@@ -17,7 +17,9 @@ import {
   type CheckIn,
   type EventInfo,
   type MyAttendance,
+  type AttendeeRegistration,
   type RegistrationMode,
+  type RosterRows,
   type RosterState,
   type RosterUploadResult,
   type Team,
@@ -121,7 +123,7 @@ export class MockPortalApi implements PortalApi {
     return { attendee: toPublic(attendee) }
   }
 
-  async attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeSession> {
+  async attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration> {
     await delay(LATENCY_MS)
 
     const phone = normalisePhone(input.phone)
@@ -143,8 +145,18 @@ export class MockPortalApi implements PortalApi {
       throw new PortalError('sen_taken')
     }
 
-    const problem = passwordProblem(input.password)
-    if (problem !== null) throw new PortalError('weak_password', problem)
+    /*
+      The password is the PORTAL'S, not the attendee's, so the mock generates one
+      with the same alphabet and grouping the server does. It has to be generated
+      here rather than imported: this module runs in a browser and the generator
+      deliberately uses node:crypto.
+
+      Mirroring the shape by hand rather than by dependency, because the whole point
+      of the shape is that it is fixed — three groups of three, letters and digits
+      only, no look-alikes. A test can then assert the client sees a plausible
+      password, and the one real generator stays the single implementation.
+    */
+    const password = mockGeneratedPassword()
 
     const attendee: AttendeeWithSecret = {
       id: `att_${randomSuffix()}`,
@@ -152,7 +164,7 @@ export class MockPortalApi implements PortalApi {
       phone,
       sen: input.sen.toUpperCase(),
       createdAt: new Date().toISOString(),
-      passwordHash: hash(input.password),
+      passwordHash: hash(password),
       ticketCode: randomTicketPayload(),
     }
 
@@ -161,9 +173,48 @@ export class MockPortalApi implements PortalApi {
     // only in memory and a reload loses the attendee we just created.
     persist(this.#store)
     this.#attendeeSessionId = attendee.id
-    writeSession('attendee', attendee.id, input.remember)
+    writeSession('attendee', attendee.id, true)
 
-    return { attendee: toPublic(attendee) }
+    return { attendee: toPublic(attendee), generatedPassword: password }
+  }
+
+  async verifyAttendeePassword(password: string): Promise<{ matches: boolean }> {
+    await delay(LATENCY_MS / 4)
+    const id = this.#attendeeSessionId
+    if (id === null) throw new PortalError('forbidden')
+    const attendee = this.#store.attendees.find((candidate) => candidate.id === id)
+    if (!attendee) throw new PortalError('not_found')
+    return { matches: attendee.passwordHash === hash(password) }
+  }
+
+  async changeOwnPassword(input: {
+    currentPassword: string
+    newPassword: string
+  }): Promise<{ ok: true }> {
+    await delay(LATENCY_MS / 2)
+    const id = this.#attendeeSessionId
+    if (id === null) throw new PortalError('forbidden')
+
+    const index = this.#store.attendees.findIndex((candidate) => candidate.id === id)
+    const attendee = this.#store.attendees[index]
+    if (!attendee) throw new PortalError('not_found')
+
+    if (attendee.passwordHash !== hash(input.currentPassword)) {
+      throw new PortalError('invalid_credentials', 'That is not your current password.')
+    }
+    const problem = passwordProblem(input.newPassword)
+    if (problem !== null) throw new PortalError('weak_password', problem)
+
+    // Replaced rather than mutated: `passwordHash` is readonly.
+    this.#store.attendees[index] = {
+      ...attendee,
+      passwordHash: hash(input.newPassword),
+    }
+    persist(this.#store)
+
+    // The session in use is deliberately kept — see `revokeOtherSessions` on the
+    // server, and `PortalApi.changeOwnPassword`.
+    return { ok: true }
   }
 
   async attendeeLogout(): Promise<void> {
@@ -328,16 +379,8 @@ export class MockPortalApi implements PortalApi {
     const records = this.#store.checkIns
       .filter((entry) => entry.attendeeId === attendeeId)
       .sort((a, b) => a.day - b.day)
-    const day = this.#dayState()
-    return {
-      records: structuredClone(records),
-      ...day,
-      // Filtered to days that exist, matching the server, so the mock cannot show a
-      // lock badge for a day the event does not have.
-      lockedDays: this.#store.event.lockedDays.filter(
-        (d) => d >= 1 && d <= this.#store.event.totalDays,
-      ),
-    }
+    // Records only. Day state lives on `event` and only there — see `MyAttendance`.
+    return { records: structuredClone(records) }
   }
 
   /**
@@ -540,6 +583,19 @@ export class MockPortalApi implements PortalApi {
   }
 
   /* ------------------------------------------------------------- roster */
+
+  async listRosterRows(): Promise<RosterRows> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+    const rows = [...(this.#store.roster ?? [])].sort((a, b) => a.sen.localeCompare(b.sen))
+    // Same cap as the server, and reported rather than hidden — see `RosterRows`.
+    const cap = 5_000
+    return {
+      total: rows.length,
+      truncated: rows.length > cap,
+      rows: rows.slice(0, cap),
+    }
+  }
 
   async getRoster(): Promise<RosterState> {
     this.#requireOwner()
@@ -827,4 +883,46 @@ function loadOrSeed(): Store {
 
 function persist(store: Store): void {
   localStorage.setItem(STORE_KEY, JSON.stringify(store))
+}
+
+/**
+ * A mock-generated password, in the server's shape.
+ *
+ * Same rules as `server/_lib/password.ts` — three groups of three drawn from an
+ * alphabet with no look-alikes, so it always satisfies the portal's own strength rule
+ * and is always something a volunteer can read aloud over a queue. See that file for
+ * why each character is excluded.
+ *
+ * Generated here rather than imported because this module runs in a browser and the
+ * real generator deliberately uses `node:crypto`.
+ */
+function mockGeneratedPassword(): string {
+  const letters = 'abcdefghjkmnpqrstuvwxyz'
+  const digits = '23456789'
+  const alphabet = letters + digits
+  const at = (set: string) => set[Math.floor(Math.random() * set.length)]
+
+  let flat = ''
+  for (let index = 0; index < 9; index += 1) flat += at(alphabet)
+
+  /*
+    The same guarantee the real generator makes: at least one letter and one digit.
+    Checked on the flat string BEFORE grouping, because inserting separators first
+    would make a naive length check count the wrong thing.
+  */
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    if (!/[a-z]/.test(flat)) {
+      flat = flat.slice(0, 8) + at(letters)
+      continue
+    }
+    if (!/[0-9]/.test(flat)) {
+      flat = flat.slice(0, 8) + at(digits)
+      continue
+    }
+    return (flat.match(/.{1,3}/g) ?? []).join('-')
+  }
+
+  // Unreachable in practice; still returns something usable rather than throwing,
+  // because failing a registration over a password shape would be absurd.
+  return 'grid-2026'
 }
