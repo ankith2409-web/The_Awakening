@@ -281,32 +281,39 @@ async function route(
         if (problem) throw unprocessable('weak_password', problem)
 
         /*
-          The guest list, when an organiser has asked for one.
+          Who may register, and who may not.
+
+          Three modes rather than a boolean, because a boolean could only narrow.
+          `open` lets anyone through, `restricted` admits only SENs on the guest
+          list, and `closed` stops everyone — the state a portal is in once capacity
+          is reached, and the one an organiser most needs on the morning of the day.
 
           Checked against the roster by SEN only. Matching on the uploaded NAME as
           well would lock out real students over a spelling difference — and the
           name on a college list is exactly the field that gets transcribed wrong.
-          The SEN is the one identifier both sides agree on, and it is already the
-          gate's.
 
-          Checked BEFORE the uniqueness probes, so somebody not on the list is told
-          that rather than being walked through "that phone number is already
-          registered" for a stranger's number.
+          Checked BEFORE the uniqueness probes, so somebody refused is told that
+          rather than being walked through "that phone number is already registered"
+          for a stranger's number.
 
-          The refusal does not say whether a list exists, how long it is, or who is
-          on it. "Not on the guest list" is enough for the student to go and ask, and
-          anything more turns registration into an oracle for who is attending.
+          The refusal says nothing about how long the list is or who is on it.
+          Anything more turns registration into an oracle for who is attending.
         */
-        const { rows: gate } = await db().query<{ on_list: boolean; required: boolean }>(
+        const { rows: gate } = await db().query<{
+          on_list: boolean
+          mode: 'open' | 'restricted' | 'closed'
+        }>(
           `select exists (select 1 from event_roster where sen = $1) as on_list,
                   coalesce(
-                    (select roster_required from events order by date desc limit 1),
-                    false
-                  ) as required`,
+                    (select registration_mode from events order by date desc limit 1),
+                    'open'
+                  ) as mode`,
           [sen],
         )
 
-        if (gate[0]?.required === true && gate[0].on_list !== true) {
+        const mode = gate[0]?.mode ?? 'open'
+        if (mode === 'closed') throw unprocessable('registration_closed')
+        if (mode === 'restricted' && gate[0]?.on_list !== true) {
           throw unprocessable('not_on_list')
         }
 
@@ -564,6 +571,86 @@ async function route(
       }
 
       /*
+        Add one attendee by hand.
+
+        Owner-only, and deliberately DELIBERATE rather than convenient. It is the
+        only way to create an attendee without the registration form, which means it
+        bypasses the guest list — and that is the point. An organiser standing at a
+        desk with a student who is not on the list, or with registration closed
+        because capacity was reached, has to be able to let that one person in.
+        Refusing would leave them with no way to do the one thing they are there to do.
+
+        Which is exactly why it is audited and owner-only. Every other privileged act
+        in this product writes to `password_changes` or `staff_changes`, and so does
+        this: an account created out of band, with a password the organiser chose, is
+        the single most sensitive action available and it leaves a trail.
+
+        The password is SET BY THE ORGANISER and must be read out to the attendee.
+        Generating one and displaying it once would be friendlier, but it would also
+        put a credential on a screen a passer-by can see, which is the reason the
+        desk flow asks staff to read it aloud instead.
+      */
+      case 'POST /admin/attendees': {
+        const adminId = requireOwner()
+        const body = await readJson<Record<string, unknown>>(req)
+
+        const name = requireString(body, 'name').trim()
+        const phone = normalisePhone(requireString(body, 'phone'))
+        const password = requireString(body, 'password')
+        const sen = normaliseSen(requireString(body, 'sen'))
+
+        // The same rules the registration form applies, so a person added by hand is
+        // held to exactly the same standard as one who signed up. A weaker path here
+        // would be a way around every rule added since.
+        const nameProblemMessage = nameProblem(name)
+        if (nameProblemMessage !== null) throw unprocessable('unknown', nameProblemMessage)
+
+        const phoneProblemMessage = phoneProblem(phone)
+        if (phoneProblemMessage !== null) {
+          throw unprocessable('unknown', phoneProblemMessage)
+        }
+
+        if (!isValidSen(sen)) {
+          throw unprocessable('unknown', 'Enter a valid SEN, e.g. A866175000012.')
+        }
+        const problem = passwordProblem(password)
+        if (problem) throw unprocessable('weak_password', problem)
+
+        // Uniqueness is still enforced. An organiser adding somebody by hand is not
+        // a request to create a second account for them, and the alternative is a
+        // duplicate that quietly doubles a name on the roster.
+        const clash = await db().query(
+          'select (select 1 from attendees where phone = $1) as phone_taken,' +
+            '       (select 1 from attendees where upper(sen) = $2) as sen_taken',
+          [phone, sen],
+        )
+        const taken = clash.rows[0] as { phone_taken: number | null; sen_taken: number | null }
+        if (taken.phone_taken) throw conflict('phone_taken')
+        if (taken.sen_taken) throw conflict('sen_taken')
+
+        const { rows } = await db().query<AttendeeRow>(
+          `insert into attendees (name, phone, sen, password_hash)
+           values ($1, $2, $3, $4)
+           returning id, name, phone, sen, password_hash, created_at`,
+          [name, phone, sen, await hashPassword(password)],
+        )
+        const created = rows[0]
+        if (!created) throw unprocessable('unknown', 'Could not create the account.')
+
+        await recordPasswordChange(adminId, created.id)
+
+        /*
+          No session is issued.
+
+          The person is not at this computer, and handing them a cookie would mean
+          they were silently signed in on a device they may never see again — and
+          signed in without typing the password the organiser just read to them,
+          which defeats the point of setting one.
+        */
+        return json(res, 201, { attendee: publicAttendee(created) })
+      }
+
+      /*
         The guest list: who is allowed to register.
 
         Owner-only, and read-only in the sense that matters — it returns a COUNT and
@@ -575,13 +662,20 @@ async function route(
       case 'GET /admin/roster': {
         requireOwner()
 
+        /*
+          The list and its size, and nothing about who may register.
+
+          `registration_mode` is deliberately NOT repeated here. The client already
+          holds it on `EventInfo`, and returning it a second time would create two
+          copies of one fact in two places that could be loaded at different moments
+          — which is how a panel ends up showing "restricted" beside a count of zero
+          and neither one being wrong.
+        */
         const { rows: counts } = await db().query<{
           n: string
-          required: boolean
           uploaded_at: Date | null
         }>(
-          `select (select count(*) from event_roster)::text          as n,
-                  coalesce(roster_required, false)                    as required,
+          `select (select count(*) from event_roster)::text as n,
                   roster_uploaded_at
              from events order by date desc limit 1`,
         )
@@ -593,7 +687,6 @@ async function route(
 
         return json(res, 200, {
           count: Number(state?.n ?? 0),
-          required: state?.required ?? false,
           uploadedAt: state?.uploaded_at ? state.uploaded_at.toISOString() : null,
           sample,
         })
@@ -693,6 +786,16 @@ async function route(
           throw unprocessable('unknown', `No usable rows. First problem: ${problems[0] ?? 'the file is empty'}`)
         }
 
+        /*
+          The mode travels with the upload.
+
+          Defaulting to `open` when the caller does not say: an upload that silently
+          changed who may register would be the worst possible surprise, and `open`
+          is the state that admits nobody by omission. The panel always sends it
+          explicitly, because it is showing a preview of the consequence anyway.
+        */
+        const registrationMode = readRegistrationMode(body.registrationMode) ?? 'open'
+
         const client = await db().connect()
         try {
           await client.query('begin')
@@ -703,21 +806,16 @@ async function route(
             [accepted.map((r) => r.sen), accepted.map((r) => r.name)],
           )
           /*
-            `required` is settable on its own so the toggle can be flipped without
-            re-uploading, and left alone when absent so an upload never silently
-            changes who may register.
+            The registration MODE is settable here, so uploading a list and choosing
+            what it means is one action rather than two. Left alone when absent, so
+            an upload never silently changes who may register — the panel always
+            sends it explicitly.
           */
-          if (body.required !== undefined) {
-            await client.query(
-              `update events set roster_required = $1, roster_uploaded_at = now()
-                where id = 'evt_awakening_2026'`,
-              [isTrue(body.required)],
-            )
-          } else {
-            await client.query(
-              `update events set roster_uploaded_at = now() where id = 'evt_awakening_2026'`,
-            )
-          }
+          await client.query(
+            `update events set registration_mode = $1, roster_uploaded_at = now()
+              where id = 'evt_awakening_2026'`,
+            [registrationMode],
+          )
           await client.query('commit')
         } catch (error) {
           await client.query('rollback').catch(() => {})
@@ -730,16 +828,21 @@ async function route(
           imported: accepted.length,
           skipped: problems.length,
           problems: problems.slice(0, 10),
-          required: isTrue(body.required),
+          mode: registrationMode,
         })
       }
 
       /*
-        Clear the list and reopen registration.
+        Clear the list.
 
         Separate from uploading an empty file, because "remove every student" and
         "I uploaded a blank sheet" are different mistakes and only one of them
         should be one click away from done.
+
+        Does NOT change the mode. An organiser who empties the list while registration
+        is `restricted` has just closed the door to everybody, and doing that as a
+        side effect of clearing a spreadsheet would be a nasty surprise. The mode is
+        changed deliberately, from the switch that says what it does.
       */
       case 'DELETE /admin/roster': {
         requireOwner()
@@ -748,8 +851,7 @@ async function route(
           await client.query('begin')
           await client.query('delete from event_roster')
           await client.query(
-            `update events set roster_required = false, roster_uploaded_at = null
-              where id = 'evt_awakening_2026'`,
+            `update events set roster_uploaded_at = null where id = 'evt_awakening_2026'`,
           )
           await client.query('commit')
         } catch (error) {
@@ -758,7 +860,7 @@ async function route(
         } finally {
           client.release()
         }
-        return json(res, 200, { count: 0, required: false, uploadedAt: null, sample: [] })
+        return json(res, 200, { count: 0, uploadedAt: null, sample: [] })
       }
 
       /*
@@ -1050,14 +1152,6 @@ async function route(
           }
         }
 
-        /*
-          `lockedDays` replaces the whole set, rather than adding to it.
-
-          A toggle UI has to express "unlock day 1" somehow, and "add/remove one"
-          needs the client to hold the current set and get it right. Sending the
-          intended final set makes the server's write idempotent, which is what lets
-          the control be safe to retry on a flaky connection at a busy door.
-        */
         let lockedDays: number[] | undefined
         if (body.lockedDays !== undefined) {
           if (!Array.isArray(body.lockedDays)) {
@@ -1084,7 +1178,20 @@ async function route(
           lockedDays = [...new Set(requested)].sort((a, b) => a - b)
         }
 
-        return sendEvent(res, phase, dayOverride, lockedDays)
+        /*
+          `registrationMode` is optional and independent of everything else here, so
+          the switch can be flipped without disturbing the day, the locks or the
+          phase — which is what the panel does, and what makes each control safe to
+          retry on a bad connection.
+
+          Resolved through the same validator the roster upload uses, so there is one
+          definition of a valid mode rather than two that can drift. Rejected rather
+          than coerced: this value decides who may register, and an unrecognised
+          string must not be stored and then match nothing at the door.
+        */
+        const mode = readRegistrationMode(body.registrationMode)
+
+        return sendEvent(res, phase, dayOverride, lockedDays, mode)
       }
 
       case 'GET /admin/agenda':
@@ -1136,7 +1243,45 @@ async function route(
   throw notFound('No such endpoint.')
 }
 
+/** The three things "who may register" can mean. */
+const REGISTRATION_MODES = ['open', 'restricted', 'closed'] as const
+type RegistrationMode = (typeof REGISTRATION_MODES)[number]
+
+/**
+ * Reads a requested registration mode, or returns null when the field is absent.
+ *
+ * Rejects an unrecognised value rather than coercing it. This string decides who
+ * may register for the event; silently storing something that matches none of the
+ * three checks at the door would leave a portal where nobody can register and
+ * nothing says why.
+ */
+function readRegistrationMode(value: unknown): RegistrationMode | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string' && (REGISTRATION_MODES as readonly string[]).includes(value)) {
+    return value as RegistrationMode
+  }
+  throw badRequest(
+    'unknown',
+    `Registration must be one of: ${REGISTRATION_MODES.join(', ')}.`,
+  )
+}
+
 /* ----------------------------------------------------------------- helpers */
+
+/**
+ * Notes that an admin set somebody's password.
+ *
+ * Shared by the desk password change and by creating an attendee by hand, because
+ * both are the same privileged act — somebody else's credential, chosen by an
+ * operator, on their behalf. An account created out of band is the more sensitive of
+ * the two, so it must not be the one without a trail.
+ */
+async function recordPasswordChange(adminId: string, attendeeId: string): Promise<void> {
+  await db().query(
+    'insert into password_changes (attendee_id, admin_id) values ($1, $2)',
+    [attendeeId, adminId],
+  )
+}
 
 /**
  * How many days the event spans, straight from the row.
@@ -1160,6 +1305,7 @@ async function sendEvent(
   phase?: 'registration' | 'live' | 'completed',
   dayOverride?: number | null,
   lockedDays?: number[],
+  registrationMode?: RegistrationMode | null,
 ): Promise<void> {
   if (phase) {
     await db().query('update events set phase = $1 where id = $2', [
@@ -1182,6 +1328,13 @@ async function sendEvent(
     ])
   }
 
+  if (registrationMode !== undefined && registrationMode !== null) {
+    await db().query('update events set registration_mode = $1 where id = $2', [
+      registrationMode,
+      'evt_awakening_2026',
+    ])
+  }
+
   const { rows: eventRows } = await db().query(
     // `to_char` rather than letting node-pg turn a DATE into a JS Date: that
     // conversion goes through local midnight, so a server west of UTC would
@@ -1190,7 +1343,9 @@ async function sendEvent(
     `select id, name, tagline, organiser, organiser_host,
             to_char(date, 'YYYY-MM-DD')     as date,
             to_char(end_date, 'YYYY-MM-DD') as end_date,
-            venue, city, phase, capacity, day_override
+            venue, city, phase, capacity, day_override,
+            registration_mode,
+            (select count(*) from event_roster)::int as roster_count
        from events order by date desc limit 1`,
   )
   const event = eventRows[0] as
@@ -1207,6 +1362,8 @@ async function sendEvent(
         phase: string
         capacity: number
         day_override: number | null
+        registration_mode: string | null
+        roster_count: number | null
       }
     | undefined
 
@@ -1253,6 +1410,16 @@ async function sendEvent(
     // event no longer has. The UI must not render a lock against a day that does
     // not exist.
     lockedDays: dayState.lockedDays,
+    /*
+      Public, and deliberately.
+
+      The registration form has to be able to say "registration is closed" BEFORE
+      somebody fills it in, rather than letting them type four fields and then
+      refusing. That is not a secret — it is printed on the door — and the mode is
+      the only part of the event payload that changes what a visitor is offered.
+    */
+    registrationMode: event.registration_mode ?? 'open',
+    rosterCount: Number(event.roster_count ?? 0),
     agenda: agenda.map((item: Record<string, unknown>) => ({
       id: item.id,
       day: item.day,

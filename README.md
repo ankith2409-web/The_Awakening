@@ -37,7 +37,6 @@ node dev-api.mjs            # serves the serverless function on :3000
 | `npm run db:setup`    | Apply `db/schema.sql` and `db/seed.sql`, create the admin  |
 | `npm run lint`        | oxlint                                                    |
 | `npm run test:api`    | End-to-end suite against a running API                    |
-| `npm run test:reel`   | Optics and framing for the motion sequence at `/reel`     |
 | `npm run prepublish`  | Secret scan — run before every push                       |
 
 ## Configuration
@@ -72,27 +71,20 @@ src/
   lib/
     exportAttendance.ts    SEN-only CSV download
     motion.ts              Stagger cap, the one place it is defined
-  lib/reel/               The motion sequence. Framework-free, no React.
-    timeline.ts              t in, one Frame out. The director.
-    camera.ts                Lens and camera track — real focal lengths, real stops
-    project.ts               One pinhole model, used by every layer and the reflection
-    scene.ts                 Glass, fibres, Boids swarm, the particle field
-    lockup.ts                The closing mark, and the glyph mask the cubes aim at
-    renderer.ts              Draws one Frame: reflect layer, scene, bloom, post
+  lib/roster/             Dependency-free .csv and .xlsx reader for the guest list
+    parse.ts                Header matching by name, SEN shape check, row problems
   components/            Design-system primitives
     EventMark.tsx          The mark and its glitch cycle
     BarcodeScanner.tsx     Camera scanner (ZXing, lazy-loaded)
-    ReelStage.tsx          Canvas host for the motion sequence: clock, transport
     SiteFooter.tsx         Host block, connect links, legal line
     Button.tsx  Field.tsx  Typography.tsx  QrTicket.tsx  Skeleton.tsx  …
   views/
     LandingView.tsx        The public front door
     AuthViews.tsx          Log in + Register
     DashboardView.tsx      QR pass, attendance, event status
-    ReelView.tsx           The motion design sequence (`/reel`)
     admin/
       AdminLoginView.tsx   The separate staff door
-      AdminPortalView.tsx  Tabs: Scan, Attendance, Desk, Teams, Programme
+      AdminPortalView.tsx  Tabs: Scan, Attendance, People, Teams, Event
       AttendeeDirectory.tsx  Find an attendee, set their password
 
 server/                The backend. Deliberately NOT named `api/` — see below.
@@ -189,11 +181,15 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | `POST`  | `/admin/login`             | `{ username, password }`              | —               |
 | `POST`  | `/admin/logout`            | —                                     | admin           |
 | `GET`   | `/admin/attendees`         | —                                     | **owner**       |
+| `POST`  | `/admin/attendees`         | `{ name, phone, sen, password }`      | **owner**       |
 | `POST`  | `/admin/attendees/password`| `{ sen, password }`                   | **owner**       |
 | `GET`   | `/admin/attendance`        | —                                     | admin           |
 | `POST`  | `/admin/attendance`        | `{ sen }`                             | admin           |
+| `GET`   | `/admin/roster`            | —                                     | **owner**       |
+| `POST`  | `/admin/roster`            | `{ rows, registrationMode }`          | **owner**       |
+| `DELETE`| `/admin/roster`            | —                                     | **owner**       |
 | `PATCH` | `/admin/agenda/:id`        | `{ status }`                          | **owner**       |
-| `PATCH` | `/admin/event`             | `{ phase }`                           | **owner**       |
+| `PATCH` | `/admin/event`             | `{ phase, dayOverride, lockedDays, registrationMode }` | **owner** |
 
 There is **no** `/admin/staff` route in either direction. Staff accounts are
 provisioned by `scripts/manage-staff.mjs`; see
@@ -215,8 +211,23 @@ sessions.
 
 `PATCH /admin/agenda/:id` returns the single updated `AgendaItem`;
 `PATCH /admin/event` returns the whole `EventInfo`, which is what the caller
-replaces its state with. It takes `phase` and `dayOverride` independently, so
-setting one does not clobber the other. Attendance rows come back camelCase
+replaces its state with. It takes `phase`, `dayOverride`, `lockedDays` and
+`registrationMode` independently, so setting one does not clobber the others — which
+is what makes each control safe to retry on a bad connection at a busy door.
+`registrationMode` is validated rather than coerced: an unrecognised value returns
+400 and nothing is written, because that string decides who may register and a
+stored value matching none of the three checks would leave a portal where nobody can
+register and nothing says why.
+
+`POST /admin/attendees` returns `{ attendee }` and **no session** — the person is not
+at that computer. It is the only route that can bypass the guest list, so it is
+owner-only, audited in `password_changes`, and validated by exactly the functions the
+public registration form uses. See
+[Adding somebody by hand](#adding-somebody-by-hand).
+
+`GET /admin/roster` deliberately does **not** repeat `registration_mode`. The client
+already holds it on `EventInfo`, and a second copy would be a second fact to go
+stale. Attendance rows come back camelCase
 (`attendeeId`) so the admin log can resolve each row to a person, and carry `day`
 so it can be grouped.
 
@@ -685,17 +696,51 @@ the full roster. Letting them see the log while forbidding the export is a
 convenience and a speed bump, not a security boundary. If the log has to be closed
 too, that is a deliberate decision and one line of change.
 
+### Who may register: open, restricted, closed
+
+`events.registration_mode` is one of three values, and every registration goes
+through it before any uniqueness check.
+
+| Mode | Who may register |
+| --- | --- |
+| `open` | anyone — the default, and where the portal lives for the weeks of sign-ups |
+| `restricted` | only SENs on the uploaded guest list |
+| `closed` | nobody |
+
+**It replaced a boolean, because a boolean could only narrow.** `roster_required`
+answered "is the list being enforced?" and there was no way at all to say *shut the
+door entirely*. That is the state a portal is in once capacity is reached, and on
+the morning of the event it is the one an organiser most needs and could not ask
+for. `restricted` and `closed` are now different codes with different copy: telling
+a student "you are not on the guest list" when the truth is that nobody may
+register sends them off to email an organiser about the wrong thing, for a list that
+is irrelevant to them.
+
+The migration backfills rather than defaults: `roster_required = true` became
+`restricted`, so switching this in could not silently reopen a list somebody had
+already enforced. A `CHECK` constraint holds the set of three, because a
+hand-edited fourth value must not be able to leave a portal where nobody can
+register and nothing says why.
+
+**The mode is public.** `GET /event` carries it, so the registration form can say
+"registration is closed" on arrival rather than after four fields of typing. It is
+printed on the door; it is not a secret. When it *is* closed the form is replaced
+rather than disabled — a disabled form reads as "temporarily broken, try again",
+which is the opposite of what is true. `restricted` keeps the form, because the
+visitor may well be on the list, and hiding it would lock out listed students too.
+
+**The switch is independent of the list, in both directions.** `restricted` is
+disabled until a list has been uploaded, since it would otherwise present an empty
+door with nothing explaining why. And **clearing the list does not change the mode** —
+they used to be one action, and tidying up a spreadsheet that turned out to contain
+a duplicate would have shut the door to every remaining student as a side effect. The
+panel says so before the click, and offers one click back rather than doing it
+silently. The consequence is real and asserted: a `restricted` registration with an
+empty list refuses everybody, including SENs that were on it.
+
 ### The guest list
 
-An owner can upload a spreadsheet of names and SENs from **Programme → Guest List**,
-after which registration is restricted to exactly those students.
-
-**Off until it is switched on.** `events.roster_required` is a separate flag, not
-derived from "the table has rows". Those are different decisions: an organiser
-uploads a list in order to *look* at it, and re-uploads a corrected one without
-leaving registration closed in the meantime. It also means the portal behaves
-exactly as it did before the feature existed until somebody chooses otherwise,
-rather than changing the moment a file is selected.
+An owner uploads a spreadsheet of names and SENs from **People → Guest List**.
 
 **Keyed by SEN alone, and the uploaded name is never compared to anything.** A name
 is what a volunteer mishears, what a student types with one letter wrong, and what
@@ -719,6 +764,31 @@ uploaded, so nothing is lost. The route is owner-only.
 
 **Already-registered accounts are untouched.** The check is on registration only, so
 enforcing a list never invalidates somebody who signed up before it was uploaded.
+
+### Adding somebody by hand
+
+`POST /admin/attendees` creates one account without the registration form. It is the
+only route that can bypass the guest list, which is the point: an organiser at a
+desk with a walk-in who is not on the list, or with registration closed because the
+room is full, has to be able to let that one person in. Refusing would leave them no
+way to do the one thing they are there to do.
+
+**Owner-only, audited, and it issues no session.** Every other privileged act in this
+product writes to `password_changes` or `staff_changes`, and so does this — an
+account created out of band, with a password the organiser chose, is the single most
+sensitive action available and it leaves a trail. The person is not at that
+computer, so issuing a cookie would silently sign them in on a device they may never
+see again, and signed in without typing the password that was just read out to them,
+which defeats the point of setting one.
+
+**Validated by the same functions the form uses** — name, phone, SEN shape, password
+strength, and uniqueness on both phone and SEN. A weaker path here would be a way
+around every rule added since, and an organiser adding somebody twice should get a
+`phone_taken` or `sen_taken` rather than quietly doubling a name on the roster.
+
+**The password is chosen by the operator and read aloud.** Generating one and showing
+it once would be friendlier, and would also put a credential on a screen anyone
+walking past can see — which is why the desk password flow reads it out too.
 
 #### Reading the spreadsheet, without a spreadsheet library
 
@@ -954,6 +1024,48 @@ to each:
 | "Signed in"     | "Registered as" (attendee)    | The fact that is actually true, and that is not a session |
 | "Signed in as"  | "Registered as"                | Same, on the landing caption                             |
 
+### The admin portal is a phone screen first
+
+The control room is used on a phone, held one-handed, at a door, with somebody
+waiting. Three consequences run through its layout, and all three came from measuring
+the built page at 320/ 360 / 414px rather than from reasoning about it.
+
+**Tabs are grouped by task, not by data type.** Everything about *people* — the
+registration switch, adding somebody by hand, the guest list, and the roster of who
+has registered — is under **People**. Everything that configures the *event* is under
+**Event**. Scan is untouched and stays the default, because it is the screen somebody
+opens two hundred times. Before this, the roster sat under "Desk" and the guest list
+under "Programme", and a manual add would have been a third place to look.
+
+**Two columns on a phone, five across from `sm` up.** `flex-wrap` was the original and
+it wrapped raggedly — three on one row, two on the next, reading across like a broken
+grid. The odd tab out spans both columns, because a two-column grid with an odd count
+otherwise leaves one cell of the row's ink background showing as a solid black
+rectangle beside the last tab, which reads as a rendering fault rather than as a gap.
+The count changes with the role, so this has to hold at three tabs as well as five.
+
+**The display heading is desktop-only.** "CONTROL ROOM" is a hundred and forty pixels
+of branded type on a laptop, and on a phone it pushed the scanner — the one thing the
+portal is opened to use — most of the way down the screen. Mobile gets one quiet line
+and the vertical space goes to the controls.
+
+Three layout bugs this found, all invisible on a desktop screenshot:
+
+- **`flex-wrap` alone leaves ink gaps.** Making the phase buttons wrap fixed a 360px
+  overflow and introduced a black block beside "COMPLETED", because the segmented
+  control paints its 1px separators by showing the row's ink background through. The
+  fix is `flex-wrap` on the row *and* `flex-[1_0_auto]` on every button — grow, never
+  shrink, sized to content — so a short row's buttons grow until the gap is gone.
+- **A grid item will not shrink below its content.** `min-width: auto` on a grid item
+  meant the guest-list panel forced its column to 401px inside a 306px track, and the
+  whole People tab scrolled sideways on a phone. `w-full` does not help: the culprit is
+  a file input's intrinsic width, which no width rule overrides.
+- **A control that is irrelevant to a screen should not be on it.** The day picker,
+  the SEN export and the count sat in a bar at the foot of every tab, which put a day
+  selector and an export button on the scanner. Both consumers of the day are now on
+  the Attendance tab, next to the log and the export they act on, so they cannot go
+  out of step — and the screen somebody uses most carries nothing it does not need.
+
 ### Design system
 
 Swiss International. All tokens live in one `@theme` block in
@@ -1032,76 +1144,6 @@ visitor still sits through the full accumulated stagger before anything appears,
 which is the opposite of what they asked for. Stagger delays and the skeleton loop
 are zeroed explicitly.
 
-### The motion design sequence (`/reel`)
-
-A 24-second four-act title sequence for GDG × Fetch.ai: the blueprint, the
-autonomous awakening, the synergy, the lockup. It lives at `/reel`, guarded
-`when="any"` like the landing page — it has no attendee data in it, and the only
-person who cannot see a piece the project made should not be the person who
-built it.
-
-**It is rendered, not filmed.** There is no video file. The sequence is drawn live
-into a canvas from the scene description, because the brief is a prompt document
-written for Sora, Runway and Houdini and none of those are available here. So the
-brief is *implemented* instead of transcribed, which is a real deliverable rather
-than a placeholder:
-
-| Element | How |
-| --- | --- |
-| Lens changes | Real focal lengths through `fovFromFocal` — 130→92mm macro, 58→35mm, 14mm, 50mm |
-| F-stops | Real circle-of-confusion blur per layer, so Act I dissolves and Act III does not |
-| The Google four | Emitted from inside the glass, quantised so they *cycle* rather than sweep to a rainbow |
-| Fetch cyan | Emitted by the agents, on a **shared phase** with the Google pulse — two independent beats would read as two systems that coexist rather than as a synthesis |
-| Boids | A real flocking sim (separation, alignment, cohesion) plus a travelling flow attractor, so the swarm weaves through the geometry rather than past it |
-| The climax | 8,000 cubes whose drag is integrated **in closed form**, so any frame can be evaluated without having simulated the ones before it |
-| The lockup | Rasterised once, then the **lit pixels are read back** as particle targets — so the cubes form the actual letterforms, with the type's own counters and stroke weight |
-
-The last row is the one worth keeping. Sampling the mask rather than
-approximating the logo is what makes the ending work: the D has a hole because
-the mask had a hole.
-
-**Three things about how it is built.**
-
-*Stateless where it can be.* The camera, the glass, the fibres and the 8,000
-cubes are pure functions of `t`, so scrubbing is free and a frame at 0:16.4 is
-identical whether it was reached by playing forward or dragging back. The swarm is
-the exception — Boids is a feedback system with no closed form — so seeking
-backwards **replays it from the start** rather than jumping, because a jump would
-land on a state that never existed.
-
-*No React state per frame.* The clock advances 60 times a second; the timecode and
-the scrubber are written straight to the DOM through refs. React state carries
-only discrete facts: playing, which act, whether the film has finished.
-
-*Draw calls are batched, because 22,000 a frame is not 60fps.* The obvious
-implementations of the trails (one stroke per segment) and the dust (1,800
-`arc`+`fill` pairs) were each a third of the frame budget on their own. Both are
-now banded — three width bands for trails, four alpha bands for dust — for a
-twelfth of the cost with no visible difference on a two-pixel line. The cubes
-batch by colour × brightness, 24 fills, because one fill cannot carry per-cube
-alpha and a field that pulses as one flat mass defeats the point of the sync
-pulse.
-
-**Two bugs this suite caught that a screenshot never would have.** The projection
-computed depth as `z - dolly` when the camera sits at `z = -dolly`, so every
-piece of geometry resolved to a negative distance, got clamped to the near plane,
-and projected from one shared depth — the brackets, the fibres, the swarm and the
-lockup were *all* invisible, in every frame, with no error and no blank canvas.
-And the cube birth stagger was compared against an absolute clock instead of an
-offset from the burst, so all 8,000 cubes were fully expanded the instant they
-were first drawn and the staggered burst was a single-frame pop. Neither is
-visible by eye; both are ordinary wrong numbers, which is what `test:reel` asserts
-on.
-
-**It is exempt from the motion rules above, deliberately and explicitly** — the
-same way the logo glitch cycle is. A 24-second piece of looping light is pure
-decoration, and the four rules in this section say decoration does not belong. It
-belongs here because it is the work, not an accent on it, so it is isolated on its
-own route rather than permitted to animate inside the portal. Under
-`prefers-reduced-motion` it holds a single settled frame and disables its
-transport: a held frame is the only version of this piece that is not
-decoration, and the page says so rather than silently showing a still.
-
 ### Accessibility
 
 - Focus is a 2px accent outline with offset; inputs use an accent border, no glow.
@@ -1130,7 +1172,7 @@ decoration, and the page says so rather than silently showing a still.
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
 | `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
-| `test:guestlist`| 34          | yes      | Upload replaces the list wholesale; enforcement blocks unregistered SENs; a refused upload changes nothing at all; `gate` cannot read or change it |
+| `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
@@ -1139,7 +1181,6 @@ decoration, and the page says so rather than silently showing a still.
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
 | `test:dates`    | 18          | no       | Two-day range and per-day headings, timezone-safe          |
-| `test:reel`    | 58          | no       | Optics and framing for the motion sequence: lens table, circle-of-confusion depth of field, act boundaries, projection scale, particle finiteness, swarm determinism |
 
 ### Test fixtures must not outlive the run
 

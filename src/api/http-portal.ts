@@ -16,7 +16,11 @@ import {
   type Ticket,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
-import type { RosterState, RosterUploadResult } from '@/domain/types'
+import type {
+  RegistrationMode,
+  RosterState,
+  RosterUploadResult,
+} from '@/domain/types'
 
 /**
  * Real HTTP implementation.
@@ -184,6 +188,20 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('PATCH', '/admin/event', { lockedDays })
   }
 
+  async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {
+    return this.#request('PATCH', '/admin/event', { registrationMode: mode })
+  }
+
+  async createAttendee(input: {
+    name: string
+    phone: string
+    sen: string
+    password: string
+  }): Promise<Attendee> {
+    const body = await this.#request<{ attendee: Attendee }>('POST', '/admin/attendees', input)
+    return body.attendee
+  }
+
   async getRoster(): Promise<RosterState> {
     return this.#request('GET', '/admin/roster')
   }
@@ -198,9 +216,9 @@ export class HttpPortalApi implements PortalApi {
   */
   async uploadRoster(
     rows: readonly { name: string; sen: string }[],
-    required: boolean,
+    mode: RegistrationMode,
   ): Promise<RosterUploadResult> {
-    return this.#request('POST', '/admin/roster', { rows, required })
+    return this.#request('POST', '/admin/roster', { rows, registrationMode: mode })
   }
 
   async clearRoster(): Promise<RosterState> {

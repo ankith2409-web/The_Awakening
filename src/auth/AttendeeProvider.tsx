@@ -46,6 +46,36 @@ export function AttendeeProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  /*
+    The event, fetched for EVERYONE rather than only for a signed-in attendee.
+
+    `loadDashboard` below only runs once there is a session, which left the
+    registration form with no way to know whether registration was open. The
+    consequence was that a visitor whose organiser had closed sign-ups still typed
+    name, phone, SEN and password, and only then read "registration is closed" —
+    four fields of effort to be told something the page could have said on arrival.
+
+    `GET /event` is public, uncached-by-nobody and already on the critical path for
+    the dashboard, so the cost is one small request for a visitor who has not yet
+    signed in, and it replaces the separate fetch the register view would otherwise
+    have made for itself.
+  */
+  useEffect(() => {
+    let cancelled = false
+    portalApi
+      .getEvent()
+      .then((loaded) => {
+        if (!cancelled) setEvent(loaded)
+      })
+      .catch(() => {
+        // Non-fatal. The register form falls back to showing the fields rather than
+        // refusing on the strength of a request that failed.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   /**
    * Loads the dashboard payload. Never throws — a failure degrades the
    * dashboard to empty panels rather than blocking the whole page.

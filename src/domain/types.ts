@@ -165,6 +165,23 @@ export interface EventInfo {
    * who attended.
    */
   readonly lockedDays: readonly number[]
+
+  /**
+   * Who may register.
+   *
+   *   open        anyone
+   *   restricted  only SENs on the guest list
+   *   closed      nobody
+   *
+   * Public, because the registration form has to be able to say "registration is
+   * closed" before somebody fills it in rather than refusing them afterwards. It is
+   * printed on the door; it is not a secret.
+   */
+  readonly registrationMode: RegistrationMode
+
+  /** How many are on the guest list, so the form can be honest before submitting. */
+  readonly rosterCount: number
+
   readonly agenda: readonly AgendaItem[]
 }
 
@@ -247,6 +264,9 @@ export interface DayState {
   readonly calendarDay?: number
 }
 
+/** The three things "who may register" can mean. */
+export type RegistrationMode = 'open' | 'restricted' | 'closed'
+
 /**
  * The guest list an organiser has uploaded.
  *
@@ -256,8 +276,6 @@ export interface DayState {
  */
 export interface RosterState {
   readonly count: number
-  /** Whether registration is actually restricted to this list. */
-  readonly required: boolean
   readonly uploadedAt: string | null
   readonly sample: readonly { sen: string; name: string }[]
 }
@@ -267,7 +285,7 @@ export interface RosterUploadResult {
   readonly imported: number
   readonly skipped: number
   readonly problems: readonly string[]
-  readonly required: boolean
+  readonly mode: RegistrationMode
 }
 
 /**
@@ -321,6 +339,7 @@ export type PortalErrorCode =
   | 'already_checked_in'
   | 'day_locked'
   | 'not_on_list'
+  | 'registration_closed'
   | 'not_found'
   | 'forbidden'
   | 'rate_limited'
@@ -352,6 +371,16 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
   */
   not_on_list:
     'That SEN is not on the guest list for this event. Email ankith2409@gmail.com and it can be added.',
+  /*
+    Distinct from `not_on_list`, and it has to be.
+
+    "You are not on the list" when the truth is "nobody may register right now"
+    sends a student off to email an organiser about the wrong thing, for a list that
+    is irrelevant to them. Saying registration is closed names the actual situation
+    and still says who can change it.
+  */
+  registration_closed:
+    'Registration is closed for this event. Email ankith2409@gmail.com if you need a place.',
   not_found: 'We could not find that record.',
   forbidden: 'You do not have access to that.',
   rate_limited: 'Too many attempts. Wait a moment and try again.',

@@ -6,6 +6,7 @@ import type {
   Attendee,
   CheckIn,
   EventInfo,
+  RegistrationMode,
   Team,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
@@ -275,6 +276,20 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     [toError],
   )
 
+  const setRegistrationMode = useCallback(
+    async (mode: RegistrationMode) => {
+      setError(null)
+      try {
+        // Whole `EventInfo` back, so the switch, the guest list panel and the
+        // registration form all reflect the change from one response.
+        setEvent(await portalApi.setRegistrationMode(mode))
+      } catch (cause) {
+        toError(cause)
+      }
+    },
+    [toError],
+  )
+
   const setLockedDays = useCallback(
     async (days: readonly number[]) => {
       setError(null)
@@ -313,6 +328,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setEventPhase,
       updateEventDay,
       setLockedDays,
+      setRegistrationMode,
       setAgendaStatus,
       clearError,
       clearLastScan,
@@ -336,6 +352,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setEventPhase,
       updateEventDay,
       setLockedDays,
+      setRegistrationMode,
       setAgendaStatus,
       clearError,
       clearLastScan,

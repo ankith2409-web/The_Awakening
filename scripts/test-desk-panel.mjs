@@ -171,15 +171,21 @@ const portalApi = readCode('src/domain/portal-api.ts')
 const server = readCode('server/[...route].ts')
 
 check('the panel is rendered by the admin portal', portalView.includes('<AttendeeDirectory />'))
-check('the Desk tab exists', /id: 'desk'/.test(portalView))
 /*
-  Matched on `=== 'desk'` rather than on a particular variable name: this
+  The tab was renamed from "Desk" to "People" when the registration switch, the
+  guest list and manual add were gathered into it. The assertion is that the roster
+  of people who HAVE registered lives on a tab about people, not that it lives on
+  one particular tab — so it follows the panel, not the label.
+*/
+check('the roster lives on a tab about people', /id: 'people'/.test(portalView))
+/*
+  Matched on `=== 'people'` rather than on a particular variable name: this
   assertion is about the tab actually rendering the panel, and it should not care
   what the state holding the current tab is called.
 */
 check(
-  'the Desk tab renders the panel, not just a label',
-  /=== 'desk'[\s\S]{0,80}<AttendeeDirectory/.test(portalView),
+  'the People tab renders the panel, not just a label',
+  /=== 'people'[\s\S]{0,1200}<AttendeeDirectory/.test(portalView),
 )
 
 check(
@@ -329,20 +335,21 @@ check(
     !readCode('src/components/SiteFooter.tsx').includes("= 'ankith2409@gmail.com'"),
 )
 
-/* -- the Desk panel is owner-only ------------------------------------------- */
+/* -- the People panel is owner-only ------------------------------------------ */
 
 /*
-  The Desk tab changes somebody's credential. That is not a door-side job, so it
-  must be marked owner-only in the tab table — which is a one-word change that
-  nothing else in the suite would notice.
+  The People tab changes somebody's credential, uploads the guest list and moves
+  the registration switch. None of that is a door-side job, so it must be marked
+  owner-only in the tab table — which is a one-word change that nothing else in the
+  suite would notice.
 
-  The route check is the real control and lives in `test:roles`; this guards the
-  half that is presentation, because a volunteer being shown a tab that 403s on
-  every action is worse than one that is never shown.
+  The route checks are the real control and live in `test:roles` and
+  `test:guestlist`; this guards the half that is presentation, because a volunteer
+  being shown a tab that 403s on every action is worse than one that is never shown.
 */
 check(
-  'the Desk tab is marked owner-only',
-  /id: 'desk',[^}]*ownerOnly: true/.test(portalView),
+  'the People tab is marked owner-only',
+  /id: 'people',[^}]*ownerOnly: true/.test(portalView),
 )
 
 check(

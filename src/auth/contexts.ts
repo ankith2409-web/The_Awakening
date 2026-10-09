@@ -8,6 +8,7 @@ import type {
   EventInfo,
   MyAttendance,
   PortalErrorCode,
+  RegistrationMode,
   Team,
   Ticket,
 } from '@/domain/types'
@@ -139,6 +140,14 @@ export interface AdminContextValue {
     password: string,
   ) => Promise<{ name: string; sen: string } | null>
   setEventPhase: (phase: EventInfo['phase']) => Promise<void>
+  /**
+   * Opens, restricts or closes registration.
+   *
+   * Lives beside the other event-level switches rather than inside whichever panel
+   * draws them, so the People tab and the Event tab cannot disagree about whether
+   * registration is open.
+   */
+  setRegistrationMode: (mode: RegistrationMode) => Promise<void>
   /**
    * Pins the day attendance is recorded against, or clears the pin.
    *

@@ -10,6 +10,8 @@ import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
 import { GuestListPanel } from './GuestListPanel'
+import { RegistrationSwitch } from './RegistrationSwitch'
+import { AddAttendeePanel } from './AddAttendeePanel'
 import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
 
 /**
@@ -33,7 +35,22 @@ const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   printed: 'Bare SEN with no signature — typed by staff or read from a printed barcode.',
 }
 
-type Tab = 'scan' | 'attendance' | 'desk' | 'teams' | 'programme'
+/*
+  Tabs are grouped by TASK, not by data type.
+
+  This was reshuffled because five panels had piled up on one tab and the two things
+  most alike were furthest apart. The roster of people who have registered sat under
+  "Desk"; the list of people allowed to register sat under "Programme". An organiser
+  asked to add somebody by hand would have had to know both existed.
+
+  Now everything about PEOPLE is under People, and everything that configures the
+  EVENT is under Event. Scan is untouched and stays the default: it is the screen
+  somebody uses two hundred times, and nothing has been added to it.
+
+  Still five, deliberately. A sixth tab would have fixed nothing and made the bar
+  narrower on the phone.
+*/
+type Tab = 'scan' | 'attendance' | 'people' | 'teams' | 'event'
 
 /**
  * The tabs, and who may see each one.
@@ -54,9 +71,9 @@ type Tab = 'scan' | 'attendance' | 'desk' | 'teams' | 'programme'
 const TABS: { id: Tab; label: string; ownerOnly: boolean }[] = [
   { id: 'scan', label: 'Scan', ownerOnly: false },
   { id: 'attendance', label: 'Attendance', ownerOnly: false },
-  { id: 'desk', label: 'Desk', ownerOnly: true },
+  { id: 'people', label: 'People', ownerOnly: true },
   { id: 'teams', label: 'Teams', ownerOnly: false },
-  { id: 'programme', label: 'Programme', ownerOnly: true },
+  { id: 'event', label: 'Event', ownerOnly: true },
 ]
 
 const PHASES: EventPhase[] = ['registration', 'live', 'completed']
@@ -79,6 +96,7 @@ export function AdminPortalView() {
     setAgendaStatus,
     updateEventDay,
     setLockedDays,
+    setRegistrationMode,
     clearError,
     clearLastScan,
   } = useAdmin()
@@ -177,21 +195,45 @@ export function AdminPortalView() {
         </div>
       </header>
 
-      <main className="px-6 py-10 sm:px-10 lg:px-14">
+      <main className="px-4 py-6 sm:px-10 sm:py-10 lg:px-14">
         <div className="mx-auto max-w-[92rem]">
-          <SectionLabel index="05.">Admin Portal</SectionLabel>
-          <h1 className="mt-4 text-6xl font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
-            Control
-            <br />
-            Room
+          {/*
+            The display heading is desktop-only.
+
+            It is a hundred and forty pixels of branded type on a laptop, and on a
+            phone it pushed the scanner — the one thing somebody at a door opens this
+            portal to use — most of the way down the screen. Mobile gets a single
+            quiet line instead, and the vertical space goes to the controls.
+          */}
+          <div className="hidden lg:block">
+            <SectionLabel index="05.">Admin Portal</SectionLabel>
+            <h1 className="mt-4 text-6xl font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
+              Control
+              <br />
+              Room
+            </h1>
+          </div>
+
+          <h1 className="text-2xl font-black uppercase tracking-tight text-swiss-ink lg:hidden">
+            Control Room
           </h1>
 
+          {/*
+            Two columns on a phone, five across from `sm` up.
+
+            `flex-wrap` was the original, and it wrapped raggedly: three on one row,
+            two on the next, with the tab order reading across like a broken grid. Two
+            columns is slower to reach the third item but it is predictable, and every
+            label fits without shrinking the type.
+
+            The height cost is paid for by the compact heading above.
+          */}
           <div
             role="tablist"
             aria-label="Admin sections"
-            className="mt-10 flex flex-wrap gap-px border-2 border-swiss-ink bg-swiss-ink"
+            className="mt-4 grid grid-cols-2 gap-px border-2 border-swiss-ink bg-swiss-ink sm:mt-10 sm:flex"
           >
-            {visibleTabs.map((item) => (
+            {visibleTabs.map((item, index) => (
               <button
                 key={item.id}
                 type="button"
@@ -201,9 +243,22 @@ export function AdminPortalView() {
                 aria-controls={`tabpanel-${item.id}`}
                 onClick={() => setTab(item.id)}
                 className={[
-                  'min-h-11 flex-1 cursor-pointer px-5 py-3',
-                  'text-2xs font-bold uppercase tracking-[0.2em]',
+                  'min-h-12 flex-1 cursor-pointer px-3 py-3 sm:min-h-11 sm:px-5',
+                  'text-2xs font-bold uppercase tracking-[0.15em] sm:tracking-[0.2em]',
                   'transition-colors duration-150 ease-linear',
+                  /*
+                    The odd tab out spans both columns.
+
+                    A two-column grid with an odd number of items leaves one cell of
+                    the container's ink background showing as a solid black rectangle
+                    beside the last tab — which reads as a rendering fault rather
+                    than as a gap, and the count changes with the role: an owner has
+                    five tabs, a `gate` account has three. Stretching the final tab
+                    turns that cell into the tab itself, at any count.
+                  */
+                  index === visibleTabs.length - 1 && visibleTabs.length % 2 === 1
+                    ? 'col-span-2 sm:col-span-1'
+                    : '',
                   activeTab === item.id
                     ? 'bg-swiss-accent-text text-swiss-paper'
                     : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
@@ -273,23 +328,80 @@ export function AdminPortalView() {
               The log no longer takes the roster. It shows `attendeeName` off each
               row, which the server joins in, so a `gate` account sees real names
               without ever being sent the roster it would need to resolve them.
+
+              The day selector and the export live HERE now, above the log, rather
+              than in a bar at the foot of the page. Both consumers of that choice
+              are on this screen, so they can never disagree — which was the reason
+              for having one control at all. And the Scan tab, which somebody uses
+              two hundred times with a queue in front of them, no longer carries a
+              day picker and an export button it has no use for.
             */}
             {activeTab === 'attendance' ? (
-              <AttendanceLog
-                records={dayRecords}
-                loading={loadingData}
-                eventName={event?.name ?? 'event'}
-                canExport={isOwner}
-                day={selectedDay}
-                totalDays={totalDays}
-              />
+              <div className="flex flex-col gap-4">
+                <AttendanceControls
+                  day={selectedDay}
+                  totalDays={totalDays}
+                  lockedDays={lockedDays}
+                  canExport={isOwner}
+                  exportCount={dayRecords.length}
+                  eventName={event?.name ?? 'event'}
+                  attendance={attendance}
+                  onSelectDay={setViewDay}
+                />
+                <AttendanceLog
+                  records={dayRecords}
+                  loading={loadingData}
+                  eventName={event?.name ?? 'event'}
+                  canExport={isOwner}
+                  day={selectedDay}
+                  totalDays={totalDays}
+                />
+              </div>
             ) : null}
 
-            {activeTab === 'desk' ? <AttendeeDirectory /> : null}
+            {/*
+              People: everything about who may register and who has, in one place.
+
+              The registration switch first, because it is the answer to "can
+              somebody still sign up?" and it is the thing most likely to need
+              changing on the day. Then the two ways to change it, then the list it
+              reads, then the people already on the roster.
+            */}
+            {activeTab === 'people' ? (
+              <div className="flex flex-col gap-6">
+                <RegistrationSwitch
+                  event={event}
+                  rosterCount={event?.rosterCount ?? 0}
+                  onChanged={(mode) => void setRegistrationMode(mode)}
+                />
+
+                {/*
+                  Stacked on a phone, side by side from `lg`.
+
+                  Two panels of form controls side by side on a 360px screen gives
+                  each one about 150px, which is narrower than a single full name
+                  field and turns both into a scrolling chore.
+                */}
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <AddAttendeePanel onAdded={() => void refresh()} />
+                  <GuestListPanel
+                    mode={event?.registrationMode ?? 'open'}
+                    onModeChange={(mode) => void setRegistrationMode(mode)}
+                  />
+                </div>
+                {/*
+                  No width is set here on purpose. Both children carry `min-w-0`
+                  themselves, which is what actually lets them shrink — a constraint
+                  here would only paper over the intrinsic width of the file input.
+                */}
+
+                <AttendeeDirectory />
+              </div>
+            ) : null}
 
             {activeTab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
 
-            {activeTab === 'programme' ? (
+            {activeTab === 'event' ? (
               <ProgrammePanel
                 event={event}
                 loading={loadingData}
@@ -301,7 +413,23 @@ export function AdminPortalView() {
             ) : null}
           </div>
 
-          <div className="mt-10 flex flex-wrap justify-end gap-3">
+          {/*
+            The global action bar is GONE.
+
+            Refresh, the day picker and the export used to sit at the foot of the
+            page, visible from every tab. That put a day selector and an export
+            button on the Scan screen, which is the one somebody opens two hundred
+            times with a queue in front of them and needs neither of.
+
+            Refresh and both day controls now live on the Attendance tab, next to
+            the log and the export they act on. Nothing is lost by that: the reason
+            for a global control was to set the day without opening the log, and
+            both consumers of the day are on that one screen anyway.
+
+            What remains here is one Refresh, because it re-reads everything and is
+            useful wherever you are.
+          */}
+          <div className="mt-6 flex flex-wrap justify-end gap-3">
             <Button
               variant="secondary"
               size="md"
@@ -312,101 +440,130 @@ export function AdminPortalView() {
             >
               Refresh
             </Button>
-            {/*
-              Owner-only.
-
-              This is the SEN export, and it is the one control a `gate` account
-              must not have. It is client-side, so hiding the button is genuinely
-              all the UI can do — which is worth being honest about: a volunteer
-              who can read the attendance log already sees every marked SEN on
-              screen and could write them down. Letting them have the log and
-              forbidding the export is a speed bump, not a wall. The wall is that
-              `/admin/attendees` is refused, so the roster of everyone who has
-              *not* arrived never reaches their device at all.
-            */}
-            {/*
-              One day selector, governing the log above and the export beside it.
-
-              Placed here rather than inside the log header because it is visible
-              from every tab — an owner who wants day one exported without first
-              opening the log should not have to go and set it somewhere they
-              cannot see.
-
-              Not a `<select>`. A segmented pair matches the switch controls used
-              everywhere else in this portal, and shows both days at once instead of
-              hiding the choice inside a dropdown.
-            */}
-            {totalDays > 1 ? (
-              <div
-                role="group"
-                aria-label="Which day's attendance to show and export"
-                className="flex items-center gap-3"
-              >
-                <span className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
-                  Day
-                </span>
-                <div className="flex gap-px border-2 border-swiss-ink bg-swiss-ink">
-                  {Array.from({ length: totalDays }, (_, index) => index + 1).map(
-                    (day) => (
-                      <button
-                        key={day}
-                        type="button"
-                        aria-pressed={selectedDay === day}
-                        onClick={() => setViewDay(day)}
-                        className={[
-                          'relative min-h-14 cursor-pointer px-5',
-                          'text-sm font-bold uppercase tracking-[0.15em]',
-                          'transition-colors duration-150 ease-linear',
-                          selectedDay === day
-                            ? 'bg-swiss-ink text-swiss-paper'
-                            : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
-                        ].join(' ')}
-                      >
-                        {day}
-                        {/*
-                          A closed day still shows its full attendance — locking
-                          stops new marks, it does not hide who came. Marked here so
-                          the state is visible from every tab without opening the
-                          Programme tab, and readable by a `gate` account that
-                          cannot change it.
-                        */}
-                        {lockedDays.includes(day) ? (
-                          <span
-                            title={`Attendance is closed for day ${day}`}
-                            className="absolute -right-px -top-px size-3 bg-swiss-accent-text"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                        {lockedDays.includes(day) ? (
-                          <span className="sr-only">
-                            (attendance closed)
-                          </span>
-                        ) : null}
-                      </button>
-                    ),
-                  )}
-                </div>
-              </div>
-            ) : null}
-
-            {isOwner ? (
-              <Button
-                variant="primary"
-                size="md"
-                disabled={dayRecords.length === 0}
-                onClick={() =>
-                  downloadAttendanceCsv(attendance, event?.name ?? 'event', selectedDay)
-                }
-              >
-                {totalDays > 1
-                  ? `Export SEN — day ${selectedDay} (${dayRecords.length})`
-                  : `Export SEN (${dayRecords.length})`}
-              </Button>
-            ) : null}
           </div>
         </div>
       </main>
     </div>
+  )
+}
+
+/* -------------------------------------------------------- day and export */
+
+/**
+ * The day selector and the SEN export, together above the log.
+ *
+ * They were one control and one button in a bar at the foot of the page, visible
+ * from every tab. That was so the day could be set without opening the log — but it
+ * put a day picker and an export button on the SCAN screen, which is the one screen
+ * somebody opens two hundred times with a queue in front of them and which needs
+ * neither.
+ *
+ * Both consumers of the choice are on this tab, so nothing can go out of step.
+ */
+function AttendanceControls({
+  day,
+  totalDays,
+  lockedDays,
+  canExport,
+  exportCount,
+  eventName,
+  attendance,
+  onSelectDay,
+}: {
+  day: number
+  totalDays: number
+  lockedDays: readonly number[]
+  canExport: boolean
+  exportCount: number
+  eventName: string
+  attendance: ReturnType<typeof useAdmin>['attendance']
+  onSelectDay: (day: number) => void
+}) {
+  return (
+    <section className="border-2 border-swiss-ink">
+      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+        <div className="flex flex-col gap-3">
+          <span className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
+            Day
+          </span>
+
+          {/*
+            A segmented pair, which shows both days at once instead of hiding the
+            choice in a dropdown. Wraps to two rows if the event ever gains a third
+            day, which is the right failure: a control that silently overflows is a
+            control nobody can see.
+          */}
+          <div className="flex flex-wrap gap-px bg-swiss-ink">
+            {Array.from({ length: totalDays }, (_, index) => index + 1).map((option) => {
+              const isLocked = lockedDays.includes(option)
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={day === option}
+                  onClick={() => onSelectDay(option)}
+                  className={[
+                    'relative min-h-12 min-w-14 flex-[1_0_auto] cursor-pointer px-5',
+                    'text-sm font-bold uppercase tracking-[0.15em]',
+                    'transition-colors duration-150 ease-linear',
+                    day === option
+                      ? 'bg-swiss-ink text-swiss-paper'
+                      : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
+                  ].join(' ')}
+                >
+                  {option}
+                  {/*
+                    A closed day still shows its full attendance — locking stops new
+                    marks, it does not hide who came. Marked so the state is visible
+                    without opening another tab.
+                  */}
+                  {isLocked ? (
+                    <span
+                      title={`Attendance is closed for day ${option}`}
+                      className="absolute -right-px -top-px size-3 bg-swiss-accent-text"
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  {isLocked ? (
+                    <span className="sr-only">(attendance closed)</span>
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+
+          <p className="text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
+            {exportCount} marked
+            {lockedDays.includes(day) ? ' · attendance closed for this day' : ''}
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 sm:items-end">
+          {canExport ? (
+            <>
+              <Button
+                variant="primary"
+                size="md"
+                disabled={exportCount === 0}
+                onClick={() =>
+                  downloadAttendanceCsv(attendance, eventName, day)
+                }
+              >
+                {totalDays > 1
+                  ? `Export SEN — day ${day} (${exportCount})`
+                  : `Export SEN (${exportCount})`}
+              </Button>
+              {/*
+                The day is on the button AND in the filename. Two files called
+                "attendance.csv" in one Downloads folder is how the wrong list gets
+                attached to an email, and a button that only said "Export" would make
+                that easy to do.
+              */}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -1091,7 +1248,20 @@ function ProgrammePanel({
           <p className="flex-1 text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
             Drives what attendees see on their dashboard.
           </p>
-          <div className="flex gap-px bg-swiss-ink">
+          <div className="flex flex-wrap gap-px bg-swiss-ink">
+            {/*
+              `flex-wrap` on the row and `flex-[1_0_auto]` on every button, and the two
+              are only correct together.
+
+              Without the wrap, three phase buttons overflowed a 360px screen and pushed
+              the whole tab sideways. With the wrap alone, the short second row left a
+              block of this row's ink background showing to the right of "COMPLETED" —
+              which reads as a rendering fault rather than as a gap.
+
+              `flex-[1_0_auto]` is grow:1 shrink:0 basis:auto. It never shrinks a button
+              below its label, so a row still wraps exactly when it has to, and it grows
+              the buttons on a short row until the gap is gone.
+            */}
             {PHASES.map((option) => (
               <button
                 key={option}
@@ -1099,7 +1269,7 @@ function ProgrammePanel({
                 onClick={() => onPhaseChange(option)}
                 aria-pressed={event.phase === option}
                 className={[
-                  'min-h-11 cursor-pointer px-4 py-2',
+                  'min-h-11 flex-[1_0_auto] cursor-pointer px-3 py-2 sm:px-4',
                   'text-2xs font-bold uppercase tracking-[0.2em]',
                   'transition-colors duration-150 ease-linear',
                   event.phase === option
@@ -1137,13 +1307,13 @@ function ProgrammePanel({
             The calendar says day {event.calendarDay} of {event.totalDays}. Auto
             follows it.
           </p>
-          <div className="flex gap-px bg-swiss-ink">
+          <div className="flex flex-wrap gap-px bg-swiss-ink">
             <button
               type="button"
               onClick={() => onDayChange(null)}
               aria-pressed={event.dayOverride === null}
               className={[
-                'min-h-11 cursor-pointer px-4 py-2',
+                'min-h-11 flex-[1_0_auto] cursor-pointer px-3 py-2 sm:px-4',
                 'text-2xs font-bold uppercase tracking-[0.2em]',
                 'transition-colors duration-150 ease-linear',
                 event.dayOverride === null
@@ -1161,7 +1331,7 @@ function ProgrammePanel({
                   onClick={() => onDayChange(day)}
                   aria-pressed={event.dayOverride === day}
                   className={[
-                    'min-h-11 cursor-pointer px-4 py-2',
+                    'min-h-11 flex-[1_0_auto] cursor-pointer px-3 py-2 sm:px-4',
                     'text-2xs font-bold uppercase tracking-[0.2em]',
                     'transition-colors duration-150 ease-linear',
                     event.dayOverride === day
@@ -1211,7 +1381,7 @@ function ProgrammePanel({
                 ? 'Every day is closed — nobody can be marked at all right now.'
                 : `Closed: day ${locked.join(', day ')}. Those days still show in the log and the export.`}
           </p>
-          <div className="flex gap-px bg-swiss-ink">
+          <div className="flex flex-wrap gap-px bg-swiss-ink">
             {Array.from({ length: event.totalDays }, (_, index) => index + 1).map(
               (day) => {
                 const isLocked = locked.includes(day)
@@ -1229,7 +1399,7 @@ function ProgrammePanel({
                       )
                     }
                     className={[
-                      'min-h-11 cursor-pointer px-4 py-2',
+                      'min-h-11 flex-[1_0_auto] cursor-pointer px-3 py-2 sm:px-4',
                       'text-2xs font-bold uppercase tracking-[0.2em]',
                       'transition-colors duration-150 ease-linear',
                       isLocked
@@ -1245,16 +1415,6 @@ function ProgrammePanel({
           </div>
         </div>
       </section>
-
-      {/*
-        The guest list, with the programme rather than in the Desk tab.
-
-        It is a registration control, not a record about somebody who has already
-        registered, so it belongs beside the other "who is affected by today's
-        decisions" controls. Putting it next to the roster would also mean the roster
-        loads for `gate` accounts just to render a tab they cannot open.
-      */}
-      <GuestListPanel />
 
       <section className="border-2 border-swiss-ink">
         <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
@@ -1292,7 +1452,7 @@ function ProgrammePanel({
                   {item.speaker} · {item.room}
                 </p>
               </div>
-              <div className="flex gap-px bg-swiss-ink">
+              <div className="flex flex-wrap gap-px bg-swiss-ink">
                 {AGENDA_STATUSES.map((status) => (
                   <button
                     key={status}
@@ -1300,7 +1460,7 @@ function ProgrammePanel({
                     onClick={() => onStatusChange(item.id, status)}
                     aria-pressed={item.status === status}
                     className={[
-                      'min-h-11 cursor-pointer px-3 py-1.5',
+                      'min-h-11 flex-[1_0_auto] cursor-pointer px-3 py-1.5',
                       'text-2xs font-bold uppercase tracking-[0.15em]',
                       'transition-colors duration-150 ease-linear',
                       item.status === status

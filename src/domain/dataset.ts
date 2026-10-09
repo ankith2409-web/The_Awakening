@@ -30,6 +30,8 @@ export const SEED_EVENT: EventInfo = {
   calendarDay: 1,
   totalDays: 2,
   dayOverridden: false,
+  registrationMode: 'open',
+  rosterCount: 0,
   dayOverride: null,
   lockedDays: [],
   agenda: [

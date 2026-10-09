@@ -11,6 +11,7 @@ import type {
   DayState,
   EventInfo,
   MyAttendance,
+  RegistrationMode,
   RosterState,
   RosterUploadResult,
   Team,
@@ -134,6 +135,31 @@ export interface PortalApi {
   setLockedDays(lockedDays: readonly number[]): Promise<EventInfo>
 
   /**
+   * Opens, restricts or closes registration.
+   *
+   * Separate from the guest list on purpose. The list is data; this is the decision
+   * about what the data means, and they are changed at different moments — one when
+   * the list is prepared, the other when the doors open and close.
+   */
+  setRegistrationMode(mode: RegistrationMode): Promise<EventInfo>
+
+  /**
+   * Creates one attendee by hand.
+   *
+   * The only route that makes an account without the registration form, and so the
+   * only one that can bypass the guest list. Owner-only, audited, and it issues no
+   * session: the attendee is not at the computer, and signing them in on a device
+   * they may never see again — without them typing the password the organiser just
+   * read out — defeats the point of setting one.
+   */
+  createAttendee(input: {
+    name: string
+    phone: string
+    sen: string
+    password: string
+  }): Promise<Attendee>
+
+  /**
    * The guest list: who is allowed to register.
    *
    * A COUNT and a SAMPLE, never the whole list — the full roster is every student's
@@ -145,15 +171,22 @@ export interface PortalApi {
   /**
    * Replaces the guest list wholesale.
    *
-   * `required` is passed explicitly rather than inferred, so uploading a file never
-   * silently changes who may register. That decision belongs to the organiser.
+   * The mode travels with the upload rather than being set separately, so "save the
+   * list and start using it" is one action instead of two, and there is no window
+   * where the list has changed but the decision about it has not.
    */
   uploadRoster(
     rows: readonly { name: string; sen: string }[],
-    required: boolean,
+    mode: RegistrationMode,
   ): Promise<RosterUploadResult>
 
-  /** Empties the list and reopens registration. */
+  /**
+   * Empties the list.
+   *
+   * Does NOT reopen registration. Clearing a spreadsheet is not the same decision as
+   * changing who may register, and doing both on one click would shut the door to
+   * everybody as a side effect of tidying up.
+   */
   clearRoster(): Promise<RosterState>
   updateAgendaItem(
     id: string,

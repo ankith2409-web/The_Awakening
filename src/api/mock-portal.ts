@@ -1,5 +1,6 @@
 import { SEED_ADMINS, SEED_ATTENDEE, SEED_EVENT, SEED_TEAMS } from '@/domain/dataset'
-import { normalisePhone, normaliseSen, isValidSen } from '@/domain/phone'
+import { normalisePhone, normaliseSen, isValidSen, phoneProblem } from '@/domain/phone'
+import { nameProblem } from '@/domain/name'
 import { signTicket } from '@/domain/ticket'
 import {
   PortalError,
@@ -16,6 +17,7 @@ import {
   type CheckIn,
   type EventInfo,
   type MyAttendance,
+  type RegistrationMode,
   type RosterState,
   type RosterUploadResult,
   type Team,
@@ -51,8 +53,6 @@ interface Store {
   checkIns: CheckIn[]
   /** The uploaded guest list. Absent on stores seeded before this feature. */
   roster?: { sen: string; name: string }[]
-  /** Whether registration is actually restricted to `roster`. */
-  rosterRequired?: boolean
   /**
    * Fingerprint of the seed this store was built from.
    *
@@ -549,7 +549,7 @@ export class MockPortalApi implements PortalApi {
 
   async uploadRoster(
     rows: readonly { name: string; sen: string }[],
-    required: boolean,
+    mode: RegistrationMode,
   ): Promise<RosterUploadResult> {
     this.#requireOwner()
     await delay(LATENCY_MS / 2)
@@ -577,19 +577,81 @@ export class MockPortalApi implements PortalApi {
     }
 
     this.#store.roster = accepted
-    this.#store.rosterRequired = required
+    /*
+      The mode goes on `event`, and only on `event`.
+
+      It was briefly kept in two places — a top-level `store.registrationMode` and
+      `event.registrationMode` — and the two drifted, so the switch rendered whatever
+      one had been written last rather than what the caller set. Every other event
+      field (phase, lockedDays, dayOverride) lives on `event` for exactly this
+      reason: one place to read, one place to write.
+    */
+    this.#store.event = { ...this.#store.event, registrationMode: mode }
     persist(this.#store)
 
-    return { imported: accepted.length, skipped: problems.length, problems, required }
+    return { imported: accepted.length, skipped: problems.length, problems, mode }
+  }
+
+  async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+    this.#store.event = { ...this.#store.event, registrationMode: mode }
+    persist(this.#store)
+    return structuredClone(this.#store.event)
   }
 
   async clearRoster(): Promise<RosterState> {
     this.#requireOwner()
     await delay(LATENCY_MS / 4)
     this.#store.roster = []
-    this.#store.rosterRequired = false
     persist(this.#store)
     return this.#rosterState()
+  }
+
+  async createAttendee(input: {
+    name: string
+    phone: string
+    sen: string
+    password: string
+  }): Promise<Attendee> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+
+    const name = nameProblem(input.name)
+    if (name) throw new PortalError('unknown', name)
+
+    const phone = normalisePhone(input.phone)
+    const phoneIssue = phoneProblem(phone)
+    if (phoneIssue) throw new PortalError('unknown', phoneIssue)
+
+    const sen = normaliseSen(input.sen)
+    if (!isValidSen(sen)) {
+      throw new PortalError('unknown', 'Enter a valid SEN, e.g. A866175000012.')
+    }
+    const weak = passwordProblem(input.password)
+    if (weak) throw new PortalError('weak_password', weak)
+
+    if (this.#store.attendees.some((a) => a.phone === phone)) {
+      throw new PortalError('phone_taken')
+    }
+    if (this.#store.attendees.some((a) => a.sen === sen)) {
+      throw new PortalError('sen_taken')
+    }
+
+    const created: AttendeeWithSecret = {
+      id: `att_${randomSuffix()}`,
+      name: input.name.trim(),
+      phone,
+      sen,
+      createdAt: new Date().toISOString(),
+      passwordHash: hash(input.password),
+      ticketCode: randomTicketPayload(),
+    }
+    this.#store.attendees.push(created)
+    // No session is written, deliberately — see the interface note.
+    persist(this.#store)
+
+    return toPublic(created)
   }
 
   #rosterState(): RosterState {
@@ -598,7 +660,6 @@ export class MockPortalApi implements PortalApi {
     const roster = this.#store.roster ?? []
     return {
       count: roster.length,
-      required: this.#store.rosterRequired ?? false,
       uploadedAt: roster.length > 0 ? this.#store.event.date : null,
       sample: roster.slice(0, 8),
     }
@@ -757,7 +818,6 @@ function loadOrSeed(): Store {
     teams: structuredClone(SEED_TEAMS) as Team[],
     checkIns: [],
     roster: [],
-    rosterRequired: false,
     seedFingerprint: currentSeedFingerprint(),
   }
 

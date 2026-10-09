@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/Button'
 import { portalApi } from '@/api'
-import type { RosterState } from '@/domain/types'
+import type { RegistrationMode, RosterState } from '@/domain/types'
 import { parseRosterFile, type ParsedRoster } from '@/lib/roster/parse'
 
 /**
@@ -25,7 +25,14 @@ import { parseRosterFile, type ParsedRoster } from '@/lib/roster/parse'
  *   "are you sure" trains people to click through dialogs without reading them —
  *   which is worse here, not better, because this one locks students out.
  */
-export function GuestListPanel() {
+export function GuestListPanel({
+  mode,
+  onModeChange,
+}: {
+  /** The live registration mode, so the upload can set it in the same action. */
+  mode: RegistrationMode
+  onModeChange: (mode: RegistrationMode) => void
+}) {
   const [roster, setRoster] = useState<RosterState | null>(null)
   const [busy, setBusy] = useState(false)
   const [parsed, setParsed] = useState<ParsedRoster | null>(null)
@@ -73,7 +80,17 @@ export function GuestListPanel() {
     }
   }
 
-  async function commit(required: boolean) {
+  /*
+    The mode travels with the upload.
+
+    Two buttons rather than one, because "save this list" and "start locking people
+    out with it" are two different decisions with very different consequences, and
+    neither is the obvious default the other time it is done.
+
+    A third button is deliberately absent: closing registration outright is not
+    something an upload does. That is the switch above, where it is stated plainly.
+  */
+  async function commit(next: RegistrationMode) {
     if (!parsed || parsed.rows.length === 0) return
 
     setBusy(true)
@@ -83,18 +100,23 @@ export function GuestListPanel() {
     try {
       const result = await portalApi.uploadRoster(
         parsed.rows.map((row) => ({ name: row.name, sen: row.sen })),
-        required,
+        next,
       )
 
       const bits = [`${result.imported} student${result.imported === 1 ? '' : 's'} on the list`]
       if (result.skipped > 0) bits.push(`${result.skipped} row(s) skipped`)
-      bits.push(required ? 'registration now closed to everyone else' : 'registration still open to anyone')
+      bits.push(
+        next === 'restricted'
+          ? 'registration now closed to everyone else'
+          : 'registration still open to anyone',
+      )
 
       setDone(bits.join(' · '))
       setParsed(null)
       setFileName('')
       if (fileRef.current) fileRef.current.value = ''
       setRoster(await portalApi.getRoster())
+      if (next !== mode) onModeChange(next)
     } catch (error) {
       setProblem(error instanceof Error ? error.message : 'The upload failed.')
     } finally {
@@ -102,13 +124,31 @@ export function GuestListPanel() {
     }
   }
 
+  /*
+    Clearing the list does NOT reopen registration.
+
+    They used to be the same action, and that was a trap waiting to happen: tidying
+    up a spreadsheet that turned out to have a duplicate SEN would have quietly shut
+    the door to every remaining student, with the only visible sign being that
+    signups stopped. The list is data; who may register is a separate decision, made
+    in the switch above.
+
+    So this clears, and says plainly what it did and did not do — and when the
+    consequence is "nobody can now register", it offers the one click that undoes it.
+  */
   async function clear() {
     setBusy(true)
     setProblem(null)
     setDone(null)
     try {
       setRoster(await portalApi.clearRoster())
-      setDone('Guest list cleared · registration is open to anyone again')
+      if (mode === 'restricted') {
+        setDone(
+          'Guest list cleared · registration is still set to the guest list, so nobody can register right now',
+        )
+      } else {
+        setDone(`Guest list cleared · registration is ${mode === 'closed' ? 'still closed to everyone' : 'open to anyone'}`)
+      }
     } catch (error) {
       setProblem(error instanceof Error ? error.message : 'Could not clear the list.')
     } finally {
@@ -117,7 +157,15 @@ export function GuestListPanel() {
   }
 
   return (
-    <section className="border-2 border-swiss-ink">
+    /*
+      `min-w-0` is load-bearing, not decoration.
+
+      A grid item's `min-width` is `auto`, so it will not shrink below its own
+      min-content width. This panel contains a file input, whose intrinsic width no
+      `w-full` overrides — in a two-column grid at phone width that forced the column
+      to 401px inside a 306px track and pushed the whole tab sideways.
+    */
+    <section className="min-w-0 border-2 border-swiss-ink">
       <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
         Guest List
       </h2>
@@ -133,16 +181,20 @@ export function GuestListPanel() {
             {current === null
               ? 'Checking…'
               : current.count === 0
-                ? 'No guest list · anyone can register'
-                : current.required
-                  ? `${current.count} on the list · registration closed to everyone else`
-                  : `${current.count} on the list · NOT enforced, anyone can still register`}
+                ? 'No guest list uploaded'
+                : `${current.count} student${current.count === 1 ? '' : 's'} on the list`}
           </p>
 
-          {current !== null && current.count > 0 && !current.required ? (
+          {/*
+            The list is data; the switch above decides what it means. Saying so here
+            is the difference between an organiser understanding why registration is
+            still open and wondering whether their upload silently failed.
+          */}
+          {current !== null && current.count > 0 && mode !== 'restricted' ? (
             <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
-              The list is uploaded but not being enforced. Re-upload it with the
-              restrict option to close registration to it.
+              The list is uploaded but registration is not set to use it. Choose
+              &ldquo;Guest list&rdquo; above to close registration to everyone not on
+              it.
             </p>
           ) : null}
 
@@ -268,7 +320,7 @@ export function GuestListPanel() {
                 size="md"
                 loading={busy}
                 disabled={parsed.rows.length === 0}
-                onClick={() => void commit(true)}
+                onClick={() => void commit('restricted')}
               >
                 Save &amp; restrict registration
               </Button>
@@ -276,7 +328,7 @@ export function GuestListPanel() {
                 variant="secondary"
                 size="md"
                 disabled={busy}
-                onClick={() => void commit(false)}
+                onClick={() => void commit('open')}
               >
                 Save only
               </Button>
@@ -304,9 +356,43 @@ export function GuestListPanel() {
               Clear the list
             </Button>
             <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
-              Empties the list and reopens registration to anyone. The file you
-              uploaded is not kept.
+              Empties the list. The file you uploaded is not kept. This does{' '}
+              <strong>not</strong> change who may register — that is the switch
+              above.
             </p>
+
+            {/*
+              The one state where clearing leaves the door shut with nobody behind
+              it. Stated before the click as well as after, because this is the
+              sequence that would otherwise look like a bug: somebody opens
+              registration to the list, then decides the list was wrong.
+            */}
+            {mode === 'restricted' ? (
+              <div className="mt-4 flex flex-col items-start gap-3 border-l-4 border-swiss-accent-text bg-swiss-muted p-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink">
+                  Registration is set to the guest list. Clearing it leaves nobody
+                  able to register.
+                </p>
+                <Button
+                  variant="primary"
+                  size="md"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    try {
+                      await portalApi.setRegistrationMode('open')
+                      onModeChange('open')
+                    } catch (error) {
+                      setProblem(error instanceof Error ? error.message : 'Could not open registration.')
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  Open to anyone instead
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -309,6 +309,44 @@ create table if not exists event_roster (
 alter table events add column if not exists roster_required boolean not null default false;
 alter table events add column if not exists roster_uploaded_at timestamptz;
 
+/*
+  `registration_mode` replaces `roster_required`, because a boolean could not say
+  the one thing an organiser most needs to be able to do.
+
+  A boolean answers "is the guest list being enforced?" It cannot answer "shut the
+  door entirely" — the list can only ever narrow who may register, never stop all of
+  them. So a day where the portal is closed and nobody may register had no way to be
+  expressed, which is the single most likely thing to want on the morning of the
+  event once capacity is reached.
+
+    open        anyone may register, list ignored
+    restricted  only SENs on the guest list may register
+    closed      nobody may register
+
+  Backfilled from the boolean rather than defaulted to 'open', so switching this in
+  does not silently reopen a list somebody had already enforced.
+*/
+alter table events add column if not exists registration_mode text;
+
+update events
+   set registration_mode = case when roster_required then 'restricted' else 'open' end
+ where registration_mode is null;
+
+-- Cannot be null and cannot be left default-less: every later read assumes it.
+alter table events alter column registration_mode set default 'open';
+alter table events alter column registration_mode set not null;
+
+-- A CHECK rather than trust in the route, because this value decides who may
+-- register and a hand-edited row must not be able to invent a fourth mode.
+alter table events
+  drop constraint if exists events_registration_mode_check;
+alter table events
+  add constraint events_registration_mode_check
+  check (registration_mode in ('open', 'restricted', 'closed'));
+
+-- The boolean is now derived from the mode, not the other way round.
+alter table events drop column if exists roster_required;
+
 -- -----------------------------------------------------------------------------
 -- Programme — event, agenda, teams.
 -- -----------------------------------------------------------------------------

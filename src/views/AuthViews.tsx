@@ -262,13 +262,40 @@ export function LoginView() {
 
 /** Registration differs from login only by omitting "remember". */
 export function RegisterView() {
-  const { register, error, clearError } = useAttendee()
+  /*
+    `eventInfo`, not `event`.
+
+    Every field handler below is `(event) => setValue(...)`, and shadowing the
+    context's `event` with the DOM event in five places is exactly the kind of thing
+    that reads correctly right up until somebody needs the event record.
+  */
+  const { register, error, clearError, event: eventInfo } = useAttendee()
 
   const [values, setValues] =
     useState<Record<RegisterFields, string>>(REGISTER_INITIAL)
   const [touched, setTouched] = useState<Partial<Record<RegisterFields, boolean>>>({})
   const [errors, setErrors] = useState<FieldErrors<RegisterFields>>({})
   const [submitting, setSubmitting] = useState(false)
+
+  /*
+    What the server will allow, read from the public event rather than discovered
+    by submitting.
+
+    `closed` is not a state where the form should merely warn — there is nothing the
+    visitor can do about it, so the form goes away and is replaced by the reason and
+    who to contact. Leaving four live fields in front of somebody who is guaranteed
+    to be refused at the end is the kind of thing that makes a portal look broken.
+
+    `restricted` is different: the visitor may well be on the list, so the form stays
+    and simply says what the SEN is being checked against. Refusing to show it would
+    lock out every listed student as well as everyone else.
+
+    Null until the request lands, which reads as "open" — the form is shown and the
+    server has the final say, so a slow or failed fetch costs nothing but a warning
+    that was not displayed.
+  */
+  const mode = eventInfo?.registrationMode ?? 'open'
+  const registrationClosed = mode === 'closed'
 
   const setValue = useCallback(
     (field: RegisterFields, value: string) => {
@@ -322,25 +349,80 @@ export function RegisterView() {
       logo={<EventMark />}
       eyebrow="02. Register"
       title="Register"
-      description="Three fields and you are in. Your name and mobile number identify you at the door — the QR pass is generated instantly."
+      description={
+        /*
+          Swapped when registration is closed. The default sentence sells a form that
+          is not on the page, which is the kind of small lie that makes a portal read
+          as broken rather than as deliberately shut.
+        */
+        registrationClosed
+          ? 'Registration for this event is not open. If you already have a pass, log in and it will be waiting.'
+          : 'Three fields and you are in. Your name and mobile number identify you at the door — the QR pass is generated instantly.'
+      }
       footer={
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-            Already registered?
-          </p>
-          <SlideNavLink to="/login" className="border-b-2 border-swiss-ink pb-1">
+        /*
+          Suppressed when registration is closed, because the panel above already
+          offers "Log in" as its one action. Leaving both on the page put the same
+          link on screen twice, and the lower one was the harder to find of the pair.
+        */
+        registrationClosed ? undefined : (
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
+              Already registered?
+            </p>
+            <SlideNavLink to="/login" className="border-b-2 border-swiss-ink pb-1">
+              Log in →
+            </SlideNavLink>
+          </div>
+        )
+      }
+    >
+      {/*
+        Registration is closed.
+
+        The fields are not merely disabled — they are gone. A disabled form reads as
+        "temporarily broken, try again in a moment", which is the opposite of what
+        is true, and it invites somebody to reload a page that will never work.
+
+        Log in is still offered, because closing registration to new people is not
+        the same as locking out the ones already registered.
+      */}
+      {registrationClosed ? (
+        <div className="flex flex-col gap-6">
+          <div className="border-2 border-swiss-ink bg-swiss-muted p-6">
+            <p className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
+              Registration is closed
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-content-muted">
+              New registrations are not being taken for this event. If you already
+              registered, you can still log in and show your pass at the door.
+            </p>
+          </div>
+
+          <SlideNavLink
+            to="/login"
+            className="inline-flex min-h-12 items-center justify-center border-2 border-swiss-ink bg-swiss-ink px-6 text-2xs font-bold uppercase tracking-[0.2em] text-swiss-paper"
+          >
             Log in →
           </SlideNavLink>
         </div>
-      }
-    >
-      <form
-        id="auth-form"
-        noValidate
-        onSubmit={handleSubmit}
-        className="flex flex-col gap-6"
-      >
-        {error ? <Alert>{error.message}</Alert> : null}
+      ) : (
+        <>
+          {mode === 'restricted' ? (
+            <div className="border-l-4 border-swiss-ink bg-swiss-muted p-4">
+              <p className="text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink">
+                Guest list only — your SEN is checked against it
+              </p>
+            </div>
+          ) : null}
+
+          <form
+            id="auth-form"
+            noValidate
+            onSubmit={handleSubmit}
+            className="flex flex-col gap-6"
+          >
+            {error ? <Alert>{error.message}</Alert> : null}
 
         <Field
           label="Full Name"
@@ -423,9 +505,11 @@ export function RegisterView() {
         />
 
         <Button type="submit" variant="primary" size="lg" block loading={submitting}>
-          {submitting ? 'Registering' : 'Register'}
-        </Button>
-      </form>
+              {submitting ? 'Registering' : 'Register'}
+            </Button>
+          </form>
+        </>
+      )}
     </AuthShell>
   )
 }
