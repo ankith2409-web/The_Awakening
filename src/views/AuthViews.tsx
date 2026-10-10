@@ -5,6 +5,7 @@ import { Button } from '@/components/Button'
 import { Checkbox, Field, PasswordField } from '@/components/Field'
 import { Alert, SlideNavLink } from '@/components/Typography'
 import { AuthShell } from '@/components/AuthShell'
+import { Link } from 'react-router-dom'
 import { PasswordHelp } from '@/components/PasswordHelp'
 import { EventMark } from '@/components/EventMark'
 import { isMockApi, portalApi } from '@/api'
@@ -250,26 +251,31 @@ export function LoginView() {
     </AuthShell>
   )
 }
-
 /**
  * Where the attendee is in signing up.
  *
- * Four states rather than one form, because the thing that happens at the end —
- * being handed a password and asked to prove they read it — cannot be a field in the
- * form that came before it. It is the consequence of submitting, and it has to be the
- * next thing on the screen.
+ * Three states, and the middle one is the whole design:
  *
- *   details  name, phone, SEN. Then the portal issues a password.
- *   reveal   the password, shown once. Read it back into two boxes.
- *   choose   asked whether they want a different password. Their call either way.
- *   change   the replacement form, if they said yes.
- *   done     signed in; on to the pass.
+ *   details   name, phone, SEN. Then the portal issues a password.
+ *   password  that password, shown once, WITH THE CHOICE ON THE SAME SCREEN —
+ *             keep it, or type one of your own instead.
+ *   done      signed in; on to the pass.
  *
- * `reveal` is its own screen, and `choose` is separate from `change`, so that the
- * password is displayed with nothing else competing for attention, and so somebody
- * happy with it can walk straight past the question.
+ * This used to be five states, with the generated password on one screen, a read-back
+ * on the next, a question on a third and the change form on a fourth. Four screens to
+ * reach a pass, for a decision that is really one question with two answers.
+ *
+ * The read-back went first. Asking somebody to type a password twice, immediately
+ * after handing it to them, was a way of catching a transcription error — and it caught
+ * a lot of nothing. Nobody mistypes a password they have just been shown and have not
+ * written down; what it actually did was put four screens between a student and their
+ * pass, at a desk, in a queue. Losing it is recoverable: the desk sets a new one.
+ *
+ * So: one screen, the password on it, and the choice on it too. Somebody who wants
+ * their own types it right there. Somebody who is happy presses one button and is
+ * through.
  */
-type RegisterStep = 'details' | 'reveal' | 'choose' | 'change' | 'done'
+type RegisterStep = 'details' | 'password' | 'done'
 
 /** Registration collects the identity fields, and nothing else. */
 type RegisterFields = 'name' | 'phone' | 'sen'
@@ -283,30 +289,25 @@ const REGISTER_INITIAL: Record<RegisterFields, string> = {
 /**
  * Registration.
  *
- * The attendee does not choose a password. The portal generates one and hands it
- * over, and the attendee reads it back before they are let through.
+ * The attendee does not choose a password to begin with — the portal generates one and
+ * hands it over, because the old form asked for a password and then made them type it
+ * twice on a phone at a desk, where a single mistyped character locked them out of
+ * their own pass with no self-service recovery.
  *
- * Why this replaced "choose your own password":
- *
- * The old form asked for a password and then made them type it twice, on a phone, at
- * a desk, in a queue. A single mistyped character locked them out of their own pass,
- * with no self-service recovery — the recovery path is an organiser at a desk, which
- * means queueing again. Generated-and-read-back removes the typing from the critical
- * path: there is nothing to mistype, because the attendee never chose it.
- *
- * Why the read-back is checked twice, in two different ways:
- *
- * Requiring the two boxes to match catches a typo in one of them. It cannot catch a
- * typo in BOTH — somebody who misreads the generated password and then faithfully
- * types the same wrong thing twice passes the client check and cannot log in later.
- * So the second check goes to the server and compares against the stored hash, while
- * the password is still on their screen.
- *
- * And why the change is offered afterwards rather than instead: some people would
- * rather have a password nobody else has ever read aloud. Both are fine; the portal
- * should not decide.
+ * They are offered the choice immediately, on the same screen: keep the generated one,
+ * or type one of their own. That ordering is deliberate. Offering it first means
+ * somebody who would rather have a password nobody else has ever read aloud is not
+ * made to walk past a form to get it, and somebody who is indifferent is one tap from
+ * done.
  */
 export function RegisterView() {
+  /*
+    `eventInfo`, not `event`.
+
+    Every field handler below is `(event) => setValue(...)`, and shadowing the
+    context's `event` with the DOM event in several places is exactly the kind of thing
+    that reads correctly right up until somebody needs the event record.
+  */
   const { register, completeRegistration, error, clearError, event: eventInfo } =
     useAttendee()
 
@@ -319,10 +320,6 @@ export function RegisterView() {
     visitor can do about it, so the form goes away and is replaced by the reason and
     who to contact. Leaving three live fields in front of somebody who is guaranteed
     to be refused is what makes a portal look broken.
-
-    `restricted` is different — the visitor may well be on the list, so the form stays
-    and simply says what the SEN is being checked against. Hiding it would lock out
-    listed students as well as everyone else.
   */
   const mode = eventInfo?.registrationMode ?? 'open'
 
@@ -333,20 +330,15 @@ export function RegisterView() {
   const [errors, setErrors] = useState<FieldErrors<RegisterFields>>({})
   const [submitting, setSubmitting] = useState(false)
 
-  /* -- the issued password, and the read-back --------------------------- */
+  /* -- the issued password, and the optional replacement ------------------ */
 
   const [issued, setIssued] = useState<string | null>(null)
-  const [typed, setTyped] = useState({ first: '', second: '' })
-  const [typedTouched, setTypedTouched] = useState(false)
-  const [readBackProblem, setReadBackProblem] = useState<string | null>(null)
-  const [verifying, setVerifying] = useState(false)
-
-  /* -- the optional change ----------------------------------------------- */
-
-  const [replacement, setReplacement] = useState({ first: '', second: '' })
-  const [replacementTouched, setReplacementTouched] = useState(false)
-  const [changeProblem, setChangeProblem] = useState<string | null>(null)
-  const [changing, setChanging] = useState(false)
+  /** Whether they have chosen to type their own, on this same screen. */
+  const [useOwn, setUseOwn] = useState(false)
+  const [own, setOwn] = useState({ first: '', second: '' })
+  const [ownTouched, setOwnTouched] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [ownProblem, setOwnProblem] = useState<string | null>(null)
 
   const setValue = useCallback(
     (field: RegisterFields, value: string) => {
@@ -376,15 +368,21 @@ export function RegisterView() {
     Registration closing while somebody is part-way through the form.
 
     The closed panel is shown when there is nothing to lose, and demoted to a warning
-    once they have typed something. Yanking the fields out from under somebody
-    mid-form destroys their input to no purpose — they can finish and be told, and the
-    server refuses them anyway. Being kicked out of a form you are filling in is
-    exactly the "this thing is broken" feeling the closed panel exists to avoid.
+    once they have typed something. Yanking the fields out from under somebody mid-form
+    destroys their input to no purpose — they can finish and be told, and the server
+    refuses them anyway. Being kicked out of a form you are filling in is exactly the
+    "this thing is broken" feeling the closed panel exists to avoid.
   */
   const hasTypedSomething =
     values.name !== '' || values.phone !== '' || values.sen !== ''
   const registrationClosed = mode === 'closed' && step === 'details'
-  const closedButInProgress = mode === 'closed' && step === 'details' && hasTypedSomething
+  const closedButInProgress =
+    mode === 'closed' && step === 'details' && hasTypedSomething
+
+  function finish() {
+    setStep('done')
+    completeRegistration()
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -402,7 +400,7 @@ export function RegisterView() {
     try {
       const result = await register(values.name, values.phone, values.sen)
       setIssued(result.generatedPassword)
-      setStep('reveal')
+      setStep('password')
     } catch {
       // Rendered through the provider's error state.
     } finally {
@@ -411,80 +409,45 @@ export function RegisterView() {
   }
 
   /*
-    The read-back.
+    Saving their own password instead.
 
-    Client-side first — the two boxes must match each other — because that is free,
-    instant, and catches the common case without a round trip. Then the server, which
-    is the only check that can notice somebody typed the same misread password twice.
+    `currentPassword` is the generated one, which the server checks. That is not a
+    formality even though they can see it on this very screen: the check establishes
+    that the session belongs to whoever just registered, and an attacker holding a
+    stolen session could otherwise skip straight past it.
   */
-  const typedMismatch = typed.first !== '' && typed.first !== typed.second
-  const typedTooShort = typed.first !== '' && typed.first.length < 4
-
-  async function confirmReadBack(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (verifying || issued === null) return
-
-    setTypedTouched(true)
-    setReadBackProblem(null)
-
-    if (typed.first !== typed.second) return
-    if (typedTooShort) return
-
-    setVerifying(true)
-    try {
-      const result = await portalApi.verifyAttendeePassword(typed.first)
-      if (result.matches) {
-        setStep('choose')
-      } else {
-        setReadBackProblem(
-          'That is not the password shown above. Check it character by character — the groups are separated by dashes.',
-        )
-      }
-    } catch {
-      setReadBackProblem('Could not check that just now. Try again in a moment.')
-    } finally {
-      setVerifying(false)
-    }
+  const ownProblems = {
+    first: VALIDATORS.password(own.first),
+    second: own.first === own.second ? null : 'These do not match.',
   }
 
-  const replacementProblems = {
-    first: VALIDATORS.password(replacement.first),
-    second:
-      replacement.first === replacement.second
-        ? null
-        : 'These do not match.',
-  }
-
-  async function submitChange(event: FormEvent<HTMLFormElement>) {
+  async function submitOwn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (changing || issued === null) return
+    if (saving || issued === null) return
 
-    setReplacementTouched(true)
-    setChangeProblem(null)
+    setOwnTouched(true)
+    setOwnProblem(null)
 
-    if (replacementProblems.first !== null || replacementProblems.second !== null) {
-      return
-    }
+    if (ownProblems.first !== null || ownProblems.second !== null) return
 
-    setChanging(true)
+    setSaving(true)
     try {
       await portalApi.changeOwnPassword({
         currentPassword: issued,
-        newPassword: replacement.first,
+        newPassword: own.first,
       })
-      setReplacement({ first: '', second: '' })
-      setStep('done')
-      completeRegistration()
+      setOwn({ first: '', second: '' })
+      finish()
     } catch (cause) {
-      setChangeProblem(
+      setOwnProblem(
         cause instanceof Error ? cause.message : 'Could not change that password.',
       )
     } finally {
-      setChanging(false)
+      setSaving(false)
     }
   }
 
-  /* -- the four screens ------------------------------------------------- */
+  /* -- the screens -------------------------------------------------------- */
 
   const detailsScreen = (
     <>
@@ -580,35 +543,29 @@ export function RegisterView() {
 
         <p className="text-2xs font-medium leading-relaxed text-content-muted">
           We will give you a password on the next screen. You will need it to log in
-          on the day.
+          on the day — and you can change it there if you would rather.
         </p>
       </form>
     </>
   )
 
-  const revealScreen = (
-    <form
-      id="auth-form"
-      noValidate
-      onSubmit={confirmReadBack}
-      className="flex flex-col gap-6"
-    >
+  /*
+    The password, and the choice, on one screen.
+
+    The password is shown large, monospaced and alone, because it is about to be
+    written down or read aloud. It is not behind a reveal toggle: the person looking
+    at this screen is the person who owns the password, on their own phone, and hiding
+    it from them protects nothing while adding a tap between them and the only copy
+    that will ever exist.
+  */
+  const passwordScreen = (
+    <div className="flex flex-col gap-6">
       <div className="border-2 border-swiss-ink bg-swiss-muted p-6">
         <p className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
           Your password
         </p>
 
-        {/*
-          Large, monospaced and alone on its own line, because it is about to be read
-          out loud and typed back. A sentence-sized credential inside a paragraph is
-          the one thing guaranteed to be mis-transcribed.
-
-          It is shown in full, not behind a reveal toggle. The person looking at this
-          screen is the person who owns the password, on their own phone; hiding it
-          from them protects nothing and adds a tap between them and the only copy
-          that will ever exist.
-        */}
-        <p className="mt-4 select-all break-all font-mono text-4xl font-black leading-tight tracking-tight text-swiss-ink">
+        <p className="mt-4 select-all break-all font-mono text-[clamp(1.5rem,7vw,2.25rem)] font-black leading-tight tracking-tight text-swiss-ink">
           {issued}
         </p>
 
@@ -618,164 +575,90 @@ export function RegisterView() {
         </p>
       </div>
 
-      {readBackProblem !== null ? (
-        <Alert>{readBackProblem}</Alert>
-      ) : null}
-
-      <PasswordField
-        label="Type your password"
-        name="password-readback"
-        autoComplete="off"
-        data-1p-ignore
-        data-lpignore="true"
-        value={typed.first}
-        hint="Exactly as shown, including the dashes."
-        error={
-          typedTouched && typedMismatch
-            ? 'These do not match yet.'
-            : typedTouched && typedTooShort
-              ? 'That looks too short — use the whole password.'
-              : undefined
-        }
-        onChange={(event) => {
-          setTyped((current) => ({ ...current, first: event.target.value }))
-          setReadBackProblem(null)
-        }}
-      />
-
-      <PasswordField
-        label="Type it again"
-        name="password-readback-confirm"
-        autoComplete="off"
-        data-1p-ignore
-        data-lpignore="true"
-        value={typed.second}
-        error={typedTouched && typedMismatch ? 'These do not match.' : undefined}
-        onChange={(event) => {
-          setTyped((current) => ({ ...current, second: event.target.value }))
-          setReadBackProblem(null)
-        }}
-      />
-
-      <Button type="submit" variant="primary" size="lg" block loading={verifying}>
-        {verifying ? 'Checking' : 'That is my password'}
-      </Button>
-    </form>
-  )
-
-  const changeScreen = (
-    <div className="flex flex-col gap-6">
-      {/*
-        Asked, not imposed. Two buttons and no default: somebody happy with the
-        password they were given should be able to walk straight past this.
-      */}
-      <div className="border-2 border-swiss-ink bg-swiss-muted p-6">
-        <p className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
-          Password confirmed
-        </p>
-        <p className="mt-3 text-sm leading-relaxed text-content-muted">
-          Would you like to change it to one of your own?
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <Button
-          variant="primary"
-          size="lg"
-          block
-          onClick={() => {
-            setStep('done')
-            completeRegistration()
-          }}
+      {/* -- they want the generated one ---------------------------------- */}
+      {!useOwn ? (
+        <>
+          <Button variant="primary" size="lg" block onClick={finish}>
+            Use this password
+          </Button>
+          <button
+            type="button"
+            onClick={() => setUseOwn(true)}
+            className="cursor-pointer self-start text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink underline decoration-swiss-ink/30 underline-offset-4 transition-colors duration-150 ease-linear hover:decoration-swiss-accent-text"
+          >
+            Type my own instead
+          </button>
+        </>
+      ) : (
+        /* -- they want their own ---------------------------------------- */
+        <form
+          id="auth-form"
+          noValidate
+          onSubmit={submitOwn}
+          className="flex flex-col gap-6"
         >
-          Keep it
-        </Button>
-        <Button variant="secondary" size="lg" block onClick={() => setStep('change')}>
-          Change it
-        </Button>
-      </div>
+          {ownProblem !== null ? <Alert>{ownProblem}</Alert> : null}
+
+          <PasswordField
+            label="Your password"
+            name="password-own"
+            autoComplete="new-password"
+            value={own.first}
+            hint="Minimum 8 characters, with one letter and one number."
+            error={ownTouched ? (ownProblems.first ?? undefined) : undefined}
+            onChange={(event) => {
+              setOwn((current) => ({ ...current, first: event.target.value }))
+              setOwnProblem(null)
+            }}
+          />
+
+          <PasswordField
+            label="Type it again"
+            name="password-own-confirm"
+            autoComplete="new-password"
+            value={own.second}
+            error={ownTouched ? (ownProblems.second ?? undefined) : undefined}
+            onChange={(event) =>
+              setOwn((current) => ({ ...current, second: event.target.value }))
+            }
+            onBlur={() => setOwnTouched(true)}
+          />
+
+          <Button type="submit" variant="primary" size="lg" block loading={saving}>
+            {saving ? 'Saving' : 'Save and continue'}
+          </Button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setOwn({ first: '', second: '' })
+              setOwnProblem(null)
+              setUseOwn(false)
+            }}
+            className="cursor-pointer self-start text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink underline decoration-swiss-ink/30 underline-offset-4 transition-colors duration-150 ease-linear hover:decoration-swiss-accent-text"
+          >
+            Use the generated one instead
+          </button>
+        </form>
+      )}
     </div>
   )
 
-  const replacementScreen = (
-    <form
-      id="auth-form"
-      noValidate
-      onSubmit={submitChange}
-      className="flex flex-col gap-6"
-    >
-      {changeProblem !== null ? <Alert>{changeProblem}</Alert> : null}
-
-      <PasswordField
-        label="New password"
-        name="password-new"
-        autoComplete="new-password"
-        value={replacement.first}
-        hint="Minimum 8 characters, with one letter and one number."
-        error={replacementTouched ? (replacementProblems.first ?? undefined) : undefined}
-        onChange={(event) =>
-          setReplacement((current) => ({ ...current, first: event.target.value }))
-        }
-      />
-
-      <PasswordField
-        label="Type it again"
-        name="password-new-confirm"
-        autoComplete="new-password"
-        value={replacement.second}
-        error={
-          replacementTouched ? (replacementProblems.second ?? undefined) : undefined
-        }
-        onChange={(event) => {
-          setReplacement((current) => ({ ...current, second: event.target.value }))
-          setChangeProblem(null)
-        }}
-        onBlur={() => setReplacementTouched(true)}
-      />
-
-      <Button type="submit" variant="primary" size="lg" block loading={changing}>
-        {changing ? 'Saving' : 'Save and continue'}
-      </Button>
-
-      <button
-        type="button"
-        className="cursor-pointer text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink underline decoration-swiss-ink/30 underline-offset-4"
-        onClick={() => {
-          setStep('done')
-          completeRegistration()
-        }}
-      >
-        Keep the generated one
-      </button>
-    </form>
-  )
-
-  /*
-    `step === 'change'` is the CHANGE FORM, and `step === 'choose'` is the question
-    that leads to it. They are separate screens on purpose: somebody happy with the
-    password they were handed should be able to walk past this in one tap, and the
-    surest way to stop them doing that is to put a form in front of them first.
-  */
-  const TITLES: Record<RegisterStep, { eyebrow: string; title: string; description: string }> = {
+  const TITLES: Record<
+    RegisterStep,
+    { eyebrow: string; title: string; description: string }
+  > = {
     details: {
       eyebrow: '02. Register',
       title: 'Register',
-      description: 'Three fields and you are in. Your name and mobile number identify you at the door — the QR pass is generated instantly.',
+      description:
+        'Three fields and you are in. Your name and mobile number identify you at the door — the QR pass is generated instantly.',
     },
-    reveal: {
+    password: {
       eyebrow: '02. Your password',
       title: 'Save it',
-      description: 'Type it back exactly as shown to confirm you have it.',
-    },
-    choose: {
-      eyebrow: '02. Your password',
-      title: 'Keep it?',
-      description: 'Your password works as it is. You can change it if you would rather.',
-    },
-    change: {
-      eyebrow: '02. Your password',
-      title: 'Change it',
-      description: 'Only if you would rather. The one you have already works.',
+      description:
+        'Use this one, or type your own below. Either way you need it to log in on the day.',
     },
     done: {
       eyebrow: '02. Register',
@@ -784,8 +667,6 @@ export function RegisterView() {
     },
   }
 
-  const heading = TITLES[step]
-
   /*
     When registration closes while this screen is up, the description is replaced too.
 
@@ -793,7 +674,8 @@ export function RegisterView() {
     "Three fields and you are in" above a panel that says registration is closed is a
     small lie that makes the whole page read as broken rather than as deliberately
     shut. `registrationClosed` only ever turns this on for the details step, so the
-    reveal and change screens are never affected.
+    password screen is never affected — by then the account exists and closing
+    registration has no bearing on it.
   */
   const shown = registrationClosed
     ? {
@@ -802,7 +684,7 @@ export function RegisterView() {
         description:
           'Registration for this event is not open. If you already have a pass, log in and it will be waiting.',
       }
-    : heading
+    : TITLES[step]
 
   return (
     <AuthShell
@@ -851,31 +733,43 @@ export function RegisterView() {
             </p>
           </div>
 
-          <SlideNavLink
+          {/*
+            A plain router Link, not a `SlideNavLink`.
+
+            `SlideNavLink` renders the label twice — once as the resting copy and once
+            as an accent-coloured copy that slides over it on hover — which only works
+            while the two occupy the same box. Styling the anchor as a full-width button
+            was overriding the anchor's display and pulling the two apart, so hovering
+            showed the label twice at once, accent-coloured on the left and paper-
+            coloured in the middle. The button does not want a sliding text swap
+            anyway; it wants to be a button.
+          */}
+          <Link
             to="/login"
-            className="inline-flex min-h-12 items-center justify-center border-2 border-swiss-ink bg-swiss-ink px-6 text-2xs font-bold uppercase tracking-[0.2em] text-swiss-paper"
+            className="inline-flex min-h-12 items-center justify-center border-2 border-swiss-ink bg-swiss-ink px-6 text-2xs font-bold uppercase tracking-[0.2em] text-swiss-paper transition-colors duration-150 ease-linear hover:bg-swiss-accent-text"
           >
             Log in →
-          </SlideNavLink>
+          </Link>
         </div>
       ) : null}
 
-      {step === 'details' && !registrationClosed ? (
-        <>
-          {mode === 'restricted' ? (
-            <div className="border-l-4 border-swiss-ink bg-swiss-muted p-4">
-              <p className="text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink">
-                Guest list only — your SEN is checked against it
-              </p>
-            </div>
-          ) : null}
-          {detailsScreen}
-        </>
-      ) : null}
+      {/*
+        The guest list is not announced here.
 
-      {step === 'reveal' ? revealScreen : null}
-      {step === 'choose' ? changeScreen : null}
-      {step === 'change' ? replacementScreen : null}
+        It used to say "Guest list only — your SEN is checked against it". That was
+        meant to be helpful and is mostly noise: it is a statement about the
+        organiser's list on a page about the visitor's own details, and it tells a
+        student on the list nothing useful while telling a student NOT on it that
+        they are about to be refused — which the form cannot help with either way.
+
+        Enforcement is unchanged. Somebody not on the list is refused on submit, and
+        the refusal names the list and the address to email, which is the only point
+        at which that information helps anybody.
+      */}
+      {step === 'details' && !registrationClosed ? detailsScreen : null}
+
+      {step === 'password' ? passwordScreen : null}
+
       {step === 'done' ? (
         <div className="border-2 border-swiss-ink bg-swiss-muted p-6">
           <p className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">

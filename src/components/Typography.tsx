@@ -99,6 +99,19 @@ export function TextLink({
  * nests a <button> inside an <a>, which is invalid HTML and gives keyboard and
  * screen-reader users two overlapping targets for one action. The animation
  * lives on the anchor itself instead, so there is exactly one control.
+ *
+ * The two copies of the label live inside an inner block, and that block is what
+ * stacks them. It is there because the effect depends on the two spans sharing one
+ * box, and that is not automatic: a caller who passes `inline-flex justify-center`
+ * to make the link look like a full-width button overrides the anchor's display, and
+ * the two copies then stop being stacked by the anchor at all. `justify-center`
+ * centres the in-flow one and leaves the absolutely-positioned one pinned to the left
+ * edge, so hovering showed the label twice at once — accent-coloured over on the
+ * left, paper-coloured in the middle. Both are real positions; neither is where it
+ * should be.
+ *
+ * An inner block the caller cannot reach with a display utility means the effect
+ * keeps working whatever the anchor is styled as.
  */
 export function SlideNavLink({
   to,
@@ -116,14 +129,16 @@ export function SlideNavLink({
         className,
       ].join(' ')}
     >
-      <span className="block transition-transform duration-200 ease-linear group-hover:-translate-y-full">
-        {children}
-      </span>
-      <span
-        aria-hidden="true"
-        className="absolute inset-0 block translate-y-full text-swiss-accent-text transition-transform duration-200 ease-linear group-hover:translate-y-0"
-      >
-        {children}
+      <span className="relative block">
+        <span className="block transition-transform duration-200 ease-linear group-hover:-translate-y-full">
+          {children}
+        </span>
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 block translate-y-full text-swiss-accent-text transition-transform duration-200 ease-linear group-hover:translate-y-0"
+        >
+          {children}
+        </span>
       </span>
     </Link>
   )

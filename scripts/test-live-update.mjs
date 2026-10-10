@@ -153,6 +153,65 @@ check(
   'the panel no longer refreshes when the list is replaced on another device',
 )
 
+/* -- display type must not push a page sideways --------------------------- */
+
+/*
+  The headings were a fixed `text-6xl`. At 60px, "REGISTER" is 237px of type, and a
+  270px phone has 222px of content box after the padding — so the heading overflowed its
+  own box and the whole page scrolled sideways.
+
+  This was missed twice. The first overflow sweep checked `getBoundingClientRect().right`
+  against the viewport, and the heading's BOX fitted — only its text did not. The
+  detector was wrong, not the layout being subtle: anything that overflows inside a box
+  that itself fits is invisible to a right-edge check. `scrollWidth > clientWidth` is
+  what catches it.
+*/
+const headings = [
+  ['AuthShell', 'src/components/AuthShell.tsx'],
+  ['DashboardView', 'src/views/DashboardView.tsx'],
+  ['AdminPortalView', 'src/views/admin/AdminPortalView.tsx'],
+]
+
+for (const [label, path] of headings) {
+  const source = code(path)
+  check(
+    `${label} sizes its display heading fluidly rather than at a fixed size`,
+    /text-\[clamp\(/.test(source) && !/text-6xl font-black uppercase/.test(source),
+    `${label} can still push the page sideways on a narrow phone`,
+  )
+}
+
+/* -- the slide link must survive being styled as a button ------------------ */
+
+/*
+  `SlideNavLink` renders the label twice — a resting copy and an accent-coloured copy
+  that slides over it on hover — and the effect depends on the two sharing one box.
+
+  The registration page styled that anchor as a full-width button with `inline-flex
+  justify-center`, which overrides the anchor's display. `justify-center` then centred
+  the in-flow copy at left:254 while the absolutely-positioned one stayed pinned to the
+  left edge, so hovering showed the label twice at once: accent-coloured over on the
+  left, paper-coloured in the middle. Both were real positions; neither was right.
+
+  Fixed by putting the two copies inside an inner block the caller cannot restyle.
+*/
+const typography = code('src/components/Typography.tsx')
+
+check(
+  'SlideNavLink stacks its two label copies in an inner block',
+  /<span className="relative block">[\s\S]*?group-hover:-translate-y-full[\s\S]*?absolute inset-0/.test(
+    typography,
+  ),
+  'the copies are direct children of the anchor, so a display override pulls them apart',
+)
+
+check(
+  'and the button that broke it no longer uses SlideNavLink',
+  !/bg-swiss-ink[\s\S]{0,80}SlideNavLink/.test(registerOnly) &&
+    /<Link[\s\S]{0,120}to="\/login"/.test(registerOnly),
+  'the full-width Log in button is still a SlideNavLink',
+)
+
 /* -- the site footer reaches every attendee page -------------------------- */
 
 /*
@@ -412,33 +471,36 @@ check(
 )
 
 check(
-  'the issued password is shown full size and on its own',
-  /text-4xl font-black/.test(registerOnly),
+  'the issued password is shown large, monospaced and on its own line',
+  /select-all break-all font-mono text-\[clamp/.test(registerOnly),
   'the password is not presented at a readable size',
 )
 
 check(
-  'the read-back requires the two boxes to match',
-  /typed\.first !== typed\.second/.test(registerOnly),
-  'no client-side match check on the read-back',
+  'the choice is ON THE SAME SCREEN as the password, not behind another step',
+  /!useOwn \? \(/.test(registerOnly) &&
+    /Use this password/.test(registerOnly) &&
+    /Type my own instead/.test(registerOnly),
+  'the generated password and the choice to keep or replace it are on separate screens',
 )
 
 check(
-  'and is also checked against the server, which is the only thing that catches a password wrong in BOTH boxes',
-  /verifyAttendeePassword/.test(registerOnly),
-  'the read-back is only checked client-side',
+  'there is no read-back step — nobody retypes the password they were just given',
+  !/verifyAttendeePassword/.test(registerOnly) &&
+    !/Type your password/.test(registerOnly),
+  'the generated password is still being asked for twice',
 )
 
 check(
-  'changing the password is offered, not imposed',
-  /Would you like to change it to one of your own\?/.test(registerOnly),
-  'there is no offer to change the password',
+  'the flow is three steps, not five',
+  /type RegisterStep = 'details' \| 'password' \| 'done'/.test(code('src/views/AuthViews.tsx')),
+  'the registration flow still has separate reveal, read-back and change screens',
 )
 
 check(
-  'and both answers are real buttons rather than a default',
-  /Keep it/.test(registerOnly) && /Change it/.test(registerOnly),
-  'the choice is not presented',
+  'the guest list is NOT announced on the attendee form',
+  !/Guest list only/.test(registerOnly),
+  'the register page still tells the visitor their SEN is being checked against a list',
 )
 
 report()

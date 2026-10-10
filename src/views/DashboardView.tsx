@@ -59,7 +59,7 @@ export function DashboardView() {
                 <span className="h-[3px] w-12 bg-swiss-accent-text" />
                 01. Attendee Pass
               </p>
-              <h1 className="mt-4 text-6xl font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
+              <h1 className="mt-4 text-[clamp(1.75rem,9vw,3.75rem)] font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
                 Welcome
               </h1>
             </div>

@@ -71,8 +71,20 @@ export function AuthShell({
             </span>
           </div>
 
-          {/* Let the words be the image. tracking-tighter is the system default. */}
-          <h1 className="mt-6 text-6xl font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
+          {/*
+            Let the words be the image. tracking-tighter is the system default.
+
+            The size is FLUID rather than a fixed `text-6xl`. At 60px, "REGISTER" is
+            237px of type, which does not fit the 222px of content box a 270px phone
+            has left after `px-6` — so the heading overflowed its own box and the page
+            scrolled sideways. Nothing about a word that cannot break should be able
+            to push a page sideways.
+
+            A breakpoint would jump the size at a width nobody can feel; `clamp` scales
+            with the viewport, so the heading stays as large as the screen allows and
+            stops exactly at the old 60px from `lg`.
+          */}
+          <h1 className="mt-6 text-[clamp(1.75rem,9vw,3.75rem)] font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
             {title}
           </h1>
 

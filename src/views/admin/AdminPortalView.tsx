@@ -207,7 +207,7 @@ export function AdminPortalView() {
           */}
           <div className="hidden lg:block">
             <SectionLabel index="05.">Admin Portal</SectionLabel>
-            <h1 className="mt-4 text-6xl font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
+            <h1 className="mt-4 text-[clamp(2rem,7vw,3.75rem)] font-black uppercase leading-[0.88] tracking-tighter text-swiss-ink">
               Control
               <br />
               Room

@@ -895,6 +895,35 @@ they reloaded by hand.
 Two copies of one fact is two things that can disagree, and they did. The records poll
 now carries records; the day state poll never stops.
 
+### Two things a request-level test cannot see
+
+Both of these were found by opening a page and reading it.
+
+**Display type that overflows its own box.** The headings were a fixed `text-6xl`. At
+60px, "REGISTER" is 237px of type, and a 270px phone has 222px of content box after
+the padding — so the heading overflowed and the page scrolled sideways. The size is now
+`clamp(1.75rem, 9vw, 3.75rem)`: a breakpoint would jump the size at a width nobody can
+feel, and `clamp` scales with the viewport so the heading is as large as the screen
+allows and stops at the old 60px from `lg`.
+
+It survived two sweeps because the detector was wrong, not the layout being subtle. The
+check was `getBoundingClientRect().right` against the viewport — and the heading's
+**box** fitted. Only its text did not. Anything that overflows inside a box that itself
+fits is invisible to a right-edge check; `scrollWidth > clientWidth` is what finds it.
+
+**A hover state that showed a label twice.** `SlideNavLink` renders the label twice —
+a resting copy and an accent-coloured copy that slides over it on hover — and the
+effect depends on the two sharing one box. The registration page styled that anchor as
+a full-width button with `inline-flex justify-center`, which overrides the anchor's
+display. `justify-center` then centred the in-flow copy at `left: 254px` while the
+absolutely-positioned one stayed pinned to the left edge, so hovering produced the
+label twice at once: accent-coloured on the left, paper-coloured in the middle. Both
+positions were real; neither was right.
+
+Fixed at the root rather than at the call site: the two copies now live inside an inner
+block that no caller can reach with a display utility. The button that triggered it is
+also a plain `Link` now, because a sliding text swap is not what a primary button wants.
+
 ### A refresh must not log anybody out
 
 A failed session probe is **unknown**, not anonymous.
@@ -926,41 +955,46 @@ out of the tab they are standing in, at the exact moment they have just proved t
 know their password, and it is indistinguishable from the portal signing people out by
 itself. `revokeOtherSessions` excludes the caller's own token.
 
-### The password is the portal's, and it is read back
+### The password is the portal's
 
-Registration does not ask for a password. The portal generates one, hands it over, and
-the attendee types it back before they are let through.
+Registration does not ask for a password. The portal generates one, shows it, and
+offers the choice of keeping it or typing their own **on the same screen**.
 
 The old form asked for a password and then made them type it twice, on a phone, at a
 desk, in a queue. A single mistyped character locked them out of their own pass, with
 no self-service recovery — the recovery path is an organiser at a desk, which means
-queueing again. Generated-and-read-back takes the typing off the critical path: there
-is nothing to mistype, because the attendee never chose it.
+queueing again.
+
+**Three screens, not five.** It used to be: details, then the generated password, then
+a read-back, then a question about changing it, then the change form. Four screens to
+reach a pass, for a decision that is really one question with two answers.
+
+The read-back went first, and not because the check was wrong — requiring the two boxes
+to match, then comparing against the stored hash, was a real defence against somebody
+misreading the password and typing the same wrong thing twice. It went because it
+catches a lot of nothing. Nobody mistypes a password they have just been shown and have
+not written down, and the cost was four screens between a student and their pass, at a
+desk, in a queue. Losing the password is recoverable; the desk sets a new one.
+
+What is left is a single screen: the password, large and monospaced, with **Use this
+password** and **Type my own instead** beneath it. Somebody who wants their own types it
+right there. Somebody indifferent is one tap from done.
 
 **The generated shape is dictated by being read aloud** over a noisy room:
 
 | Rule | Why |
 | --- | --- |
 | No `0`/`O`, `1`/`l`/`I` | indistinguishable in most sans-serif faces, and the commonest way a read-back goes wrong |
-| No punctuation but the group dash | every symbol is a thing to name out loud |
+| No punctuation beyond the group dash | every symbol is a thing to name out loud |
 | Lower case only | nothing to distinguish, so nothing to get wrong |
 | Digits `2`–`9` | no look-alikes |
 | Three groups of three | short enough to read one character at a time, and to hold in your head while typing |
 
-31 characters per position, so 31³ ≈ 2.6e13 — about 44 bits. Ample for a credential
+31 characters per position, so 31^3 = 2.6e13 — about 44 bits. Ample for a credential
 whose real lifetime is one weekend, and not worth a longer string that is harder to
 read correctly, which is the failure mode that actually costs somebody their place.
-`randomInt` from `node:crypto`, not `Math.random`, whose internal state can be
-recovered from a handful of outputs and would make every password it ever issued
-predictable.
-
-**The read-back is checked twice, in two different ways.** Requiring the two boxes to
-match each other catches a typo in one of them. It cannot catch a typo in *both* —
-somebody who misreads the generated password and then faithfully types the same wrong
-thing twice passes the client check and cannot log in tomorrow. So the second check
-compares against the stored hash, and it is the only thing that catches that case. A
-mismatch answers `{ matches: false }` rather than erroring: it is the expected result
-of reading something aloud, not a fault.
+`randomInt` from `node:crypto`, not `Math.random`, whose internal state can be recovered
+from a handful of outputs and would make every password it ever issued predictable.
 
 **It is shown once, and only once.** The password comes back in the registration
 response and only its bcrypt hash is ever stored. There is deliberately no route that
@@ -968,16 +1002,15 @@ can return it again — a "resend my password" endpoint would make the portal a
 credential oracle for anyone who knows a name and a phone number. An attendee who loses
 it asks at the desk.
 
-**Changing it is offered, not imposed.** Two buttons and no default: somebody happy
-with the password they were handed should be able to walk past the question in one tap,
-and the surest way to stop them doing that is to put a form in front of them first.
+Typing their own still requires the generated one as `currentPassword`, even though it
+is on screen. That is not a formality: the check establishes that the session belongs
+to whoever just registered, and an attacker holding a stolen session could skip past it.
 
 `password` is still accepted on the register endpoint, and validated identically when
 present. That is not a hole — a supplied password must still pass `passwordProblem`
-exactly as a generated one does — and it keeps the API usable by the test suites,
-which have to register a known password in order to log back in with it. The browser
-form never sends the field, and the response does not echo it as though it had been
-generated.
+exactly as a generated one does — and it keeps the API usable by the test suites, which
+have to register a known password in order to log back in with it. The browser form
+never sends the field, and the response does not echo it as though it had been generated.
 
 ### Reading the guest list back
 
@@ -1349,8 +1382,8 @@ are zeroed explicitly.
 | `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
-| `test:registration` | 36     | yes      | The generated password's shape, the read-back caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
-| `test:live`      | 32          | no       | The live-update wiring itself: both polls, the change check, the write-ordering guard, the retrying probe, and that day state has exactly one home |
+| `test:registration` | 36     | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
+| `test:live`      | 48          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
