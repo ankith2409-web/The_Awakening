@@ -90,6 +90,123 @@ const registerOnly = between(
 
 console.log('\n  Live update wiring\n')
 
+/* -- the UI must not state a fact it does not have ------------------------ */
+
+/*
+  `activeDay` and `totalDays` are both derived with a `?? 1` fallback, so before the
+  event loads they render as "Day 1 of 1" — and the scan panel would assert, to the
+  person at the door, that the event is a one-day event. That line exists so an
+  operator can catch the portal disagreeing with the calendar, so a wrong number on it
+  is worse than no number: an eye catches a figure and believes it.
+
+  Found by opening the admin portal during a sweep and reading the line. It was brief,
+  which is exactly why no test was looking for it.
+*/
+const adminView = code('src/views/admin/AdminPortalView.tsx')
+
+check(
+  'the scan panel knows whether the event has loaded',
+  /dayKnown/.test(adminView) && /dayKnown=\{event !== null\}/.test(adminView),
+  'the panel cannot tell a loaded event from an unloaded one',
+)
+
+check(
+  'and does not print a day count before it knows one',
+  /dayKnown \? \(/.test(adminView) && /Checking the day/.test(adminView),
+  '"Day 1 of 1" is shown while the event is still loading',
+)
+
+check(
+  'the closed-day advice points at the tab that actually has the control',
+  !/Reopen it on the Programme tab/.test(adminView) && /Reopen it on the Event tab/.test(adminView),
+  'the Programme tab was renamed to Event and the copy was not updated',
+)
+
+/* -- one number, from one place ------------------------------------------- */
+
+/*
+  The guest-list header went wrong twice, in opposite directions, which is the tell
+  that there were two sources involved.
+
+  First it read this panel's own fetch while the switch above it read the polled
+  event, and the two disagreed on screen. Then it read the polled event, which is up
+  to five seconds stale after an upload — so immediately after saving four students
+  the header said "No guest list uploaded" directly under a notice saying four had
+  landed.
+
+  The panel now displays its own `getRoster()`, refreshed after every write it makes
+  and whenever the polled count changes. `rosterCount` arrives purely as a re-read
+  trigger and must not appear in any rendered count.
+*/
+const guestPanel = code('src/views/admin/GuestListPanel.tsx')
+const displayed = guestPanel.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ')
+
+check(
+  'the guest-list count comes from the panel\'s own read, not the polled event',
+  /\$\{current\.count\} student/.test(displayed) && !/\$\{rosterCount\}/.test(guestPanel),
+  'a count is being rendered from the polled event, which lags an upload by up to five seconds',
+)
+
+check(
+  'and the polled count is still wired in, as the re-read trigger',
+  /rosterCount: number/.test(guestPanel) && /\}, \[rosterCount\]\)/.test(guestPanel),
+  'the panel no longer refreshes when the list is replaced on another device',
+)
+
+/* -- the site footer reaches every attendee page -------------------------- */
+
+/*
+  THIS ONE EXISTS BECAUSE IT ALREADY FAILED ONCE.
+
+  `LoginView` lost its `showSiteFooter` when a bad file splice was reverted, and it
+  shipped. Nothing caught it: the automated suites check copy, links and layout, and a
+  missing footer breaks none of them. It was found by opening every page at three phone
+  widths and asking "is the footer there", which is not a thing any test was doing.
+
+  So it is a test now. One prop, on the wrong view, is exactly the kind of regression
+  that only shows up if somebody looks at the page.
+*/
+const footerViews = [
+  ['LoginView', 'src/views/AuthViews.tsx', 'export function LoginView'],
+  ['RegisterView', 'src/views/AuthViews.tsx', 'export function RegisterView'],
+]
+
+for (const [label, path, from] of footerViews) {
+  const body = between(code(path), from, null)
+  check(
+    `${label} renders the site footer`,
+    /<AuthShell[\s\S]*?showSiteFooter[\s\S]*?>/.test(body),
+    `${label} does not pass showSiteFooter, so its page has no Hosted by / Connect block`,
+  )
+}
+
+check(
+  'the attendee dashboard renders the site footer',
+  /<SiteFooter\s*\/>/.test(code('src/views/DashboardView.tsx')),
+  'DashboardView has no footer',
+)
+
+check(
+  'the landing page renders the site footer',
+  /<SiteFooter\s*\/>/.test(code('src/views/LandingView.tsx')),
+  'LandingView has no footer',
+)
+
+check(
+  'the auth shell renders it only when asked',
+  /\{showSiteFooter \? <SiteFooter \/> : null\}/.test(code('src/components/AuthShell.tsx')) &&
+    /showSiteFooter = false/.test(code('src/components/AuthShell.tsx')),
+  'the footer is unconditional, which would put it on the shared admin sign-in too',
+)
+
+check(
+  'the admin sign-in does NOT ask for it',
+  !between(code('src/views/admin/AdminLoginView.tsx'), '<AuthShell', null).includes(
+    'showSiteFooter',
+  ),
+  'the public Hosted by / Connect block is on the staff door',
+)
+
 /* -- the attendee's event poll ------------------------------------------- */
 
 check(

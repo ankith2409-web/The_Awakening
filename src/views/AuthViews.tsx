@@ -147,6 +147,7 @@ export function LoginView() {
       eyebrow="01. Access"
       title="Log in"
       description="Enter the name and mobile number you registered with. Your entry pass is issued the moment you log in."
+      showSiteFooter
       footer={
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">

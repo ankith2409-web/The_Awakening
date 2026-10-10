@@ -34,13 +34,17 @@ export function GuestListPanel({
   /** The live registration mode, so the upload can set it in the same action. */
   mode: RegistrationMode
   /**
-   * The live count, straight off the polled event.
+   * The live count from the polled event, used ONLY as a re-read trigger.
    *
-   * Passed in rather than read from this panel's own fetch, because the switch above
-   * reads the same number from `event` and the two would otherwise disagree on screen:
-   * the header saying "4 students on the list" while this panel said "0". Two copies
-   * of one fact, updating at different moments — the failure this codebase keeps
-   * fixing.
+   * Deliberately not displayed. It reads as the obvious thing to show, and it is
+   * wrong: it is up to five seconds stale after an upload, so the header said "No guest
+   * list uploaded" directly underneath a notice saying four students had just landed.
+   * The other way round was also wrong — the switch above reads this same number, and
+   * two copies of one fact on one screen will eventually disagree.
+   *
+   * So the panel displays its own `getRoster()`, which is refreshed immediately after
+   * every write it makes AND whenever this value changes, and nothing else is shown.
+   * One number, from one place, fresh in both directions.
    */
   rosterCount: number
   onModeChange: (mode: RegistrationMode) => void
@@ -246,11 +250,11 @@ export function GuestListPanel({
         */}
         <div className="border-l-4 border-swiss-ink bg-swiss-muted p-4">
           <p className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
-            {current === null && rosterCount === 0
+            {current === null
               ? 'Checking…'
-              : rosterCount === 0
+              : current.count === 0
                 ? 'No guest list uploaded'
-                : `${rosterCount} student${rosterCount === 1 ? '' : 's'} on the list`}
+                : `${current.count} student${current.count === 1 ? '' : 's'} on the list`}
           </p>
 
           {/*
@@ -258,7 +262,7 @@ export function GuestListPanel({
             is the difference between an organiser understanding why registration is
             still open and wondering whether their upload silently failed.
           */}
-          {rosterCount > 0 && mode !== 'restricted' ? (
+          {current !== null && current.count > 0 && mode !== 'restricted' ? (
             <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
               The list is uploaded but registration is not set to use it. Choose
               &ldquo;Guest list&rdquo; above to close registration to everyone not on
@@ -445,7 +449,7 @@ export function GuestListPanel({
           can find either kind of problem, and it says how many rows survived the
           filter rather than leaving an empty-looking list ambiguous.
         */}
-        {rosterCount > 0 ? (
+        {current !== null && current.count > 0 ? (
           <div className="border-t-2 border-swiss-ink pt-4">
             <Button
               variant="secondary"
@@ -453,7 +457,7 @@ export function GuestListPanel({
               disabled={busy}
               onClick={() => void toggleRows()}
             >
-              {rowsOpen ? 'Hide the list' : `Check all ${rosterCount} names`}
+              {rowsOpen ? 'Hide the list' : `Check all ${current.count} names`}
             </Button>
 
             {rowsOpen ? (
@@ -525,7 +529,7 @@ export function GuestListPanel({
 
         {/* -- clear --------------------------------------------------------- */}
 
-        {rosterCount > 0 ? (
+        {current !== null && current.count > 0 ? (
           <div className="border-t-2 border-swiss-ink pt-4">
             <Button variant="secondary" size="md" disabled={busy} onClick={() => void clear()}>
               Clear the list

@@ -310,6 +310,7 @@ export function AdminPortalView() {
               viewingDay={selectedDay}
               isOwner={isOwner}
               activeDayLocked={activeDayLocked}
+              dayKnown={event !== null}
               onScan={scanAttendance}
               /*
                 Follow the record, not the operator's earlier choice.
@@ -595,6 +596,7 @@ function ScanPanel({
   viewingDay,
   isOwner,
   activeDayLocked,
+  dayKnown,
   onScan,
   onRecorded,
   onDismissScan,
@@ -604,6 +606,20 @@ function ScanPanel({
   activeDay: number
   totalDays: number
   overridden: boolean
+  /**
+   * Whether the event has actually loaded.
+   *
+   * `activeDay` and `totalDays` are both derived with a `?? 1` fallback, so before
+   * the event lands they read "Day 1 of 1" — and this panel would assert, to the
+   * person standing at the door, that the event is a one-day event. That is the one
+   * line on this screen whose entire job is to let an operator catch the portal
+   * disagreeing with the calendar, so a wrong number here is worse than no number:
+   * an eye catches a figure and believes it.
+   *
+   * Blank until it is known. The scanner itself stays usable throughout, because the
+   * day a scan records against is decided by the server and is never taken from here.
+   */
+  dayKnown: boolean
   /** Which day the attendance log and the export are currently showing. */
   viewingDay: number
   /** Owner-only: only an owner can change which day scans record against. */
@@ -693,11 +709,22 @@ function ScanPanel({
           Recording for
         </span>
         <span className="text-xl font-black uppercase leading-none tracking-tight text-swiss-ink">
-          Day {activeDay}
-          <span className="text-sm text-content-muted">
-            {' '}
-            of {totalDays}
-          </span>
+          {dayKnown ? (
+            <>
+              Day {activeDay}
+              <span className="text-sm text-content-muted">
+                {' '}
+                of {totalDays}
+              </span>
+            </>
+          ) : (
+            /*
+              Not a number. `?? 1` on both fields makes an unloaded event look like a
+              confident one-day event, and this is the line an operator reads to check
+              the portal agrees with the calendar.
+            */
+            <span className="text-content-muted">Checking the day…</span>
+          )}
         </span>
         {overridden ? (
           <span className="border-2 border-swiss-accent-text px-2 py-0.5 text-2xs font-bold uppercase tracking-[0.15em] text-swiss-accent-text">
@@ -733,7 +760,7 @@ function ScanPanel({
             its SEN list has gone out. Existing records are untouched — the log and
             the export still show the day in full.
             {isOwner
-              ? ' Reopen it on the Programme tab if this was a mistake.'
+              ? ' Reopen it on the Event tab if this was a mistake.'
               : ' Ask an organiser to reopen it if people are still arriving.'}
           </p>
         </div>
