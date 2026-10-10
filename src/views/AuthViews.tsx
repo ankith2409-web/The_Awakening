@@ -22,7 +22,7 @@ const LOGIN_INITIAL: Record<LoginFields, string> = {
 /**
  * Attendee sign-in: name + phone + password.
  *
- * Validation runs on blur and submit, never per keystroke ΓÇö flagging an
+ * Validation runs on blur and submit, never per keystroke — flagging an
  * incomplete phone number while the user is still typing it is hostile.
  */
 export function LoginView() {
@@ -39,7 +39,7 @@ export function LoginView() {
 
     Chrome stores values against fields it recognises by `autocomplete`, `name`
     and position. "sen" is not a token it knows, so the value captured during
-    registration gets replayed into this page's `tel-national` field ΓÇö the
+    registration gets replayed into this page's `tel-national` field — the
     symptom being a code like A866175000012 sitting in the phone number box.
 
     Fixing it at source (the register field) reduces how often Chrome captures
@@ -66,7 +66,7 @@ export function LoginView() {
       Clear only what could never be a phone number: a value containing letters.
 
       An earlier version tested `isValidIndianMobile` instead, which also wiped
-      a half-typed "98765" when the attendee clicked away and came back ΓÇö
+      a half-typed "98765" when the attendee clicked away and came back —
       destroying real input to fix a cosmetic problem. Letters are the precise
       signal: A866175000012 and 22CS1RE0123 both contain them and are always wrong
       in this field, while 9876543210, "98765 43210" and a partial "98765" never
@@ -79,7 +79,7 @@ export function LoginView() {
 
       Chrome autofill writes straight to the DOM, so React's value tracker still
       believes the field holds ''. Setting state to '' is then a no-op as far as
-      React is concerned ΓÇö it sees no change and never rewrites the node, leaving
+      React is concerned — it sees no change and never rewrites the node, leaving
       the SEN sitting in the box. Going through the native setter updates the
       tracker too, so the two agree and the field genuinely empties.
     */
@@ -155,7 +155,7 @@ export function LoginView() {
             First time here?
           </p>
           <SlideNavLink to="/register" className="border-b-2 border-swiss-ink pb-1">
-            Register ΓåÆ
+            Register →
           </SlideNavLink>
         </div>
       }
@@ -225,8 +225,8 @@ export function LoginView() {
 
         {/*
           There is no self-service password reset, and this is where that is
-          explained. It used to be one, and it was unverified ΓÇö no OTP, no email,
-          no security question ΓÇö so knowing a phone number was enough to take over
+          explained. It used to be one, and it was unverified — no OTP, no email,
+          no security question — so knowing a phone number was enough to take over
           that account and walk in with the attendee's pass. Recovery is now by
           email to the organiser, who sets a new one by hand.
 
@@ -242,7 +242,7 @@ export function LoginView() {
             <span className="font-bold uppercase tracking-[0.2em] text-swiss-ink">
               Demo
             </span>{' '}
-            ΓÇö <span className="font-mono">Demo Attendee</span> /{' '}
+            — <span className="font-mono">Demo Attendee</span> /{' '}
             <span className="font-mono">9876543210</span> /{' '}
             <span className="font-mono">grid2026</span>
           </p>

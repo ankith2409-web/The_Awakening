@@ -260,6 +260,77 @@ check(
   'at least one component still carries its own copy of the address',
 )
 
+/* -- no mojibake: every character here is one we meant to type ------------- */
+
+/*
+  `src/views/AuthViews.tsx` shipped seven em dashes and one arrow as `GCo`, `GaAE` and
+  the rest — UTF-8 bytes read through CP1257, the Windows Baltic codepage. On the login
+  page that arrow is the "Register" link, so the portal rendered "REGISTER GaAE" to
+  everybody, live, and every test passed: no suite looks at what a glyph actually is.
+
+  The corruption is structural rather than accidental, which is what makes it worth a
+  test. Decoding UTF-8 through any single-byte codepage always lands in U+0080..U+024F,
+  because that band is what a byte-oriented codepage has for characters the source never
+  contained. So the band is the tell. Anything in it that is not one we deliberately
+  typed is a decoding accident, and it is found by asking what the character is rather
+  than by searching for the specific mojibake it became — a search for `GaAE` would
+  have missed `GCo` sitting three lines above it, and would miss the next codepage
+  someone uses.
+
+  Three characters in `src/` and `server/` are genuinely in that band, and each is
+  listed with why. Everything else fails.
+
+  The confusable-name corpus in `server/_lib/identifiers.ts` is outside this check by
+  construction: its Greek, Cyrillic, Arabic, Indic and Han characters are all above
+  U+024F, because they are real test data for the no-emoji rule, not corruption.
+*/
+const LATIN_BAND_ALLOWED = new Map([
+  ['©', 'copyright, in the site footer'],
+  ['·', 'the middot separator in "FETCH AI · GDG"'],
+  ['é', 'an accented example name in the identifiers comment'],
+])
+
+const bandOffenders = []
+
+for (const file of execFileSync('git', ['ls-files', 'src', 'server'], {
+  encoding: 'utf8',
+})
+  .split('\n')
+  .filter(Boolean)) {
+  const seen = new Set()
+  for (const ch of readFileSync(file, 'utf8')) {
+    const cp = ch.codePointAt(0)
+    if (cp < 0x80 || cp > 0x24f) continue
+    if (LATIN_BAND_ALLOWED.has(ch)) continue
+    const key = `${file}: ${ch} U+${cp.toString(16).toUpperCase().padStart(4, '0')}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      bandOffenders.push(key)
+    }
+  }
+}
+
+check(
+  'no character in src/ or server/ is the residue of a decoding accident',
+  bandOffenders.length === 0,
+  bandOffenders.length === 0
+    ? 'none found'
+    : `${bandOffenders.length} suspect character(s): ${bandOffenders.slice(0, 6).join(', ')}${bandOffenders.length > 6 ? ', ...' : ''}`,
+)
+
+check(
+  'and the allowlist has not grown to hide one',
+  LATIN_BAND_ALLOWED.size === 3,
+  `the allowlist holds ${LATIN_BAND_ALLOWED.size} entries; every addition needs a reason and a review`,
+)
+
+check(
+  'the link the corruption landed on is a real arrow again',
+  /to="\/register"[\s\S]{0,200}>/.test(code('src/views/AuthViews.tsx')) &&
+    code('src/views/AuthViews.tsx').includes('Register →'),
+  'the Register link on the login page is not showing a real arrow',
+)
+
 /* -- the site footer reaches every attendee page -------------------------- */
 
 /*

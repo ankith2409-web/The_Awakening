@@ -895,6 +895,41 @@ they reloaded by hand.
 Two copies of one fact is two things that can disagree, and they did. The records poll
 now carries records; the day state poll never stops.
 
+### The encoding accident that shipped to production
+
+The login page rendered **REGISTER `ΓåÆ`** to everybody, live, for a commit. It was the
+`Register →` link: the arrow's UTF-8 bytes (`E2 86 92`) had been read through **CP1257**,
+the Windows Baltic codepage, and become three characters. Seven em dashes in the same
+file were mangled the same way.
+
+Two things made it worth writing down.
+
+**Nothing caught it.** Every suite passed, because no test looks at what a glyph actually
+*is*. The tests assert structure — that the footer reaches the page, that the link says
+"Register". `ΓåÆ` satisfies all of them.
+
+**The corruption is structural, not a typo.** Decoding UTF-8 through any single-byte
+codepage always lands in **U+0080–U+024F**, because that band is exactly what a
+byte-oriented codepage has for characters the source never contained. So the band is the
+tell, and the test asks what a character is rather than searching for the specific
+mojibake it became — a search for `ΓåÆ` would have missed `ΓÇö` three lines above it, and
+would miss entirely the next codepage somebody reaches for.
+
+`test:live` now walks every tracked file in `src/` and `server/`, and fails on any
+character in that band that is not one of three that are genuinely ours — `©` in the
+footer, `·` in "FETCH AI · GDG", and an `é` in an identifiers comment. The allowlist is
+itself asserted to still hold exactly three entries, so it cannot quietly grow to hide a
+new one.
+
+The confusable-name corpus in `server/_lib/identifiers.ts` sits outside this by
+construction: its Greek, Cyrillic, Arabic, Indic and Han characters are all above U+024F,
+because they are real test data for the no-emoji rule rather than corruption.
+
+The repair was mechanical — every run of the five corrupt characters mapped back to the
+bytes it came from and decoded as UTF-8 with `fatal: true`, so an unmappable run would
+throw rather than quietly become a replacement character. Eight lines changed: seven
+comments and one link.
+
 ### Two things a request-level test cannot see
 
 Both of these were found by opening a page and reading it.
@@ -1398,7 +1433,7 @@ are zeroed explicitly.
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:registration` | 36     | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
-| `test:live`      | 50          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
+| `test:live`      | 53          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, no character that is the residue of a decoding accident, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
