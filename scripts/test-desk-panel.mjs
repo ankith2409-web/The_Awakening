@@ -293,8 +293,17 @@ const passwordHelp = readCode('src/components/PasswordHelp.tsx')
 const contact = readCode('src/domain/contact.ts')
 
 check(
-  'the password help names the organiser address',
-  passwordHelp.includes('CONTACT_EMAIL') && contact.includes("CONTACT_EMAIL = 'ankith2409@gmail.com'"),
+  /*
+    Deliberately asserts the SHAPE, not a particular address.
+
+    This used to pin the literal, which meant changing the contact address broke a
+    test that was never about the address at all — and, worse, invited the fix of
+    hardcoding the new one in whatever failed. It only needs to know that the value
+    lives in one place and is a real mailto target; which inbox is a decision, not a
+    spec.
+  */
+  'the password help names the organiser address, from the one place it is declared',
+  passwordHelp.includes('CONTACT_EMAIL') && /CONTACT_EMAIL = '[^']+@[^']+'/.test(contact),
 )
 
 check(
@@ -322,17 +331,23 @@ check(
 /*
   One address, one home.
 
-  It is now used in two places — the footer contact link and this help — so a
-  second literal would be how one of them ends up pointing at an inbox nobody
+  It is now used in five places — the footer contact link, this help, the guest-list
+  refusal, the registration-closed refusal, and the note on a closed attendance day —
+  so a second literal would be how one of them ends up pointing at an inbox nobody
   reads. On the password help that failure is invisible until somebody is locked
   out of their own event pass.
+
+  It HAD drifted: the footer and this help used the constant while three pieces of
+  copy each carried their own literal, so changing the address meant finding all four
+  by hand. `test:live` now asserts there is exactly one address in `src/`.
 */
 check(
   'the footer reads the same address from the same place',
   readCode('src/components/SiteFooter.tsx').includes(
     "import { CONTACT_EMAIL } from '@/domain/contact'",
   ) &&
-    !readCode('src/components/SiteFooter.tsx').includes("= 'ankith2409@gmail.com'"),
+    // No literal email of any kind, rather than "not the old one".
+    !/@[a-z0-9.-]+\.[a-z]{2,}/i.test(readCode('src/components/SiteFooter.tsx')),
 )
 
 /* -- the People panel is owner-only ------------------------------------------ */

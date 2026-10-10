@@ -289,15 +289,43 @@ check(
   lives on the client and is never on the wire.
 */
 const portalTypes = readCode('src/domain/types.ts')
-check(
-  'the not-on-list message names the contact address',
-  /not_on_list:[\s\S]{0,220}@/.test(portalTypes),
-  'the refusal would leave a student with nowhere to go',
-)
+const contact = readCode('src/domain/contact.ts')
+
+/*
+  Both refusals that strand somebody outside the portal have to name somebody.
+
+  This used to look for a literal `@` in the source. That was checking the SHAPE of
+  the string rather than the guarantee: the address was spelled out three times over,
+  which is exactly how `contact.ts` came to exist, and how the three copies then drifted
+  from it and from each other. The copy now interpolates the one constant.
+
+  So the assertion is the pair of them: the message reads the constant, and the constant
+  is a real address. Between this and `test:live`'s "exactly one address in `src/`", the
+  rendered string is an address without either test pinning WHICH inbox — because which
+  inbox is a decision, and this must not break when it changes.
+*/
+const refusals = ['not_on_list', 'registration_closed']
+
+for (const code of refusals) {
+  check(
+    `the ${code.replace(/_/g, '-')} message names the contact address`,
+    new RegExp(`${code}:[\\s\\S]{0,220}\\$\\{CONTACT_EMAIL\\}`).test(portalTypes) &&
+      /CONTACT_EMAIL = '[^']+@[^']+'/g.test(contact),
+    'the refusal would leave a student with nowhere to go',
+  )
+}
+
 check(
   'the not-on-list message says the list exists, rather than denying registration',
-  /not_on_list:[\s\S]{0,120}guest list/i.test(portalTypes),
+  /not_on_list:[\s\S]{0,220}guest list/i.test(portalTypes),
   'the copy must distinguish "not on the list" from "not registered"',
+)
+
+check(
+  'and the two refusals stay distinct — a shut door is not a missing name',
+  /not_on_list:[\s\S]{0,400}registration_closed:/.test(portalTypes) &&
+    /registration_closed:[\s\S]{0,200}Registration is closed/i.test(portalTypes),
+  'telling somebody they are missing from a list when nobody may register sends them to email about the wrong thing',
 )
 
 /* -- 9. touch targets are unharmed ------------------------------------------ */
@@ -366,13 +394,23 @@ for (const [label, needle] of [
   literals is how one of them ends up pointing at an inbox nobody reads. The check
   is now: the footer builds its mailto from the shared constant, and the constant
   really is the organiser's address.
-*/
-const contact = readCode('src/domain/contact.ts')
 
+  `contact` is read at the top of this file, beside `portalTypes`, because the two
+  refusals above need it too and a `const` declared further down would be in its
+  temporal dead zone by the time they ran.
+*/
 check(
+  /*
+    Asserts the SHAPE, not a particular inbox.
+
+    This pinned the literal address, which meant changing the contact address failed a
+    test that was never about the contact address — and invited the wrong fix, which
+    is pasting the new address into whatever broke. What matters is that the mailto is
+    built from the shared constant and that the constant is a real address.
+  */
   'contact us opens the organiser mail client',
   /mailto:\$\{CONTACT_EMAIL\}/.test(footer) &&
-    /CONTACT_EMAIL = 'ankith2409@gmail\.com'/.test(contact),
+    /CONTACT_EMAIL = '[^']+@[^']+'/.test(contact),
   'the mailto is not wired to the organiser address',
 )
 check(

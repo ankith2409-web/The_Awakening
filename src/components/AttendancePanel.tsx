@@ -1,4 +1,5 @@
 import type { CheckIn, EventInfo, MyAttendance } from '@/domain/types'
+import { CONTACT_EMAIL } from '@/domain/contact'
 import { Skeleton } from './Skeleton'
 
 /**
@@ -164,7 +165,7 @@ function DayRow({
             */
             <p className="mt-2 text-2xs font-medium leading-relaxed text-content-muted">
               {missedAndClosed
-                ? `Attendance for day ${day} is closed, so it can no longer be marked. Email ankith2409@gmail.com if you think this is a mistake.`
+                ? `Attendance for day ${day} is closed, so it can no longer be marked. Email ${CONTACT_EMAIL} if you think this is a mistake.`
                 : `Show your pass at the gate on day ${day}. This updates on its own.`}
             </p>
           ) : (

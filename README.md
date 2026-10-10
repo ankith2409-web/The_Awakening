@@ -1088,10 +1088,25 @@ than a paragraph inside the form. Two reasons, both from what it has to do: a
 locked-out path should not read as part of the sign-up flow, and a `mailto:` buried
 in a run of label text is easy to miss and easy to make unclickable.
 
-`src/domain/contact.ts` holds the address once. The footer contact link and the
-password help both read it, because two literals of the same address is how one of
-them ends up pointing at an inbox nobody reads — and on the password help that
-failure is invisible until somebody is locked out of their own event pass.
+**One address, in one file.** `src/domain/contact.ts` holds it, and **five** places
+read it: the footer contact link, the password help, the guest-list refusal, the
+registration-closed refusal, and the note on an attendance day that has been closed.
+
+Five consumers of one value is not decoration — it is where the drift comes from. The
+file's own comment named *two* components and said the address "lives here rather than
+being declared in either component", which was already untrue: three pieces of copy in
+`types.ts` and `AttendancePanel.tsx` each carried their own literal. Changing the
+address meant finding all four by hand, and the test suite did not help, because two of
+its assertions pinned the literal address. Changing it failed tests that were never
+about the contact address and invited the wrong fix — pasting the new address into
+whatever broke.
+
+It is one literal now, and `test:live` asserts that exactly: any email address anywhere
+in `src/` is a failure unless it is the declaration itself. The suite deliberately does
+not pin *which* address, because which inbox is a decision rather than a spec, while
+"there is only one of them" is the invariant worth protecting. The two tests that used
+to name the old address now assert the shape — that the copy reads the constant, and
+that the constant is a real address.
 
 | Property | Why |
 | --- | --- |
@@ -1383,11 +1398,11 @@ are zeroed explicitly.
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:registration` | 36     | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
-| `test:live`      | 48          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
+| `test:live`      | 50          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
-| `test:landing`  | 89          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing |
+| `test:landing`  | 95          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing; both out-of-portal refusals name a contact and stay distinct |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |

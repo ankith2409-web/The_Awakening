@@ -16,6 +16,7 @@
  * No database, no server.
  */
 
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 let passed = 0
@@ -63,7 +64,6 @@ const probe = code('src/auth/probeSession.ts')
 const panel = code('src/components/AttendancePanel.tsx')
 const route = code('server/[...route].ts')
 const auth = code('server/_lib/auth.ts')
-const registerView = code('src/views/AuthViews.tsx')
 const types = code('src/domain/types.ts')
 
 /**
@@ -210,6 +210,54 @@ check(
   !/bg-swiss-ink[\s\S]{0,80}SlideNavLink/.test(registerOnly) &&
     /<Link[\s\S]{0,120}to="\/login"/.test(registerOnly),
   'the full-width Log in button is still a SlideNavLink',
+)
+
+/* -- one contact address, in one file -------------------------------------- */
+
+/*
+  The contact address had already drifted once. `src/domain/contact.ts` exists
+  precisely to stop that, and its own comment says the value "lives here rather than
+  being declared in either component" — naming two components, when by then three
+  pieces of copy in `types.ts` and `AttendancePanel.tsx` each carried their own
+  literal. Changing the address meant finding all four by hand.
+
+  It is one literal in one file now, and this asserts exactly that: any email address
+  anywhere in `src/` is a failure unless it is the declaration itself.
+
+  Deliberately does not pin WHICH address. A test that hardcodes an inbox breaks when
+  the inbox changes, and invites the wrong fix — pasting the new address into whatever
+  failed. Which inbox is a decision, not a spec; that there is only one of them is the
+  invariant worth keeping.
+*/
+const srcFiles = execFileSync('git', ['ls-files', 'src'], { encoding: 'utf8' })
+  .split('\n')
+  .filter(Boolean)
+
+const literals = []
+for (const file of srcFiles) {
+  const source = read(file)
+  // Strip comments, so prose about an address is not mistaken for a copy of one.
+  const codeOnly = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+  for (const match of codeOnly.matchAll(/['"`][^'"`\n]*@[a-z0-9.-]+\.[a-z]{2,}[^'"`\n]*['"`]/gi)) {
+    literals.push(`${file}: ${match[0]}`)
+  }
+}
+
+check(
+  'the contact address is declared exactly once in src/',
+  literals.length === 1 && literals[0].startsWith('src/domain/contact.ts'),
+  literals.length === 0
+    ? 'no address found at all — has CONTACT_EMAIL been removed?'
+    : `${literals.length} literals: ${literals.join(' | ')}`,
+)
+
+check(
+  'and every other place reads it rather than repeating it',
+  code('src/domain/types.ts').includes('${CONTACT_EMAIL}') &&
+    code('src/components/AttendancePanel.tsx').includes('${CONTACT_EMAIL}') &&
+    code('src/components/SiteFooter.tsx').includes('CONTACT_EMAIL') &&
+    code('src/components/PasswordHelp.tsx').includes('CONTACT_EMAIL'),
+  'at least one component still carries its own copy of the address',
 )
 
 /* -- the site footer reaches every attendee page -------------------------- */

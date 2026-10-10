@@ -10,6 +10,8 @@
  * satisfy these shapes; see `src/api/dataset.ts` for the swap point.
  */
 
+import { CONTACT_EMAIL } from './contact'
+
 /* ------------------------------------------------------------------ identity */
 
 /**
@@ -408,7 +410,7 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
     turns a dead end into an email.
   */
   not_on_list:
-    'That SEN is not on the guest list for this event. Email ankith2409@gmail.com and it can be added.',
+    `That SEN is not on the guest list for this event. Email ${CONTACT_EMAIL} and it can be added.`,
   /*
     Distinct from `not_on_list`, and it has to be.
 
@@ -418,7 +420,7 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
     and still says who can change it.
   */
   registration_closed:
-    'Registration is closed for this event. Email ankith2409@gmail.com if you need a place.',
+    `Registration is closed for this event. Email ${CONTACT_EMAIL} if you need a place.`,
   not_found: 'We could not find that record.',
   forbidden: 'You do not have access to that.',
   rate_limited: 'Too many attempts. Wait a moment and try again.',
