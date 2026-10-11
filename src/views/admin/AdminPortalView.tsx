@@ -11,6 +11,7 @@ import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
 import { GuestListPanel } from './GuestListPanel'
 import { RegistrationSwitch } from './RegistrationSwitch'
+import { AnnouncementPanel } from './AnnouncementPanel'
 import { AddAttendeePanel } from './AddAttendeePanel'
 import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
 
@@ -404,14 +405,25 @@ export function AdminPortalView() {
             {activeTab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
 
             {activeTab === 'event' ? (
-              <ProgrammePanel
-                event={event}
-                loading={loadingData}
-                onPhaseChange={(phase) => void setEventPhase(phase)}
-                onDayChange={(day) => void updateEventDay(day)}
-              onLockedDaysChange={(days) => void setLockedDays(days)}
-                onStatusChange={(id, status) => void setAgendaStatus(id, status)}
-              />
+              <>
+                <ProgrammePanel
+                  event={event}
+                  loading={loadingData}
+                  onPhaseChange={(phase) => void setEventPhase(phase)}
+                  onDayChange={(day) => void updateEventDay(day)}
+                  onLockedDaysChange={(days) => void setLockedDays(days)}
+                  onStatusChange={(id, status) => void setAgendaStatus(id, status)}
+                />
+
+                {/*
+                  Announcements live here rather than on People, because they are
+                  event-wide rather than about any one attendee, and the Event tab is
+                  already owner-only — which is exactly the audience that may send
+                  one. `gate` never sees it and the server refuses it independently,
+                  so this is presentation, not the control.
+                */}
+                <AnnouncementPanel />
+              </>
             ) : null}
           </div>
 

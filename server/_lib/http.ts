@@ -24,6 +24,15 @@ export type ApiErrorCode =
   | 'registration_closed'
   | 'not_found'
   | 'forbidden'
+  /*
+    Kept identical to the client's `PortalErrorCode`. They are two lists of the same
+    vocabulary, and a code added to one and not the other is a code the client cannot
+    render — it falls back to showing the machine code to an attendee. `test:errors`
+    compares them, which is the only reason that has not already bitten.
+  */
+  | 'invalid_subscription'
+  | 'push_not_configured'
+  | 'push_too_long'
   | 'rate_limited'
   | 'network'
   | 'unknown'

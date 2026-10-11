@@ -103,6 +103,63 @@ create table if not exists sessions (
 create index if not exists sessions_expiry_idx on sessions (expires_at);
 
 -- -----------------------------------------------------------------------------
+-- Push subscriptions — one row per browser, per device.
+--
+-- The endpoint IS the identity, and that is not a shortcut. It is the only handle the
+-- push service gives us: the browser generated it, it is globally unique, and it is
+-- what a send must be addressed to. A subscriber_id column would be a second source
+-- of truth for the same thing, and the two would disagree the first time somebody
+-- subscribes on a second device.
+--
+-- p256dh and auth are the browser's public keys for this endpoint. They are public by
+-- construction — the browser hands them out with the endpoint and they are half of the
+-- address, not half of a secret. Nothing here can impersonate the browser: sending is
+-- possible only with the VAPID private key, which never leaves the server.
+--
+-- Subscriptions are not rows we control the lifetime of. Browsers expire them, users
+-- clear site data, devices get wiped. So 404/410 from the push service means "this
+-- endpoint is dead" and the only correct action is to delete it: keeping it would make
+-- every future broadcast slower and no more reliable.
+
+create table if not exists push_subscriptions (
+  endpoint    text        primary key,
+  p256dh      text        not null,
+  auth        text        not null,
+  user_agent  text,
+  created_at  timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create index if not exists push_subscriptions_seen_idx on push_subscriptions (last_seen_at);
+
+-- -----------------------------------------------------------------------------
+-- Announcements — what the owner sent, and to whom it was aimed.
+--
+-- Kept even though the notification itself is delivered by the push service and lives
+-- nowhere we can read. Two reasons, and the second is the important one.
+--
+-- First, the owner needs to know what they already sent. On the day, "did that go
+-- out?" is the first question asked, and an admin panel with no history cannot answer
+-- it.
+--
+-- Second, push is permission-based, so it is a best-effort channel by construction: a
+-- meaningful share of attendees will decline, dismiss the prompt, or be on a browser
+-- that cannot do it at all. Without a record, those people are simply never told
+-- anything, and the owner has no way to know that. Carrying the newest announcement on
+-- `/event` means the dashboard can show it on arrival regardless — so a denied
+-- permission costs reach, not the message.
+
+create table if not exists announcements (
+  id         text        primary key,
+  title      text        not null,
+  body       text        not null,
+  sent_by    uuid        references admins (id),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists announcements_created_idx on announcements (created_at desc);
+
+-- -----------------------------------------------------------------------------
 -- Attendance — APPEND ONLY, AND PER DAY.
 --
 -- There is deliberately no updated_at and no status column. A record exists

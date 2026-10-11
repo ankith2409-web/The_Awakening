@@ -48,8 +48,27 @@ node dev-api.mjs            # serves the serverless function on :3000
 | `TICKET_SECRET`     | server | ≥16 chars, unique per deployment; signs the QR payload   |
 | `ADMIN_USERNAME`    | setup  | Read only by `npm run db:setup`                          |
 | `ADMIN_PASSWORD`    | setup  | Read only by `npm run db:setup`; stored only as a hash   |
+| `VAPID_PUBLIC_KEY`  | server | Push. Public by design — handed to the browser            |
+| `VAPID_PRIVATE_KEY` | server | Push. **Signs every send. Rotate only if you must**       |
+| `VAPID_SUBJECT`     | server | Push. `mailto:` for the push service                      |
 | `VITE_USE_MOCK_API` | client | `false` for the real backend                              |
 | `VITE_API_BASE_URL` | client | `/api` — same origin, so no CORS setup is required       |
+
+Generate the VAPID pair once with:
+
+```
+npx web-push generate-vapid-keys --json
+```
+
+`VAPID_PRIVATE_KEY` is the most sensitive value in this project. It is what makes a
+send possible and what stops anyone else addressing the event's subscribers, so it
+belongs in the deployment's environment and nowhere else — never in `.env.example`,
+never in a commit, never in a screenshot. Rotating it invalidates every subscription
+already held, and every attendee would have to turn notifications on again.
+
+The panel says **not configured** and hides the toggle entirely when the keys are
+absent, rather than accepting a message and silently delivering nothing. That is the one
+failure that could not be noticed and could not be fixed in time.
 
 Admin credentials are never committed. `npm run db:setup` creates the admin row
 from `ADMIN_USERNAME` / `ADMIN_PASSWORD`; only the bcrypt hash is stored.
@@ -895,6 +914,102 @@ they reloaded by hand.
 Two copies of one fact is two things that can disagree, and they did. The records poll
 now carries records; the day state poll never stops.
 
+### The owner can tell everybody something
+
+An announcement reaches an attendee on their phone, whether or not they have the portal
+open — a phone face down in a queue, a laptop in a backpack, a tab closed an hour ago.
+It is the channel that matters on the day, and an in-page banner is not it.
+
+**Why push and not email.** Every other way of messaging attendees needs something this
+deployment does not have: an email provider and a verified sending domain, or a telecom
+account and a DLT-registered sender ID. Push needs neither. VAPID keys are
+*self-generated* — a P-256 pair created once and stored in the environment — and
+delivery is handled by the browser vendor's push service, which Chrome already talks to
+for every site. It is the one channel that runs entirely on infrastructure that already
+exists, which is the only reason it could be built with three days to go.
+
+| | |
+| --- | --- |
+| `VAPID_PUBLIC_KEY` | Handed to the browser. Public by design — an address, not a credential |
+| `VAPID_PRIVATE_KEY` | Signs every send. **Never leaves the server**, and is not in the repo |
+| `VAPID_SUBJECT` | A `mailto:` for the push service to contact |
+
+Rotating the private key invalidates every subscription held, so every attendee would
+have to opt in again. Generate once, keep it.
+
+**Three routes, and not one more.** `GET /push/key` is unauthenticated — the browser
+needs the key before anybody logs in, and a deployment without one should show no toggle
+rather than one that fails when pressed. `POST /attendee/push` and its unsubscribe need
+a session: nothing personal is stored there, so it would be easy to leave open, but an
+open endpoint would let anyone put the event's channel on their own device without ever
+registering. `POST /admin/push/send` is **owner-only**, and that is the important one:
+`gate` exists to mark people present at a door, while a broadcast reaches every
+registered attendee on their own phone. The gate credential is shared across whoever is
+on the desk, and it must never hold that.
+
+**The service worker is deliberately inert.** `public/sw.js` has a `push` handler and a
+`notificationclick` handler, and **no `fetch` handler at all** — and that omission is the
+most important decision in the file.
+
+A service worker with a fetch handler is a proxy in front of every request the page
+makes, and the safe versions of one are subtle: a cache-first rule for an asset that
+gets rebuilt, a network-first rule that falls through to a stale copy when the venue
+wifi drops, a navigation preload that answers from cache before the server has been
+consulted. Any of those would serve yesterday's bundle during a live event, and the
+failure would look like "the portal is a bit broken" rather than "the service worker is
+caching". Not intercepting anything makes that entire class unreachable: the app talks
+to the network exactly as it would without the file. `test:push` asserts the absence.
+
+**Push is permission-based, so it is a best-effort channel by construction.** A
+meaningful share of attendees will dismiss the prompt, and some browsers cannot show
+one at all. Three consequences, all deliberate:
+
+- **The most recent announcement also rides `/event`**, so the dashboard shows it on
+  arrival. Without this, a denied permission costs *reach*, not the message — and the
+  owner has no way of noticing who was missed. One, not a feed: the useful question is
+  "what is true now", not "what have I been told".
+- **A refused permission ends with the control gone** and one plain sentence. A toggle
+  that reappears after being dismissed is a nag, and a nag costs more goodwill than a
+  missing notification.
+- **The Safari-on-iPhone case is the exception**, and it says so. Push there needs the
+  web app added to the home screen, and in a plain tab it is unavailable rather than
+  merely blocked — so tapping would do nothing, forever. It is the one block worth
+  explaining, because it is the one the attendee can fix in two taps.
+
+**The result is counts, not "sent."** Subscriptions expire — browsers retire them, users
+clear site data, devices get wiped. A `404`/`410` from the push service means the
+endpoint is dead and is deleted, because a dead row makes every later broadcast slower
+and no more reliable. Anything else is counted as a *failure* and deliberately **not**
+deleted: the difference is the whole point, and treating them alike would unsubscribe
+everybody whose phone went into a tunnel for four seconds. The panel reports sent,
+pruned, failed and total separately, because "142 of 300 devices" is something an owner
+can act on and "sent" is not.
+
+**Sends run twelve at a time.** Sequentially, each is a round trip to the push service,
+so a broadcast to a few hundred phones would outlast a serverless timeout and the owner
+would be told it failed when most of it had gone out. Capped rather than unbounded,
+because the other failure is a few hundred simultaneous TLS handshakes looking like a
+denial of service from inside our own function.
+
+| Property | Why |
+| --- | --- |
+| Opt-in only, from a button | Browsers only permit the prompt inside a user gesture — it cannot be automatic |
+| Owner-only to send | A broadcast reaches every attendee's phone; that is not a door-side power |
+| Payload capped at 80/240 | A push payload above 4KB is refused by every browser; failing at the far end is invisible |
+| Trimmed before it is measured | A trailing space must not push a message over the limit for no reason |
+| Blank refused at 400, over-long at 422 | Malformed versus well-formed-but-undeliverable are different problems |
+| Service worker serves `/sw.js` | The only scope that can receive a push for a page at any path |
+| Notifications collapse on one `tag` | Two messages should replace each other, not stack into a backlog nobody reads |
+| No `requireInteraction` | This is information, not a fire alarm; it is still in history for hours |
+
+**What is not verified here.** No automated test can prove a notification reaches a
+real phone — that needs a real browser granting the permission, which a headless
+harness will not do. `test:push` asserts everything up to that boundary: that the key is
+served and is public, that subscribing needs a session, that `gate` cannot broadcast,
+that an unreachable endpoint is counted as a failure and never a success, and that the
+worker cannot intercept a request. The last mile is the one thing worth checking by hand
+before the day.
+
 ### The encoding accident that shipped to production
 
 The login page rendered **REGISTER `ΓåÆ`** to everybody, live, for a commit. It was the
@@ -1432,7 +1547,8 @@ are zeroed explicitly.
 | `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
-| `test:registration` | 36     | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
+| `test:registration` | 36    | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
+| `test:push`        | 41     | yes      | The public VAPID key and that it is public, subscribing needing a session, `gate` being unable to broadcast, an unreachable endpoint counted as a failure rather than a success, dead versus transient failures kept apart, and the service worker having no `fetch` handler at all |
 | `test:live`      | 53          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, no character that is the residue of a decoding accident, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |

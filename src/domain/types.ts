@@ -206,7 +206,63 @@ export interface EventInfo {
   /** How many are on the guest list, so the form can be honest before submitting. */
   readonly rosterCount: number
 
+  /**
+   * The owner's most recent announcement, or null if none has been sent.
+   *
+   * Here for one reason: push is permission-based, so it reaches only the people who
+   * said yes. Everyone else — who dismissed the prompt, or is on a browser that cannot
+   * do it — would otherwise never be told anything, and the owner would have no way to
+   * notice that they had been. This rides the poll that is already running, so it
+   * costs one field rather than a request.
+   *
+   * Exactly one, never a feed. It is the fallback for somebody who missed a push, not
+   * a message centre.
+   */
+  readonly announcement: Announcement | null
+
   readonly agenda: readonly AgendaItem[]
+}
+
+/** A message the owner sent to every opted-in device. */
+export interface Announcement {
+  readonly id: string
+  readonly title: string
+  readonly body: string
+  readonly createdAt: string
+}
+
+/**
+ * What a broadcast actually did.
+ *
+ * Counts rather than a boolean, because "sent" cannot be honest on a channel where
+ * some devices are gone, some networks are flaky, and some people declined to
+ * subscribe at all. "142 of 300 devices" is something an owner can act on; "sent" is
+ * not.
+ */
+export interface BroadcastResult {
+  /** Subscriptions the push service accepted. */
+  readonly sent: number
+  /** Subscriptions dropped because the service reported them gone. */
+  readonly pruned: number
+  /** Failures worth retrying — a flaky network, a rate limit. */
+  readonly failed: number
+  /** How many were live when the send began. */
+  readonly total: number
+  readonly announcement: Announcement
+}
+
+/** What the admin panel needs to know before it offers to send anything. */
+export interface PushState {
+  /** Whether this deployment has the VAPID keys at all. */
+  readonly configured: boolean
+  readonly subscribers: number
+  readonly latest: Announcement | null
+}
+
+/** The browser's address for receiving pushes, and the keys that go with it. */
+export interface PushSubscriptionPayload {
+  readonly endpoint: string
+  readonly keys: { readonly p256dh: string; readonly auth: string }
 }
 
 /**
@@ -382,6 +438,23 @@ export type PortalErrorCode =
   | 'registration_closed'
   | 'not_found'
   | 'forbidden'
+  /*
+    Push.
+
+    `invalid_subscription` is a malformed body from our own browser, so it should never
+    reach a human — but it must still be a known code rather than an ad-hoc string,
+    because the error matrix asserts that every code the server can send has copy for
+    it. A code added without copy is a code that eventually renders as itself in front
+    of an attendee.
+
+    The other two are the owner's, not an attendee's, and both name the fix:
+    `push_not_configured` is a deployment missing VAPID keys, and `push_too_long` says
+    what the limit is, because guessing at the 4KB push ceiling is not something anyone
+    should have to do at a desk on the day.
+  */
+  | 'invalid_subscription'
+  | 'push_not_configured'
+  | 'push_too_long'
   | 'rate_limited'
   | 'network'
   | 'unknown'
@@ -423,6 +496,12 @@ export const PORTAL_ERROR_MESSAGES: Record<PortalErrorCode, string> = {
     `Registration is closed for this event. Email ${CONTACT_EMAIL} if you need a place.`,
   not_found: 'We could not find that record.',
   forbidden: 'You do not have access to that.',
+  invalid_subscription:
+    'This browser could not be registered for notifications. Try turning them on again.',
+  push_not_configured:
+    'Notifications are not set up on this deployment. Set the VAPID keys and try again.',
+  push_too_long:
+    'That message is too long for a notification. Keep the subject under 80 characters and the message under 240.',
   rate_limited: 'Too many attempts. Wait a moment and try again.',
   network: 'Network error. Check your connection and try again.',
   unknown: 'Something went wrong. Please try again.',

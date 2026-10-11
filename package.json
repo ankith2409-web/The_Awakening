@@ -29,7 +29,8 @@
     "test:parse": "esbuild scripts/test-roster-parse.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --external:node:zlib --outfile=node_modules/.tmp/test-roster-parse.mjs --log-level=error && node node_modules/.tmp/test-roster-parse.mjs",
     "test:guestlist": "node scripts/test-guest-list.mjs",
     "test:registration": "node scripts/test-registration.mjs",
-    "test:live": "node scripts/test-live-update.mjs"
+    "test:live": "node scripts/test-live-update.mjs",
+    "test:push": "node --experimental-strip-types --no-warnings scripts/test-push.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
@@ -40,13 +41,15 @@
     "react-dom": "^19.2.8",
     "react-qr-code": "^2.2.0",
     "react-router-dom": "^7.18.4",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/web-push": "^3.6.4",
     "@vercel/node": "^17.0.0",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",

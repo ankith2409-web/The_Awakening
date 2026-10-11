@@ -14,9 +14,12 @@ import {
   type AttendeeRegisterInput,
   type AttendeeSession,
   type AttendeeWithSecret,
+  type Announcement,
+  type BroadcastResult,
   type CheckIn,
   type EventInfo,
   type MyAttendance,
+  type PushState,
   type AttendeeRegistration,
   type RegistrationMode,
   type RosterRows,
@@ -513,6 +516,51 @@ export class MockPortalApi implements PortalApi {
         const person = this.#store.attendees.find((a) => a.id === checkIn.attendeeId)
         return { ...structuredClone(checkIn), attendeeName: person?.name ?? '' }
       })
+  }
+
+  /* --------------------------------------------------------------- push */
+
+  /*
+    The mock reports push as NOT configured, and the toggle disappears.
+
+    That is the honest answer rather than a stub that pretends to work: there is no
+    push service behind a mock, so a toggle that appeared and then did nothing would
+    teach a developer the wrong thing about the feature. The UI is built to render
+    nothing at all in this state, which is the same thing it does on a deployment
+    missing its VAPID keys.
+  */
+
+  async getPushKey(): Promise<{ configured: boolean; publicKey: string | null }> {
+    await delay(LATENCY_MS / 4)
+    return { configured: false, publicKey: null }
+  }
+
+  async subscribeToPush(): Promise<void> {
+    await delay(LATENCY_MS / 4)
+    return undefined
+  }
+
+  async unsubscribeFromPush(): Promise<void> {
+    await delay(LATENCY_MS / 4)
+    return undefined
+  }
+
+  async getPushState(): Promise<PushState> {
+    this.#requireAdmin()
+    await delay(LATENCY_MS / 4)
+    return { configured: false, subscribers: 0, latest: null }
+  }
+
+  async adminBroadcast(input: { title: string; body: string }): Promise<BroadcastResult> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+    const announcement: Announcement = {
+      id: `ann_${this.#store.event.agenda.length}_${input.title.length}`,
+      title: input.title,
+      body: input.body,
+      createdAt: new Date().toISOString(),
+    }
+    return { sent: 0, pruned: 0, failed: 0, total: 0, announcement }
   }
 
   async updateAgendaItem(id: string, patch: Partial<AgendaItem>): Promise<AgendaItem> {

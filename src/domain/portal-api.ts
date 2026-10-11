@@ -8,10 +8,13 @@ import type {
   AttendeeRegisterInput,
   AttendeeRegistration,
   AttendeeSession,
+  BroadcastResult,
   CheckIn,
   DayState,
   EventInfo,
   MyAttendance,
+  PushState,
+  PushSubscriptionPayload,
   RegistrationMode,
   RosterRows,
   RosterState,
@@ -131,6 +134,38 @@ export interface PortalApi {
   listAttendees(): Promise<readonly Attendee[]>
   /** Every attendance record, oldest first. Carries the attendee name per row. */
   listAttendance(): Promise<readonly CheckIn[]>
+
+  /* -- push -------------------------------------------------------------- */
+
+  /**
+   * The VAPID public key, and whether this deployment can send at all.
+   *
+   * Unauthenticated on purpose: the browser needs the key to build a subscription, so
+   * it has to be available before anybody logs in. A deployment with no keys should
+   * show no toggle at all rather than one that fails when pressed.
+   */
+  getPushKey(): Promise<{ configured: boolean; publicKey: string | null }>
+
+  /** Register this browser to receive pushes. Requires an attendee session. */
+  subscribeToPush(subscription: PushSubscriptionPayload): Promise<void>
+
+  /** Stop sending this browser pushes. Requires an attendee session. */
+  unsubscribeFromPush(endpoint: string): Promise<void>
+
+  /** Subscriber count and the last thing sent. Any staff account may read this. */
+  getPushState(): Promise<PushState>
+
+  /**
+   * Broadcast to every opted-in device.
+   *
+   * Owner-only, not staff: this reaches every registered attendee on their own
+   * phone, which is a different power entirely from marking somebody present at a
+   * door. The shared `gate` credential is the one that must never hold it.
+   */
+  adminBroadcast(input: {
+    title: string
+    body: string
+  }): Promise<BroadcastResult>
 
   /**
    * Sets an attendee's password. The only password-change path in the portal.

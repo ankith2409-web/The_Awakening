@@ -39,6 +39,16 @@ import { resolveEventDay, isDayLocked } from './_lib/eventDay.ts'
 // Only the reset-attempt ledger purge survives; the limiter itself went with the
 // endpoint it protected. See `_lib/reset.ts`.
 import { purgeOldResetAttempts } from './_lib/reset.ts'
+import {
+  broadcast,
+  latestAnnouncement,
+  pushConfigured,
+  recordAnnouncement,
+  removeSubscription,
+  saveSubscription,
+  subscriptionCount,
+  vapidPublicKey,
+} from './_lib/push.ts'
 
 /**
  * The whole API as one serverless function.
@@ -185,6 +195,25 @@ async function route(
   /* -- public programme data -------------------------------------------- */
   if (key === 'GET /event') {
     return sendEvent(res)
+  }
+
+  /*
+    The VAPID public key.
+
+    Unauthenticated, and outside the attendee block because it genuinely is public:
+    the point is to know whether push is available BEFORE anybody logs in. The client
+    needs the key to build a subscription, and a deployment without one should show no
+    toggle rather than offer a button that fails when pressed.
+
+    The key is public by design. It is an address, not a credential — it lets a
+    browser say "send to me here" and does nothing else. The private key is what makes
+    a send possible, and it never leaves the server.
+  */
+  if (key === 'GET /push/key') {
+    return json(res, 200, {
+      configured: pushConfigured(),
+      publicKey: vapidPublicKey(),
+    })
   }
   if (key === 'GET /teams') {
     // Teams are an organiser concern. Exposed publicly because the admin
@@ -466,6 +495,59 @@ async function route(
       case 'POST /attendee/logout': {
         await destroySession(req, res, 'attendee')
         return json(res, 200, { ok: true })
+      }
+
+      /*
+        Push.
+
+        One route and nothing more. There is deliberately no "send me a test
+        notification" and no per-device list: the only thing an attendee does with
+        this is turn it on, and every extra route is another thing that can be wrong
+        on the day.
+      */
+
+      case 'POST /attendee/push': {
+        // A session is required even though nothing personal is stored. Who may
+        // subscribe is a real question: this portal is for registered attendees, and
+        // an open endpoint would let anyone put the event's push channel on their
+        // own device without ever registering.
+        requireSession()
+
+        const body = await readJson<Record<string, unknown>>(req)
+        const endpoint = requireString(body, 'endpoint')
+        const keys = (body.keys ?? {}) as Record<string, unknown>
+        const p256dh = requireString(keys, 'p256dh')
+        const auth = requireString(keys, 'auth')
+
+        /*
+          Bounded hard.
+
+          These go into the database and are never rendered back to a human, so
+          nothing else would stop a very large body being written and then sent to
+          the push service on every broadcast. 512 bytes is generous for a real
+          subscription and small enough that abuse is pointless.
+        */
+        if (endpoint.length > 512 || p256dh.length > 256 || auth.length > 128) {
+          throw badRequest('invalid_subscription')
+        }
+
+        await saveSubscription({
+          endpoint,
+          keys: { p256dh, auth },
+          userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+        })
+
+        return json(res, 200, { ok: true })
+      }
+
+      case 'POST /attendee/push/unsubscribe': {
+        requireSession()
+        const body = await readJson<Record<string, unknown>>(req)
+        const endpoint = requireString(body, 'endpoint')
+        const removed = await removeSubscription(endpoint)
+        // 200 either way. Whether we still had it is not something the browser can
+        // act on, and a 404 here would only ever be logged and ignored.
+        return json(res, 200, { ok: true, removed })
       }
 
       case 'GET /attendee/ticket': {
@@ -1344,6 +1426,72 @@ async function route(
         return sendEvent(res, phase, dayOverride, lockedDays, mode)
       }
 
+      /*
+        Broadcast to every opted-in device.
+
+        Owner-only, not staff. `gate` exists to mark people present at a door, and a
+        message to the whole event is a different power entirely: it reaches every
+        registered attendee on their own phone, and the shared gate credential is
+        exactly the one that must never be able to do that.
+
+        The response reports what actually happened rather than "sent". On the day
+        that distinction is the whole feature — "12 of 300 failed" is a warning worth
+        acting on, and "sent" would have hidden it.
+      */
+      case 'POST /admin/push/send': {
+        requireOwner()
+
+        const body = await readJson<Record<string, unknown>>(req)
+
+        if (!pushConfigured()) {
+          throw unprocessable('push_not_configured')
+        }
+
+        const rawTitle = requireString(body, 'title')
+        const rawMessage = requireString(body, 'body')
+
+        /*
+          Trimmed before it is measured.
+
+          `requireString` rejects a blank value but returns the original untrimmed
+          string, so `'   Lunch   '` would pass a length check as eleven characters
+          and then be sent with the padding still in it — and a title that is over
+          the limit only because somebody typed a trailing space would be refused
+          for the wrong reason. What is validated has to be what is stored.
+        */
+        const title = rawTitle.trim()
+        const message = rawMessage.trim()
+
+        /*
+          Bounded.
+
+          This is a push payload, and a push payload above 4KB is refused by every
+          browser. Accepting more here would mean accepting something that can only
+          fail at the far end, where the owner is not watching. The UI counts against
+          the same numbers, so a message that fits on screen always fits on the wire.
+        */
+        if (title.length > 80 || message.length > 240) throw unprocessable('push_too_long')
+
+        const recorded = await recordAnnouncement({
+          title,
+          body: message,
+          sentBy: requireAdmin(),
+        })
+
+        const result = await broadcast({ title, body: message, url: '/dashboard' })
+
+        return json(res, 200, { ...result, announcement: recorded })
+      }
+
+      case 'GET /admin/push': {
+        requireAdmin()
+        return json(res, 200, {
+          configured: pushConfigured(),
+          subscribers: await subscriptionCount(),
+          latest: await latestAnnouncement(),
+        })
+      }
+
       case 'GET /admin/agenda':
       case 'PATCH /admin/agenda': {
         requireAdmin()
@@ -1580,6 +1728,21 @@ async function sendEvent(
     */
     registrationMode: event.registration_mode ?? 'open',
     rosterCount: Number(event.roster_count ?? 0),
+    /*
+      The newest announcement, so the dashboard can show it on arrival.
+
+      This is the half of broadcast that does not need permission. Push is refused by
+      a meaningful share of browsers — declined, dismissed, or on a device that cannot
+      do it — and without this those people would be told nothing at all, with no way
+      for the owner to notice that they had been. Carried here rather than on its own
+      endpoint because it is event-wide, public, and costs nothing on the poll that is
+      already running.
+
+      One, not a feed. This is a fallback for somebody who missed a push, not a
+      message centre: the useful answer to "did they hear about the room change" is
+      the current state of the world, not the history of it.
+    */
+    announcement: await latestAnnouncement(),
     agenda: agenda.map((item: Record<string, unknown>) => ({
       id: item.id,
       day: item.day,

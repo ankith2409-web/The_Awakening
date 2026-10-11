@@ -32,6 +32,10 @@ export const SEED_EVENT: EventInfo = {
   dayOverridden: false,
   registrationMode: 'open',
   rosterCount: 0,
+  // The mock has no push service, so it never has an announcement to carry either.
+  // Null takes exactly the same code path as a deployment that has sent nothing yet,
+  // which means the banner's empty state is exercised without a second branch.
+  announcement: null,
   dayOverride: null,
   lockedDays: [],
   agenda: [

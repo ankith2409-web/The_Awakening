@@ -2,8 +2,10 @@ import { useAttendee } from '@/auth/contexts'
 import { Button } from '@/components/Button'
 import { Alert } from '@/components/Typography'
 import { AttendancePanel } from '@/components/AttendancePanel'
+import { AnnouncementBanner } from '@/components/AnnouncementBanner'
 import { EventMark } from '@/components/EventMark'
 import { EventStatusPanel } from '@/components/EventStatusPanel'
+import { NotificationToggle } from '@/components/NotificationToggle'
 import { QrTicket } from '@/components/QrTicket'
 import { SiteFooter } from '@/components/SiteFooter'
 import { formatPhone } from '@/domain/phone'
@@ -53,6 +55,18 @@ export function DashboardView() {
 
       <main className="flex-1 px-6 py-10 sm:px-10 lg:px-14 lg:py-14">
         <div className="mx-auto max-w-[92rem]">
+          {/*
+            Above everything, and first in the DOM.
+
+            The announcement is the only thing on this page that is time-critical — it
+            exists because something changed today — so it goes above the pass rather
+            than in a sidebar. A room change buried under a QR code is a room change
+            that half the room does not read.
+          */}
+          <div className="mb-6">
+            <AnnouncementBanner announcement={event?.announcement ?? null} />
+          </div>
+
           <div className="flex flex-col gap-6 border-b-2 border-swiss-ink pb-8 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="flex items-center gap-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-accent-text">
@@ -109,6 +123,15 @@ export function DashboardView() {
             </div>
 
             <div className="flex flex-col gap-8 lg:col-span-7">
+              {/*
+                Below attendance rather than above it.
+
+                Turning notifications on is something an attendee does once, on their
+                own time — not something they should be greeted by. It also renders
+                nothing at all until it knows the answer, so it cannot push the
+                attendance rows around on the way in.
+              */}
+              <NotificationToggle />
               <AttendancePanel
                 attendance={attendance}
                 event={event}

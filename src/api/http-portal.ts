@@ -8,11 +8,14 @@ import {
   type AttendeeRegisterInput,
   type AttendeeRegistration,
   type AttendeeSession,
+  type BroadcastResult,
   type CheckIn,
   type DayState,
   type EventInfo,
   type MyAttendance,
   type PortalErrorCode,
+  type PushState,
+  type PushSubscriptionPayload,
   type Team,
   type Ticket,
 } from '@/domain/types'
@@ -176,6 +179,28 @@ export class HttpPortalApi implements PortalApi {
 
   listAttendance(): Promise<readonly CheckIn[]> {
     return this.#request('GET', '/admin/attendance')
+  }
+
+  /* --------------------------------------------------------------- push */
+
+  getPushKey(): Promise<{ configured: boolean; publicKey: string | null }> {
+    return this.#request('GET', '/push/key')
+  }
+
+  async subscribeToPush(subscription: PushSubscriptionPayload): Promise<void> {
+    await this.#request('POST', '/attendee/push', subscription)
+  }
+
+  async unsubscribeFromPush(endpoint: string): Promise<void> {
+    await this.#request('POST', '/attendee/push/unsubscribe', { endpoint })
+  }
+
+  getPushState(): Promise<PushState> {
+    return this.#request('GET', '/admin/push')
+  }
+
+  adminBroadcast(input: { title: string; body: string }): Promise<BroadcastResult> {
+    return this.#request('POST', '/admin/push/send', input)
   }
 
   updateAgendaItem(
