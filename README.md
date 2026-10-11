@@ -1038,6 +1038,74 @@ that an unreachable endpoint is counted as a failure and never a success, and th
 worker cannot intercept a request. The last mile is the one thing worth checking by hand
 before the day.
 
+### What 350 simultaneous registrations actually do
+
+Measured, not assumed. `npm run load:register` registers a cohort against a running
+server, watches the event feed while it does, and removes the cohort afterwards.
+
+| Concurrency | Registrations | Wall clock | Throughput | p50 | p99 | Failures |
+| --- | --- | --- | --- | --- | --- | --- |
+| 8 | 350 | 74.9s | 4.7/s | 1522ms | 3410ms | **0** |
+| 24 | 350 | 33.9s | 10.3/s | 1648ms | 6635ms | **0** |
+| 64 | 350 | 16.1s | 21.8/s | 2063ms | 3918ms | **0** |
+
+Across 1050 production registrations, no 5xx, no timeout, and the event feed stayed
+healthy throughout — 19 probes during the first run, none unhealthy. The site did not
+merely survive the load; it stayed usable *while* under it, which is the property that
+actually matters at a desk.
+
+**Nothing broke, and the reason is not reassuring.** Registration is four queries and
+one bcrypt hash, and the hash is the whole cost:
+
+- 90ms of pure CPU, in `bcryptjs` — pure JS, so it blocks the event loop
+- 350 registrations is 31.5 seconds of CPU, however they are spread
+- Concurrency does not make it faster, it queues the CPU work
+
+So the tail latency above is queueing, not a bottleneck. At a desk, where people
+arrive at human speed, this is invisible. What it means is that a cold start landing
+mid-cohort would be felt, and that registration is the one route whose cost is CPU
+rather than database.
+
+**The roster is not a scaling problem either.** `GET /admin/attendees` returns 361
+attendees as 54KB in about two seconds, consistently, with no drift across repeated
+calls. Almost none of that is the query:
+
+```
+Execution Time: 0.162 ms
+```
+
+The rest is connection setup — 1355ms to open a cold TLS connection to Neon, against
+130ms for a bare `SELECT 1`. Every request pays it; row count barely registers. Fifty
+attendees and 361 cost the same, so the People tab is not going to fall over on the
+day, and pagination would buy nothing that a faster connection would not.
+
+**Two things the load test did surface, both worth knowing:**
+
+- **Sessions have no foreign key to attendees.** `sessions.subject_id` is a bare uuid
+  with no `ON DELETE CASCADE`, so removing an attendee leaves their sessions behind as
+  rows that resolve to nobody. Not a security problem — `currentSession` matches on the
+  token alone, so an orphan can only ever see its own deleted account — but they
+  accumulate, and the load script now purges them.
+- **Sign-in is not rate-limited.** Forty concurrent failed logins returned 401 forty
+  times, correctly and without complaint. Correct is not the same as defended; this
+  remains the one route where an unbounded attempt is cheap.
+
+| Script | Does |
+| --- | --- |
+| `npm run load:register` | Registers N attendees, probes the event feed throughout, reports latency percentiles and drift, then removes the cohort and verifies it |
+
+```bash
+npm run load:register -- --count 350 --concurrency 8
+npm run load:register -- --count 350 --base https://your-deployment --keep
+```
+
+It **aborts on the first 5xx** rather than continuing, because a 500 under load means
+an exhausted resource and three hundred more requests would hide which one caused it.
+Cleanup runs whether the load passed or failed, is scoped to the cohort's own SEN
+prefix, and reports what it removed. Nothing else in the database is touched — which is
+asserted rather than assumed, and is the lesson of a test in this repository that once
+deleted a real attendee's attendance record by reading the first row in the table.
+
 ### The encoding accident that shipped to production
 
 The login page rendered **REGISTER `ΓåÆ`** to everybody, live, for a commit. It was the

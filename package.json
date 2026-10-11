@@ -31,7 +31,8 @@
     "test:registration": "node scripts/test-registration.mjs",
     "test:live": "node scripts/test-live-update.mjs",
     "test:push": "node --experimental-strip-types --no-warnings scripts/test-push.mjs",
-    "test:hardening": "node --experimental-strip-types --no-warnings scripts/test-hardening.mjs"
+    "test:hardening": "node --experimental-strip-types --no-warnings scripts/test-hardening.mjs",
+    "load:register": "node --experimental-strip-types --no-warnings scripts/load-registrations.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
