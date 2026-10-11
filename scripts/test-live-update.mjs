@@ -331,7 +331,84 @@ check(
   'the Register link on the login page is not showing a real arrow',
 )
 
-/* -- the site footer reaches every attendee page -------------------------- */
+/* -- the change signature cannot fall behind the event payload ----------- */
+
+/*
+  This is the bug that made the announcement feature useless, found by watching a page
+  rather than by reading a test.
+
+  The announcement was added to what GET /event returns and to what the dashboard
+  renders, but NOT to eventSignature. So the poll fetched the new announcement every
+  five seconds, compared signatures, concluded nothing had changed, and discarded it.
+  The banner appeared only on a fresh page load.
+
+  For everybody who had declined the push permission -- the people that dashboard
+  banner is the ONLY channel for -- the message simply never arrived unless they
+  reloaded by hand. Every test passed, because the suites test the signature against
+  the fields the signature already knew about.
+
+  Adding the field is the fix. This is the fix that stops it recurring.
+
+  Three scopings, each of which was a false positive before it was understood:
+
+    - COMPONENTS ONLY. `.ts` files reference the event as a request payload and as a
+      store, not to render anything: `updateEventDay(dayOverride)` sends it,
+      `mock-portal` reassigns it. Neither is a surface that needs the poll.
+    - DECLARED FIELDS ONLY. Components name their DOM event handler `event` too, so a
+      bare `event\.` match picks up `event.preventDefault` and `event.target`.
+    - FIELDS THE UI RENDERS. `id` never changes and is never rendered; `dayOverride`
+      is never rendered either -- the UI shows `activeDay` and `dayOverridden`, and both
+      of those are in the signature. Demanding the whole interface would have pushed two
+      inert fields into the signature and taught the next reader that the assertion is
+      pedantic rather than meaningful.
+
+  What it enforces is the one that matters: anything RENDERED from the event must be
+  compared by the poll, or that surface only updates on a manual reload.
+*/
+const eventInfoBody =
+  /export interface EventInfo \{([\s\S]*?)\n\}/.exec(code('src/domain/types.ts'))?.[1] ?? ''
+
+const declaredFields = [
+  ...new Set([...eventInfoBody.matchAll(/readonly\s+(\w+)\??\s*:/g)].map((m) => m[1])),
+]
+
+const components = execFileSync('git', ['ls-files', 'src'], { encoding: 'utf8' })
+  .split('\n')
+  .filter((f) => f.endsWith('.tsx'))
+
+const readByUi = new Set()
+for (const file of components) {
+  const source = readFileSync(file, 'utf8')
+  for (const match of source.matchAll(/\bevent\??\.(\w+)/g)) {
+    // Intersect with the interface, which drops the DOM event handler members.
+    if (declaredFields.includes(match[1])) readByUi.add(match[1])
+  }
+}
+
+const signatureSource = code('src/auth/liveEvent.ts')
+const unread = [...readByUi].filter((f) => !signatureSource.includes(`event.${f}`))
+
+check(
+  `everything a component renders off the event is in eventSignature (${readByUi.size} of ${declaredFields.length} fields)`,
+  unread.length === 0,
+  unread.length === 0
+    ? 'the poll keeps all of it fresh'
+    : `the poll would never notice these changing: ${unread.join(', ')}. Add them to eventSignature, or the surface that renders them only updates on a manual reload.`,
+)
+
+check(
+  'and the announcement is one of them',
+  /event\.announcement\?\.id/.test(signatureSource),
+  'the dashboard banner only appears on a fresh load, never from the poll',
+)
+
+check(
+  'the scan found a plausible number of fields, not zero',
+  readByUi.size >= 12,
+  `only matched ${readByUi.size} -- the pattern has probably stopped matching and this assertion is passing vacuously`,
+)
+
+/* -- the site footer reaches every attendee page -------------------------- *//* -- the site footer reaches every attendee page -------------------------- */
 
 /*
   THIS ONE EXISTS BECAUSE IT ALREADY FAILED ONCE.

@@ -92,11 +92,37 @@ export async function readJson<T>(req: VercelRequest, limitBytes = 8 * 1024): Pr
 
   if (total === 0) return {} as T
 
+  let parsed: unknown
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
   } catch {
     throw badRequest('unknown', 'Malformed JSON body')
   }
+
+  /*
+    A JSON document that parses but is not an OBJECT is a malformed request, and has
+    to be refused here rather than left to the handler.
+
+    The body of every route is read as a record, so `body.something` is the first thing
+    each handler does. On `null` that is not "missing" but a TypeError -- reading a
+    property of null throws, and it throws OUTSIDE any guard, so it surfaced as an
+    unhandled 500 on registration, login, scanning, roster upload and broadcast alike.
+
+    That is the worst of both answers. A 500 says "something went wrong at our end,
+    please try again", and a student at a registration desk who retries gets the same
+    response for ever, because nothing about retrying helps. The request is simply
+    shaped wrong and always will be.
+
+    An array and a bare string survive that particular crash -- `[].name` and
+    `"x".name` are both undefined rather than fatal -- so they reach the handlers and
+    are refused field by field. Refusing them here as well is the same answer stated
+    once, in the one place that can state it.
+  */
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw badRequest('unknown', 'Request body must be a JSON object')
+  }
+
+  return parsed as T
 }
 
 /** Narrowing helper so route handlers read without a cast at every use. */

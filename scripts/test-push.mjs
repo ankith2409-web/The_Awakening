@@ -36,7 +36,6 @@
  */
 
 import { Client } from 'pg'
-import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { loadEnv } from './_env.mjs'
 import { testSen } from './_fixtures.mjs'
@@ -582,9 +581,7 @@ async function main() {
       )
     }
 
-    // --- the payload itself, decrypted the way a browser would ---
-
-    const record = Buffer.from(request.body)
+    // --- the payload itself, decrypted the way a browser would ---
     let plaintext = null
     try {
       plaintext = decrypt(recipient, body)

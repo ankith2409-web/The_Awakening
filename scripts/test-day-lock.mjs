@@ -68,7 +68,6 @@ async function call(method, path, body, cookie) {
 
 const stamp = Date.now().toString().slice(-9)
 const PASSWORD = 'probe2026pass'
-const PHONE = `7${stamp}`.slice(0, 10).padEnd(10, '4')
 
 const SEN_OPEN = testSen(`OPEN${stamp}`)
 const SEN_LOCKED = testSen(`LOCK${stamp}`)
