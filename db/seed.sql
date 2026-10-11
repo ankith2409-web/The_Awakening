@@ -5,7 +5,7 @@
 -- Replace these values with your real roster — this is data, not logic.
 -- =============================================================================
 
--- Runs 14–15 October 2026, two days, in the Seminar Hall on the Amity
+-- Runs 13–14 October 2026, two days, in the Seminar Hall on the Amity
 -- University Bengaluru campus.
 --
 -- `venue` and `city` were previously the wrong way round in this file: the
@@ -19,8 +19,8 @@ values (
   'AI agents — built by you',
   'Google Developer Groups',
   'Amity University Bengaluru',
+  '2026-10-13',
   '2026-10-14',
-  '2026-10-15',
   'Seminar Hall',
   'Bengaluru',
   'registration',
@@ -38,19 +38,28 @@ on conflict (id) do update set
   phase          = excluded.phase,
   capacity       = excluded.capacity;
 
--- Day 1 is the 14th, day 2 the 15th. Change the `day` value on a row to move a
--- session between the two days.
+-- Day 1 is the 13th, day 2 the 14th.
+--
+-- No times and no rooms, because there are none. The previous version of this table
+-- had nine rows with 09:30 openings and a "Dr. Anjali Rao" speaking, all of it invented.
+-- A schedule that does not exist is worse than no schedule: somebody plans their day
+-- around it and then finds the room empty.
+--
+-- Both speakers are on both days, so every row carries the same pair. Repeating it per
+-- row rather than keeping a separate speakers list is deliberate — it means the day
+-- heading and its speakers can never drift apart.
 insert into agenda (id, event_id, day, starts_at, title, speaker, room, status, sort_order)
 values
-  ('ag_01', 'evt_awakening_2026', 1, '09:30', 'Registration & Badges',   'GDG Bengaluru',   'Seminar Hall', 'done',     1),
-  ('ag_02', 'evt_awakening_2026', 1, '10:00', 'Opening: What Awakens',    'Dr. Anjali Rao',  'Seminar Hall', 'done',     2),
-  ('ag_03', 'evt_awakening_2026', 1, '11:15', 'Agents That Plan, Act and Recover', 'Kabir Menon', 'Seminar Hall', 'live',    3),
-  ('ag_04', 'evt_awakening_2026', 1, '13:00', 'Build Lab: Tool-Calling & Memory',  'Sneha Iyer',  'Seminar Hall', 'upcoming', 4),
-  ('ag_05', 'evt_awakening_2026', 1, '15:30', 'Ship It: Lightning Demos', 'Community',      'Seminar Hall', 'upcoming', 5),
-  ('ag_06', 'evt_awakening_2026', 2, '09:30', 'Day Two Opening',          'Kabir Menon',    'Seminar Hall', 'upcoming', 6),
-  ('ag_07', 'evt_awakening_2026', 2, '10:15', 'Agent Workflows in Depth', 'Dr. Anjali Rao',  'Seminar Hall', 'upcoming', 7),
-  ('ag_08', 'evt_awakening_2026', 2, '13:00', 'Capstone Build Session',   'Sneha Iyer',     'Seminar Hall', 'upcoming', 8),
-  ('ag_09', 'evt_awakening_2026', 2, '15:00', 'Closing & Awards',         'Community',      'Seminar Hall', 'upcoming', 9)
+  ('ag_01', 'evt_awakening_2026', 1, null, 'Technical sessions',            'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 1),
+  ('ag_02', 'evt_awakening_2026', 1, null, 'Ecosystem exploration',        'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 2),
+  ('ag_03', 'evt_awakening_2026', 1, null, 'Challenge Brief & Rules',      'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 3),
+  ('ag_04', 'evt_awakening_2026', 2, null, 'Challenge kick-off',           'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 4),
+  ('ag_05', 'evt_awakening_2026', 2, null, 'Idea formation',               'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 5),
+  ('ag_06', 'evt_awakening_2026', 2, null, 'Team setup',                    'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 6),
+  ('ag_07', 'evt_awakening_2026', 2, null, 'Project development',           'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 7),
+  ('ag_08', 'evt_awakening_2026', 2, null, 'Demonstrations',                'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 8),
+  ('ag_09', 'evt_awakening_2026', 2, null, 'Evaluation',                    'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 9),
+  ('ag_10', 'evt_awakening_2026', 2, null, 'Closing',                       'Aryan Gandhi & Tanisha Sharma', null, 'upcoming', 10)
 on conflict (id) do update set
   day        = excluded.day,
   starts_at  = excluded.starts_at,
@@ -59,13 +68,8 @@ on conflict (id) do update set
   room       = excluded.room,
   sort_order = excluded.sort_order;
 
--- Teams: name, lead, members. Inserted in a fixed order so `sort_order`
--- controls the display sequence.
-insert into teams (name, lead_name, members, sort_order)
-select * from (values
-  ('Android Bengaluru',      'Sneha Iyer',  '["Rohan Gupta","Meera Nair","Arjun Rao","Divya Menon"]'::jsonb, 1),
-  ('AI & ML Circle',         'Kabir Menon', '["Ananya Iyer","Vikram Shah","Nisha Pillai","Sameer Khan"]'::jsonb, 2),
-  ('Web Platform Guild',     'Ritika Shah', '["Karthik Reddy","Pooja Desai","Aditya Bose"]'::jsonb, 3),
-  ('Cloud Native Chapter',   'Arjun Nair',  '["Fatima Sheikh","Rahul Verma","Lakshmi Iyer","Tanvi Joshi","Zoya Khan"]'::jsonb, 4)
-) as t(name, lead_name, members, sort_order)
-where not exists (select 1 from teams where teams.name = t.name);
+-- Rows from the previous nine-item timetable that are not in the list above. Without
+-- this, `on conflict do nothing` semantics leave yesterday's fabricated schedule on
+-- screen next to today's real one.
+delete from agenda where event_id = 'evt_awakening_2026'
+  and id not in ('ag_01','ag_02','ag_03','ag_04','ag_05','ag_06','ag_07','ag_08','ag_09','ag_10');

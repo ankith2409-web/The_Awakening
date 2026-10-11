@@ -1,11 +1,8 @@
 /**
  * Domain model for the GDG event portal.
- *
  * Split into three concerns so each can be reasoned about on its own:
  *   - Identity  : who is attending
  *   - Access    : session + authorisation (admin is a separate door)
- *   - Programme : the event itself, teams and agenda
- *
  * Everything here is plain data. The real dataset you supply later should
  * satisfy these shapes; see `src/api/dataset.ts` for the swap point.
  */
@@ -44,10 +41,8 @@ export interface AttendeeSession {
 
 /**
  * Staff access levels.
- *
  * `owner` runs the event — the roster, credentials, the programme. `gate` is
- * whoever is on the door: mark attendance, read the log, read teams.
- *
+ * whoever is on the door: mark attendance, read the log.
  * Mirrors the server's list. It is here so the UI can hide what a `gate` account
  * cannot use — never to decide whether it is allowed. The server checks the role
  * on every route, because this value arrives in a cookie.
@@ -77,7 +72,6 @@ export interface AttendeeLoginInput {
 
 /**
  * Registration does NOT take a password.
- *
  * `AttendeeLoginInput` is not extended, deliberately. The portal chooses the password
  * and hands it over; making it a field would mean the form collected one and the
  * server quietly ignored it, which is the kind of thing that reads as a bug to whoever
@@ -91,7 +85,6 @@ export interface AttendeeRegisterInput {
 
 /**
  * What registration returns.
- *
  * `generatedPassword` is present exactly once, in this response. Only a bcrypt hash is
  * stored, and there is deliberately no route that can return it again — a "resend my
  * password" endpoint would make the portal a credential oracle for anyone who knows a
@@ -112,15 +105,29 @@ export interface AdminLoginInput {
 export type EventPhase = 'registration' | 'live' | 'completed'
 
 export interface AgendaItem {
-  readonly id: string
-  /** Which day of the event this session runs on. 1-based. */
-  readonly day: number
-  readonly startsAt: string
-  readonly title: string
-  readonly speaker: string
-  readonly room: string
-  readonly status: 'done' | 'live' | 'upcoming'
-}
+    readonly id: string
+    /** Which day of the event this runs on. 1-based. */
+    readonly day: number
+    readonly title: string
+    /**
+     * Everyone presenting, as one string.
+     * A list rather than a `string[]`, deliberately: it is one column, it is rendered
+     * in one place, and splitting it would invite the two speakers drifting apart on
+     * one day and not the other.
+     */
+    readonly speaker: string
+    /**
+     * Start time and room, both absent.
+     * There is no timetable and there are no rooms. They were invented -- nine rows
+     * with 09:30 openings and a "Dr. Anjali Rao" speaking -- and showing a schedule
+     * that does not exist is worse than showing none, because somebody plans their
+     * day around it and then finds the room empty.
+     * Nullable rather than removed so a real schedule can be restored as data rather
+     * than as a migration.
+     */
+    readonly startsAt: string | null
+    readonly room: string | null
+  }
 
 export interface EventInfo {
   readonly id: string
@@ -150,7 +157,6 @@ export interface EventInfo {
   /**
    * Which day attendance scans are recorded against, resolved from the calendar
    * on the server.
-   *
    * On `EventInfo` so every surface that needs to say "day one" agrees: the
    * attendee dashboard, the admin masthead and the Programme panel all read the
    * same value from the same response.
@@ -158,7 +164,6 @@ export interface EventInfo {
   readonly activeDay: number
   /**
    * The day the calendar says it is, even when an override is in force.
-   *
    * Shown beside the override control so the two can be compared. "The calendar
    * says day one, you pinned day two" is a sentence an owner can act on; the
    * portal quietly disagreeing with the date is not.
@@ -168,7 +173,6 @@ export interface EventInfo {
   readonly totalDays: number
   /**
    * An owner has pinned the day with `dayOverride`.
-   *
    * Surfaced so the UI can say so. A portal that thinks it is day one when the
    * calendar says day two is confusing exactly when it matters most, and the
    * override is the usual reason.
@@ -178,12 +182,10 @@ export interface EventInfo {
   readonly dayOverride: number | null
   /**
    * Days attendance is closed for.
-   *
    * Distinct from `dayOverride`: that moves the present forward, this closes a day
    * behind you. Exists because attendance is append-only with no edit and no
    * delete, so once a day's SEN list is gone for certificates there is no way to
    * correct a late scan — the only honest option is to stop accepting them.
-   *
    * Read-only surfaces are unaffected: the log and the export still show a locked
    * day in full. This stops marks being written, it does not hide the record of
    * who attended.
@@ -192,11 +194,9 @@ export interface EventInfo {
 
   /**
    * Who may register.
-   *
    *   open        anyone
    *   restricted  only SENs on the guest list
    *   closed      nobody
-   *
    * Public, because the registration form has to be able to say "registration is
    * closed" before somebody fills it in rather than refusing them afterwards. It is
    * printed on the door; it is not a secret.
@@ -208,13 +208,11 @@ export interface EventInfo {
 
   /**
    * The owner's most recent announcement, or null if none has been sent.
-   *
    * Here for one reason: push is permission-based, so it reaches only the people who
    * said yes. Everyone else — who dismissed the prompt, or is on a browser that cannot
    * do it — would otherwise never be told anything, and the owner would have no way to
    * notice that they had been. This rides the poll that is already running, so it
    * costs one field rather than a request.
-   *
    * Exactly one, never a feed. It is the fallback for somebody who missed a push, not
    * a message centre.
    */
@@ -233,7 +231,6 @@ export interface Announcement {
 
 /**
  * What a broadcast actually did.
- *
  * Counts rather than a boolean, because "sent" cannot be honest on a channel where
  * some devices are gone, some networks are flaky, and some people declined to
  * subscribe at all. "142 of 300 devices" is something an owner can act on; "sent" is
@@ -266,15 +263,9 @@ export interface PushSubscriptionPayload {
 }
 
 /**
- * A team, as shown in the admin portal only: name, lead, members.
  * Deliberately minimal — the attendee dashboard does not surface teams.
  */
-export interface Team {
-  readonly id: string
-  readonly name: string
-  readonly leadName: string
-  readonly members: readonly string[]
-}
+
 
 export interface TeamMember {
   readonly name: string
@@ -285,7 +276,6 @@ export interface TeamMember {
 
 /**
  * An attendance record.
- *
  * APPEND-ONLY. There is deliberately no update or delete anywhere in the API
  * or the UI — a record exists only because a barcode was scanned, and
  * correcting a mistake is done by a fresh scan after voiding out of band.
@@ -300,7 +290,6 @@ export interface CheckIn {
   readonly at: string
   /**
    * Which day of the event this record belongs to. 1-based.
-   *
    * Resolved by the server from the calendar, never sent by the client — so a
    * stale control in a stale tab cannot file a morning's scans under the wrong
    * heading. One record exists per attendee per day, which is what lets somebody
@@ -309,7 +298,6 @@ export interface CheckIn {
   readonly day: number
   /**
    * The attendee's name, joined in by the server.
-   *
    * It rides on the row rather than being resolved client-side against the
    * roster, because the roster is owner-only. A `gate` account can read this log
    * but cannot fetch `/admin/attendees`, so the name has to arrive with the row
@@ -318,7 +306,6 @@ export interface CheckIn {
   readonly attendeeName: string
   /**
    * How the attendee was admitted.
-   *
    * `qr` means the pass's HMAC signature verified, proving the pass was issued
    * by us for that SEN. `printed` means a bare SEN — typed by staff or read off
    * a printed barcode — where no signature is available. Recorded so an audit
@@ -329,7 +316,6 @@ export interface CheckIn {
 
 /**
  * Which day of the event it is.
- *
  * Carried on `EventInfo` rather than fetched separately, so the attendee
  * dashboard, the admin masthead and the Programme panel cannot disagree about it.
  */
@@ -349,7 +335,6 @@ export type RegistrationMode = 'open' | 'restricted' | 'closed'
 
 /**
  * The guest list an organiser has uploaded.
- *
  * A count and a sample rather than every student: the full roster is every student's
  * name and SEN in one response, and there is no reason to hand it to a browser when
  * the owner already has the file. The API never returns the whole thing.
@@ -370,10 +355,8 @@ export interface RosterUploadResult {
 
 /**
  * The whole guest list, for checking that every name and SEN landed.
- *
  * Owner-only, and fetched only when somebody asks to see it — never as part of the
  * panel's default state.
- *
  * `truncated` exists because a cap is a cap. A silently shortened list would let
  * somebody report "I checked every name" about the rows that happened to be returned,
  * which is the exact opposite of what the check is for.
@@ -386,13 +369,10 @@ export interface RosterRows {
 
 /**
  * The signed-in attendee's own attendance, per day.
- *
  * An array rather than a single record: attendance used to be once-in-a-lifetime,
  * and returning "the first row" would tell somebody who came on day two that they
  * arrived on day one.
- *
  * RECORDS ONLY. This deliberately does not repeat the day state.
- *
  * `activeDay`, `totalDays`, `overridden` and `lockedDays` used to be here as well
  * as on `EventInfo`. Two copies of one fact is two things that can disagree, and they
  * did: the poll for attendance stops once this attendee is marked for the day being
@@ -400,7 +380,6 @@ export interface RosterRows {
  * silently froze the duplicated day state along with it. An organiser reopened Day 2
  * and every attendee already marked on Day 1 went on reading "Closed" until they
  * reloaded by hand.
- *
  * `EventInfo` is the only place day state lives now, and the portal keeps it current
  * by polling it.
  */
@@ -410,7 +389,6 @@ export interface MyAttendance {
 
 /**
  * What the QR code encodes.
- *
  * `encoded` is a signed payload that CONTAINS the SEN. A gate scanner reads
  * it, the SEN is extracted, and that is the same path as scanning a printed
  * barcode — one mechanism, one write path. Signing it means a screenshot

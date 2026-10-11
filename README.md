@@ -5,7 +5,7 @@ separate admin portal for scanning SEN barcodes at the door and resetting an
 attendee's password.
 
 **AI agents — built by you.** A Fetch AI event by Google Developer Groups, hosted
-by Amity University Bengaluru, Seminar Hall, 14–15 October 2026.
+by Amity University Bengaluru, Seminar Hall, 13–14 October 2026.
 
 **Live:** https://the-awakening-portal.vercel.app
 
@@ -80,7 +80,7 @@ from `ADMIN_USERNAME` / `ADMIN_PASSWORD`; only the bcrypt hash is stored.
 ```
 src/
   domain/                Types, rules and validation — no React, no transport
-    types.ts               Attendee, EventInfo, Team, CheckIn, error codes
+    types.ts               Attendee, EventInfo, AgendaItem, CheckIn, error codes
     portal-api.ts          The PortalApi contract
     phone.ts               Indian mobile + SEN normalisation and validation
   api/                   Two interchangeable implementations of that contract
@@ -106,7 +106,7 @@ src/
     DashboardView.tsx      QR pass, attendance, event status
     admin/
       AdminLoginView.tsx   The separate staff door
-      AdminPortalView.tsx  Tabs: Scan, Attendance, People, Teams, Event
+      AdminPortalView.tsx  Tabs: Scan, Attendance, People, Event
       AttendeeDirectory.tsx  Find an attendee, set their password
 
 server/                The backend. Deliberately NOT named `api/` — see below.
@@ -121,7 +121,7 @@ server/                The backend. Deliberately NOT named `api/` — see below.
 
 db/
   schema.sql           Tables, unique indexes, CHECK constraints (idempotent)
-  seed.sql             Event, agenda, teams (idempotent)
+  seed.sql             Event, programme (idempotent)
 
 scripts/               Build, database setup, staff accounts, test suites, load tooling
 ```
@@ -167,19 +167,17 @@ Neon Postgres, region `ap-southeast-1`, pooled connection string.
 | `password_reset_attempts`  | retired; retained as a record of the old endpoint's probing   |
 | `event_roster`             | the guest list an organiser uploaded; SEN is the key          |
 | `events`                   | one row; `day_override` pins the live day, `locked_days` closes days |
-| `agenda`                   | per-event items with `day`, `sort_order` and `status`         |
-| `teams`                    | read-only; there is no team write route                       |
+| `agenda`                   | the programme: `day`, `title`, `speaker`. No times, no rooms |
 
 `db/schema.sql` is idempotent and safe to re-run — the SEN format check is
 written as drop-then-add, so re-running upgrades an existing database rather than
 failing on it.
 
-Attendees self-register, so there is no roster to import. Teams and the agenda
-are placeholders seeded by `db/seed.sql`; replace them there:
+Attendees self-register, so there is no roster to import. The programme and its
+speakers are seeded by `db/seed.sql`; replace them there:
 
 ```sql
-update teams set name = '…', lead_name = '…', members = array['…'] where id = '…';
-update agenda set title = '…', speaker = '…', room = '…', starts_at = '…';
+update agenda set title = '…', speaker = '…';
 ```
 
 ---
@@ -192,7 +190,6 @@ All routes are mounted under `/api`. Errors return `{ code, message }`, where
 | Method  | Path                       | Body                                  | Auth            |
 | ------- | -------------------------- | ------------------------------------- | --------------- |
 | `GET`   | `/event`                   | —                                     | public          |
-| `GET`   | `/teams`                   | —                                     | public          |
 | `GET`   | `/attendee/session`        | —                                     | optional        |
 | `POST`  | `/attendee/login`          | `{ name, phone, password, remember }` | —               |
 | `POST`  | `/attendee/register`       | `{ name, phone, sen }`                | —               |
@@ -322,8 +319,8 @@ scan the badge.
 | Situation        | Resolves to     |
 | ---------------- | --------------- |
 | Before the event | Day 1           |
-| 14 October       | Day 1           |
-| 15 October       | Day 2           |
+| 13 October       | Day 1           |
+| 14 October       | Day 2           |
 | After the event  | The last day    |
 
 Not "no day". Every test scan anyone has run against this portal happens outside the
@@ -647,7 +644,7 @@ different accounts.
 | --- | --- | --- |
 | Mark attendance by scan | yes | yes |
 | Read the attendance log | yes | yes |
-| Read teams | yes | yes |
+| Read the programme | yes | yes |
 | The attendee roster | yes | **403** |
 | Change an attendee's password | yes | **403** |
 | Edit the programme or event phase | yes | **403** |
@@ -898,6 +895,40 @@ phone and SEN. Refetching it every five seconds on every open owner device would
 the whole roll through the network for no benefit. Adding somebody by hand refreshes
 it, and the Refresh button is there.
 
+### Fabricated content is worse than no content
+
+Two features were removed rather than emptied, and the reason applies more broadly than
+to those two.
+
+**Teams.** The admin portal showed four of them — *Android Bengaluru*, *AI & ML Circle*,
+*Web Platform Guild*, *Cloud Native Chapter* — each with a named lead and a member list.
+None of it was real. For an event run by students, a fabricated org chart in the organiser's
+own tool is worse than an empty panel, and it is the kind of thing that gets screenshotted
+and posted. The table is dropped, the tab is gone, `GET /teams` is a 404, and
+`test:api` asserts the 404 — because an endpoint that quietly returns 500 against a
+dropped table looks like a broken portal rather than a deliberate removal.
+
+**The agenda control.** An owner could mark each session `done` / `live` / `upcoming`,
+and a "Programme complete" bar rendered the result as a percentage. It was honest only
+while somebody kept those flags current, which during a live event means pressing a button
+every few minutes. In practice it read **0% on every attendee's dashboard at the exact
+moment the programme was furthest from 0%**, and every session showed `upcoming` all day.
+
+Both halves of that are gone: the `PATCH /admin/agenda/:id` route and the dashboard
+progress bar. The programme itself stays — it is real — as a list of what happens on each
+day, with the speakers. It has **no times and no rooms**, because there is no confirmed
+timetable, and the previous one had nine rows of 09:30 openings and a *Dr. Anjali Rao*
+speaking at all of them.
+
+A schedule that does not exist is worse than no schedule. Somebody plans their morning
+around "11:15 Agents That Plan, Act and Recover", walks into the Seminar Hall at 11:15, and
+finds a room of people who were told the same invented thing. `starts_at` and `room` are
+nullable rather than deleted, so restoring a real timetable later is a data change and not
+a migration.
+
+The general rule: **a blank control invites someone to invent a value, and a populated one
+invites them to believe it.** Empty the panel and the organiser fills in what they know.
+
 ### Day state has exactly one home
 
 `EventInfo` is the only place `activeDay`, `totalDays`, `dayOverridden` and
@@ -936,6 +967,32 @@ exists, which is the only reason it could be built with three days to go.
 
 Rotating the private key invalidates every subscription held, so every attendee would
 have to opt in again. Generate once, keep it.
+
+**The toggle is on the login and register pages, not only the dashboard.** This was the
+single biggest reason nobody had subscribed, and it was not a bug — it was a control
+behind a door. Zero subscriptions, no code path broken anywhere, and a feature that
+worked perfectly for the people who never looked for it.
+
+People decide they want notifications when they arrive and read the login form, not after
+they are already signed in and looking at a screen they will visit once. So the toggle
+sits on the two screens everybody passes through, and the dashboard keeps its copy.
+
+That raises the obvious problem: `POST /attendee/push` needs a session, and there is not
+one yet. **The browser half and the server half are split.** `pushManager.subscribe()`
+requires no identity — it returns an endpoint and two keys for whichever device it is on —
+so the subscription is taken immediately and the POST waits.
+
+Nothing is staged in `localStorage` to carry it across the gap, and that is the point
+worth defending. The authenticated read re-POSTs whatever subscription the browser
+reports, every time it mounts, so a device that subscribed anonymously registers itself
+the moment its owner has a session. A stored copy would be a second source of truth for
+a value the browser already keeps authoritatively, and it would be able to go stale —
+hold a dead endpoint and report "on" for a device that no longer exists. The security
+property is unchanged: the server only ever stores a subscription that arrived with a
+session, so a broadcast still cannot be aimed at somebody who never registered.
+
+Until they log in, the toggle says exactly that — *"on for this browser, log in and it is
+linked to your account"* — rather than claiming a delivery it cannot yet perform.
 
 **Three routes, and not one more.** `GET /push/key` is unauthenticated — the browser
 needs the key before anybody logs in, and a deployment without one should show no toggle
@@ -1585,7 +1642,7 @@ that does none of them does not belong.
 | Validation messages            | Fade in, inside reserved height                |
 | Buttons                        | 1px press settle on transform                  |
 | Loading skeletons              | Shimmer — the one permitted loop               |
-| Admin tabs, attendance, desk, teams | Cross-fade and stagger                    |
+| Admin tabs, attendance, desk, programme | Cross-fade and stagger                |
 | **Admin scan panel**           | **None, deliberately**                         |
 
 Four rules, each with a failure behind it:
@@ -1600,7 +1657,7 @@ Four rules, each with a failure behind it:
   open.
 - **No motion on the gate.** The scan panel is what a volunteer uses at a busy
   door, usually on a phone, with the camera preview and an on-screen keyboard in
-  play. Tabs, attendance, desk and teams animate; the scan panel does not.
+  play. Tabs, attendance, desk and the programme animate; the scan panel does not.
 
 **Stagger is capped** at `STAGGER_CAP = 8` in `src/lib/motion.ts`. Uncapped,
 45ms × 500 attendance rows is a 22-second wait, and every row past the eighth is
@@ -1634,22 +1691,23 @@ are zeroed explicitly.
 
 | Suite           | Assertions  | Database | Covers                                                    |
 | --------------- | ----------- | -------- | --------------------------------------------------------- |
-| `test:api`      | 63          | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards, and that case/whitespace never lock an attendee out of their own pass |
+| `test:api`      | 62 | yes      | Real cookies, bcrypt, writes, scan conflicts, auth guards, and that case/whitespace never lock an attendee out of their own pass |
 | `test:gate`     | 28          | yes      | Signature verification, the `printed` fallback, admin-mediated recovery and its audit trail |
 | `test:copy`     | 26          | yes      | Every error code renders as human copy; specific wording survives |
 | `test:desk`     | 57          | no       | Roster search normalisation; the panel's structure; the password-help email; no self-service reset |
 | `test:roles`    | 34          | yes      | Every owner-only route refused to `gate`; an unrecognised role fails closed; the CLI's guards |
+| `test:hardening`| 157         | yes      | Everything a request-level suite assumes and must not: body shapes, field types and sizes, injection through every free-text field, the full authorisation matrix, the `gate` role, method confusion, and concurrency. Several checks are **revert-and-rerun** — the assertion is that putting the old code back makes the suite fail |
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
-| `test:perday`   | 29          | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
+| `test:perday`   | 30 | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:registration` | 36    | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
 | `test:push`        | 64     | yes      | The public VAPID key and that it is public, subscribing needing a session, `gate` being unable to broadcast, an unreachable endpoint counted as a failure rather than a success, **a real push payload signed, decrypted and read back**, the service worker having no `fetch` handler at all, and the dashboard banner retiring rather than sitting there |
-| `test:live`      | 53          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, no character that is the residue of a decoding accident, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
+| `test:live`      | 58 | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, no character that is the residue of a decoding accident, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page, and that the removed agenda route is gone for every role |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
-| `test:landing`  | 95          | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing; both out-of-portal refusals name a contact and stay distinct |
+| `test:landing`  | 99 | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing; both out-of-portal refusals name a contact and stay distinct |
 | `test:motion`   | 22          | no       | No layout animation; durations short; scan panel still; stagger capped |
 | `test:scan`     | 20          | no       | Confirmation rendered, not red, not timed out; camera scans do not steal focus |
 | `test:phone`    | 24          | no       | Phone normalisation, problem messages, client/server parity |
@@ -1986,13 +2044,13 @@ rather than rejecting it, so the failure mode under a rush is slow, not down.
    | Username       | Role   | Display name       | Reaches                                   |
    | -------------- | ------ | ------------------ | ----------------------------------------- |
    | `event.control` | owner | Event Operations   | Everything, including the roster and password resets |
-   | `gate`          | gate  | Registration Desk  | Scan, the attendance log, the teams — nothing else |
+   | `gate`          | gate  | Registration Desk  | Scan and the attendance log - nothing else         |
 
    Whoever is on the door gets `gate`. Nobody else should hold it, and no personal
    name appears on either account — the audit trail records a role, which is also
    what makes a shared desk credential defensible.
 4. **Replace the placeholder logo** — `public/fetch-ai.svg`.
-5. **Replace the placeholder agenda speakers and teams** in `db/seed.sql`, then
+5. **Replace the programme and speakers** in `db/seed.sql`, then
    re-run `npm run db:setup`.
 
 ---

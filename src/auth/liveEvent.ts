@@ -80,7 +80,7 @@ export function eventSignature(event: EventInfo): string {
     */
     event.announcement?.id ?? '',
     event.agenda
-      .map((item) => `${item.id}:${item.status}:${item.title}:${item.speaker}:${item.room}:${item.day}:${item.startsAt}`)
+      .map((item) => `${item.id}:${item.title}:${item.speaker}:${item.day}:${item.startsAt ?? ''}`)
       .join('|'),
   ].join('~')
 }

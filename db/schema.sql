@@ -495,14 +495,37 @@ create table if not exists agenda (
   constraint agenda_day check (day >= 1)
 );
 
+/*
+  The programme is WHAT HAPPENS, not a minute-by-minute timetable.
+
+  `starts_at` and `room` are nullable because there are no times and no rooms. They
+  were invented: nine rows with 09:30 openings and a speaker called "Dr. Anjali Rao",
+  none of it real. Showing a schedule that does not exist is worse than showing none,
+  because somebody plans their day around it and then finds the room empty.
+
+  `status` is KEPT, and is now permanently upcoming. The control that moved it has been
+  removed: with no times, "live" and "done" describe nothing. The column stays so that
+  restoring a real schedule later is a data change rather than a migration. Nothing
+  reads it.
+*/
+alter table agenda alter column starts_at drop not null;
+alter table agenda alter column room drop not null;
+
 alter table agenda add column if not exists day smallint not null default 1;
 
 create index if not exists agenda_event_order_idx on agenda (event_id, sort_order);
+-- Teams — DROPPED.
+--
+-- The four teams that were here were invented: Android Bengaluru led by somebody who
+-- does not exist, a Cloud Native Chapter with five members who do not exist. For an
+-- event organised by students, a fabricated org chart in the admin portal is worse
+-- than no org chart, and it is the kind of thing that gets screenshotted.
+--
+-- Dropped rather than emptied: an empty table plus dead code is a feature that is
+-- half-removed, and half-removed is how the four fabricated ones came to be shown
+-- in the first place.
+--
+-- `drop table if exists` so this is safe to re-run against a database that never had
+-- them, and idempotent against one that did.
 
-create table if not exists teams (
-  id        uuid primary key default gen_random_uuid(),
-  name      text not null,
-  lead_name text not null,
-  members   jsonb not null default '[]'::jsonb,
-  sort_order integer not null default 0
-);
+drop table if exists teams;

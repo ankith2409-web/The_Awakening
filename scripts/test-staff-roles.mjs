@@ -199,10 +199,13 @@ async function main() {
   )
 
   /* -- what a gate account may do ------------------------------------------- */
-  check(
-    'a gate account can read teams',
-    (await call('GET', '/teams')).status === 200,
-  )
+  /*
+    A gate account could once read the teams list. It cannot read anything that is
+    not a door: scanning, the attendance log, and its own session. Nothing else
+    has ever been public without a session either.
+  */
+  const gateEvent = await call('GET', '/event')
+  check('a gate account can read the public programme', gateEvent.status === 200, `got ${gateEvent.status}`)
 
   const gateLog = await call('GET', '/admin/attendance', undefined, gate.cookie)
   check('a gate account can read the attendance log', gateLog.status === 200, `got ${gateLog.status}`)
@@ -238,7 +241,6 @@ async function main() {
       'changing a password',
     ],
     ['PATCH', '/admin/event', { phase: 'live' }, 'the event phase'],
-    ['PATCH', '/admin/agenda/ag_01', { status: 'live' }, 'the agenda'],
   ]
 
   for (const [method, path, body, what] of denied) {
@@ -249,6 +251,19 @@ async function main() {
       `${method} ${path} -> ${res.status}/${res.body?.code}`,
     )
   }
+
+  /*
+    The agenda route is not a gate-versus-owner question. It was removed for
+    everyone, so the assertion worth making is that it is ABSENT rather than
+    merely forbidden: a 403 would mean the route is still there and only this
+    one door is locked.
+  */
+  const goneAgenda = await call('PATCH', '/admin/agenda/ag_01', { status: 'live' }, gate.cookie)
+  check(
+    'the agenda route is absent, not merely gate-forbidden',
+    goneAgenda.status === 404,
+    `got ${goneAgenda.status}`,
+  )
 
   check(
     'there is no route that manages staff accounts',

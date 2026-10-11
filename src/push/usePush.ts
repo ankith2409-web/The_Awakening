@@ -43,6 +43,16 @@ export type PushStatus =
 export interface UsePush {
   status: PushStatus
   blocker: PushBlocker | null
+  /**
+   * True when the browser is subscribed but the server has not been told yet,
+   * because there was no session to tell it with.
+   *
+   * Not an error and not a separate state to track: it is exactly "on, and not
+   * authenticated", which is the normal state on the login and register pages.
+   * The dashboard's next mount registers it. Derived rather than stored, so it
+   * cannot disagree with the two values it is derived from.
+   */
+  readonly pending: boolean
   enable(): Promise<void>
   disable(): Promise<void>
 }
@@ -122,9 +132,49 @@ function toApplicationServerKey(publicKey: string): Uint8Array<ArrayBuffer> {
   return output
 }
 
-export function usePush(): UsePush {
+/**
+ * The service worker registration, or `null` if there isn't one.
+ *
+ * NOT `navigator.serviceWorker.ready`.
+ *
+ * `ready` is a promise that resolves when a worker becomes active, and it is
+ * written for the case where you *know* one is coming. Called when none is
+ * registered, it never settles — not rejects, not times out, just waits forever.
+ *
+ * That made the toggle render nothing at all, permanently, for exactly the people
+ * it was written for: somebody arriving at the login page who has never turned
+ * notifications on has no worker, so the first `await` in the read path hung and
+ * the component sat in its `checking` state forever. `getRegistration` answers
+ * immediately with `undefined` instead, which is a state the read path can handle.
+ */
+async function currentRegistration(): Promise<ServiceWorkerRegistration | null> {
+  try {
+    return (await navigator.serviceWorker.getRegistration('/')) ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * @param authenticated whether there is an attendee session to register with.
+ *
+ * The toggle is shown on the login and register pages as well as the dashboard,
+ * because most people only decide to turn notifications on when they arrive and
+ * read the login form. Those pages have no session, so `authenticated` is false.
+ *
+ * Nothing is staged in `localStorage` to carry a subscription across that gap,
+ * and that is deliberate. `pushManager.subscribe()` needs no identity — it
+ * returns an endpoint and two keys for whichever device it is on — and the
+ * authenticated read below re-POSTs whatever subscription the browser reports,
+ * every time it mounts. So a device that subscribed anonymously registers itself
+ * the moment its owner has a session, with nothing to reconcile and nothing that
+ * can go stale between the two. A stored copy would be a second source of truth
+ * for a value the browser already keeps authoritatively.
+ */
+export function usePush({ authenticated }: { readonly authenticated: boolean }): UsePush {
   const [status, setStatus] = useState<PushStatus>('checking')
   const [blocker, setBlocker] = useState<PushBlocker | null>(null)
+  const [subscribed, setSubscribed] = useState(false)
 
   /*
     Held in a ref rather than read back from state.
@@ -149,10 +199,21 @@ export function usePush(): UsePush {
       }
 
       try {
-        const registration = await navigator.serviceWorker.ready
-        const existing = await registration.pushManager.getSubscription()
+        const registration = await currentRegistration()
+        if (cancelled) return
+
+        /*
+          No worker means no subscription is possible, and saying so is the whole
+          answer. `getSubscription` needs a registration to ask, so there is
+          nothing to check and nothing to reconcile.
+        */
+        const existing = registration
+          ? await registration.pushManager.getSubscription()
+          : null
         if (cancelled) return
         current.current = existing
+
+        const payload = existing ? toPayload(existing) : null
 
         /*
           Trust the SERVER over the browser on one point only.
@@ -161,23 +222,39 @@ export function usePush(): UsePush {
           dead connection, or site data was cleared on our side but not the browser's.
           Re-sending it is one cheap request and makes the two agree; the reverse would
           mean the user believes they are subscribed and gets nothing.
+
+          This is also how an anonymous subscription gets adopted: the same call, from
+          the dashboard, with the session that says who the endpoint belongs to.
         */
-        if (existing) {
-          const payload = toPayload(existing)
-          if (payload) {
-            portalApi
-              .subscribeToPush(payload)
-              .then(() => {
-                if (!cancelled) setStatus('on')
-              })
-              .catch(() => {
-                if (!cancelled) setStatus('off')
-              })
+        if (payload && authenticated) {
+          try {
+            await portalApi.subscribeToPush(payload)
+            if (!cancelled) {
+              setSubscribed(true)
+              setStatus('on')
+            }
+            return
+          } catch {
+            if (!cancelled) setStatus('off')
             return
           }
         }
 
-        if (!cancelled) setStatus('off')
+        /*
+          Subscribed in the browser but with nothing to register it against. That is the
+          honest state on the login and register pages, and `pending` in the return
+          value is exactly this case rather than a separate thing to track.
+        */
+        if (payload && !authenticated) {
+          setSubscribed(true)
+          setStatus('on')
+          return
+        }
+
+        if (!cancelled) {
+          setSubscribed(false)
+          setStatus('off')
+        }
       } catch {
         if (!cancelled) setStatus('off')
       }
@@ -187,7 +264,7 @@ export function usePush(): UsePush {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [authenticated])
 
   const enable = useCallback(async () => {
     setStatus('working')
@@ -216,6 +293,16 @@ export function usePush(): UsePush {
       const registration = await navigator.serviceWorker.register(WORKER_URL, {
         scope: '/',
       })
+
+      /*
+        Safe here, unlike in the read path.
+
+        `ready` only ever hangs when no worker is registered — and one was just
+        registered, so it is a wait that terminates. It is kept because
+        `pushManager.subscribe` on a worker that is still installing is refused by
+        some browsers, and this is the one call in the file that can afford to
+        wait for an active worker.
+      */
       await navigator.serviceWorker.ready
 
       const subscription = await registration.pushManager.subscribe({
@@ -231,32 +318,54 @@ export function usePush(): UsePush {
         return
       }
 
-      await portalApi.subscribeToPush(payload)
+      /*
+        With a session the endpoint is registered now; without one the browser
+        keeps it and the next authenticated mount registers it. Either way the
+        subscription is real, so the state is on.
+      */
+      if (authenticated) await portalApi.subscribeToPush(payload)
+
+      setSubscribed(true)
       setBlocker(null)
       setStatus('on')
     } catch {
       // A failed subscribe leaves the user with no notifications, which is "off".
       setStatus('off')
     }
-  }, [])
+  }, [authenticated])
 
   const disable = useCallback(async () => {
     setStatus('working')
     try {
-      const registration = await navigator.serviceWorker.ready
-      const subscription = current.current ?? (await registration.pushManager.getSubscription())
+      const registration = await currentRegistration()
+      const subscription = current.current ?? (registration
+        ? await registration.pushManager.getSubscription()
+        : null)
 
       if (subscription) {
-        await portalApi.unsubscribeFromPush(subscription.endpoint).catch(() => undefined)
+        /*
+          Best effort, and only with a session.
+
+          The server row is keyed to an attendee, so there is nothing to delete
+          without one. Failing to delete it is survivable: the endpoint is about
+          to be unsubscribed below, and the send path treats a dead endpoint as a
+          prune rather than an error.
+        */
+        if (authenticated) {
+          await portalApi
+            .unsubscribeFromPush(subscription.endpoint)
+            .catch(() => undefined)
+        }
         await subscription.unsubscribe().catch(() => undefined)
       }
 
       current.current = null
+      setSubscribed(false)
       setStatus('off')
     } catch {
       setStatus('off')
     }
-  }, [])
+  }, [authenticated])
 
-  return { status, blocker, enable, disable }
+  return { status, blocker, pending: subscribed && !authenticated, enable, disable }
 }

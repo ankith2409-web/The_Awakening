@@ -1,4 +1,4 @@
-import { SEED_ADMINS, SEED_ATTENDEE, SEED_EVENT, SEED_TEAMS } from '@/domain/dataset'
+import { SEED_ADMINS, SEED_ATTENDEE, SEED_EVENT } from '@/domain/dataset'
 import { normalisePhone, normaliseSen, isValidSen, phoneProblem } from '@/domain/phone'
 import { nameProblem } from '@/domain/name'
 import { signTicket } from '@/domain/ticket'
@@ -8,7 +8,6 @@ import {
   type AdminLoginInput,
   type AdminSession,
   type AdminUser,
-  type AgendaItem,
   type Attendee,
   type AttendeeLoginInput,
   type AttendeeRegisterInput,
@@ -25,7 +24,6 @@ import {
   type RosterRows,
   type RosterState,
   type RosterUploadResult,
-  type Team,
   type Ticket,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
@@ -54,7 +52,6 @@ interface Store {
   attendees: AttendeeWithSecret[]
   admins: MockStaff[]
   event: EventInfo
-  teams: Team[]
   checkIns: CheckIn[]
   /** The uploaded guest list. Absent on stores seeded before this feature. */
   roster?: { sen: string; name: string }[]
@@ -351,11 +348,6 @@ export class MockPortalApi implements PortalApi {
     return structuredClone(this.#store.event)
   }
 
-  async getTeams(): Promise<readonly Team[]> {
-    await delay(LATENCY_MS / 3)
-    return structuredClone(this.#store.teams)
-  }
-
   /* ------------------------------------------------------------- ticket */
 
   async getTicket(): Promise<Ticket> {
@@ -561,25 +553,6 @@ export class MockPortalApi implements PortalApi {
       createdAt: new Date().toISOString(),
     }
     return { sent: 0, pruned: 0, failed: 0, total: 0, announcement }
-  }
-
-  async updateAgendaItem(id: string, patch: Partial<AgendaItem>): Promise<AgendaItem> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
-
-    const agenda = this.#store.event.agenda
-    const index = agenda.findIndex((item) => item.id === id)
-    const existing = agenda[index]
-    if (index === -1 || existing === undefined) throw new PortalError('not_found')
-
-    const updated: AgendaItem = { ...existing, ...patch }
-    this.#store.event = {
-      ...this.#store.event,
-      agenda: agenda.map((item, position) => (position === index ? updated : item)),
-    }
-    persist(this.#store)
-
-    return structuredClone(updated)
   }
 
   async updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
@@ -875,14 +848,13 @@ function clearSession(kind: 'attendee' | 'admin'): void {
  * Identifies the current seed data.
  *
  * MUST cover every seeded value, including the demo attendee. Hashing only the
- * event and teams means editing the demo account leaves the cached store stale
+ * event means editing the demo account leaves the cached store stale
  * — and a stale record then fails at the gate instead of on load.
  */
 function currentSeedFingerprint(): string {
   return hash(
     JSON.stringify({
       event: SEED_EVENT,
-      teams: SEED_TEAMS,
       admins: SEED_ADMINS,
       attendee: SEED_ATTENDEE,
     }),
@@ -919,7 +891,6 @@ function loadOrSeed(): Store {
       passwordHash: hash('ops2026'),
     })),
     event: structuredClone(SEED_EVENT),
-    teams: structuredClone(SEED_TEAMS) as Team[],
     checkIns: [],
     roster: [],
     seedFingerprint: currentSeedFingerprint(),

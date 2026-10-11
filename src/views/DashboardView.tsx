@@ -18,8 +18,8 @@ import { formatEventDateRange } from '@/lib/eventDate'
  * pass is the reason the user opened the app, so it carries the most weight
  * and comes first in DOM order for screen readers.
  *
- * Teams are deliberately absent: they are an organiser concern and live only
- * in the admin portal.
+ * There is no teams section: the feature was removed rather than hidden, because
+ * the four teams it showed were invented.
  *
  * The root is a flex column with `main` as `flex-1`, which is what lets the site
  * footer sit at the bottom of the viewport on a short page instead of floating

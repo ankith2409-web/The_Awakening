@@ -128,7 +128,6 @@ try {
     `select
        (select count(*) from attendees) as attendees,
        (select count(*) from attendance) as attendance,
-       (select count(*) from teams)      as teams,
        (select count(*) from agenda)     as agenda,
        (select count(*) from admins)     as admins,
        -- Sessions pointing at an account that no longer exists. Must stay 0:
@@ -145,7 +144,7 @@ try {
   )
   console.log(
     `  remaining: attendees=${live.attendees} attendance=${live.attendance} ` +
-      `teams=${live.teams} agenda=${live.agenda} admins=${live.admins} ` +
+      `agenda=${live.agenda} admins=${live.admins} ` +
       `orphan_sessions=${live.orphan_sessions}`,
   )
 

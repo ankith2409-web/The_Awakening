@@ -7,6 +7,7 @@ import { Alert, SlideNavLink } from '@/components/Typography'
 import { AuthShell } from '@/components/AuthShell'
 import { Link } from 'react-router-dom'
 import { PasswordHelp } from '@/components/PasswordHelp'
+import { NotificationToggle } from '@/components/NotificationToggle'
 import { EventMark } from '@/components/EventMark'
 import { isMockApi, portalApi } from '@/api'
 
@@ -247,6 +248,20 @@ export function LoginView() {
             <span className="font-mono">grid2026</span>
           </p>
         ) : null}
+
+        {/*
+          Notifications, before there is an account.
+
+          This is where people actually decide they want them. It was on the
+          dashboard only, which meant the decision had to be made after logging
+          in, on a screen nobody visits twice — and zero people had subscribed.
+
+          It works without a session: the browser subscription is taken now and
+          held locally, then registered the moment they are signed in. Pressing it
+          here is strictly better than pressing it later, because a notification
+          about a room change during registration is the one they would want.
+        */}
+        <NotificationToggle />
       </form>
     </AuthShell>
   )
@@ -769,6 +784,22 @@ export function RegisterView() {
       {step === 'details' && !registrationClosed ? detailsScreen : null}
 
       {step === 'password' ? passwordScreen : null}
+
+      {/*
+        Notifications, on the first two steps and not the last.
+
+        On `done` there is no point: registering creates a session, so the
+        dashboard that follows is already the authenticated place to ask, and
+        asking twice in three screens is a nag.
+
+        On `details` and `password` there is no session yet, so this subscribes
+        the browser and holds the result until one exists. Same reasoning as the
+        login page — this is where somebody decides they want to be told about a
+        room change, and it used to be behind a login they had not reached yet.
+      */}
+      {(step === 'details' || step === 'password') && !registrationClosed ? (
+        <NotificationToggle />
+      ) : null}
 
       {step === 'done' ? (
         <div className="border-2 border-swiss-ink bg-swiss-muted p-6">

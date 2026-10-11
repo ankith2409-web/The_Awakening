@@ -730,6 +730,73 @@ async function main() {
     'a worker outside / cannot cover /dashboard',
   )
 
+  /* -- 7. the toggle must actually appear ------------------------------------- */
+
+  console.log('\n  -- the toggle is reachable before anybody logs in --')
+
+  const usePush = readFileSync('src/push/usePush.ts', 'utf8')
+  const toggle = readFileSync('src/components/NotificationToggle.tsx', 'utf8')
+  const authViews = readFileSync('src/views/AuthViews.tsx', 'utf8')
+
+  check(
+    'the read path never awaits serviceWorker.ready',
+    /*
+      This is the one that shipped broken.
+
+      `navigator.serviceWorker.ready` never settles when no worker is registered —
+      it does not reject and it does not time out. Since the first thing anybody
+      arriving at /login has ever done is arrive with no worker, the hook sat in its
+      `checking` state forever and the toggle rendered NOTHING. Not an error, not a
+      console message: an absence, on the two pages whose entire purpose is to be
+      seen by somebody who has not opted in yet.
+
+      The bug was invisible because the refused-permission branch returns before that
+      await, and the browser used for testing had permission denied.
+
+      Counted as the AWAIT rather than as the bare property name, because the comment
+      explaining why it is banned necessarily contains the name it bans.
+    */
+    (usePush.match(/await navigator\.serviceWorker\.ready/g) ?? []).length === 1 &&
+      usePush.split('const enable =')[0].includes('await navigator.serviceWorker.ready') ===
+        false,
+    'the read path can await a promise that never settles when no worker exists',
+  )
+
+  check(
+    'and asks getRegistration instead, which answers immediately',
+    /serviceWorker\.getRegistration\(/.test(usePush),
+  )
+
+  check(
+    'the toggle renders on the login page',
+    /function LoginView/.test(authViews) &&
+      /<NotificationToggle \/>/.test(authViews.split('export function RegisterView')[0]),
+    'people decide they want notifications while reading the login form',
+  )
+
+  check(
+    'and on the register form, before there is an account',
+    /<NotificationToggle \/>/.test(authViews.split('export function RegisterView')[1]),
+  )
+
+  check(
+    'the toggle reads the session itself rather than trusting the caller',
+    /useAttendee\(\)/.test(toggle),
+    'a prop would let the dashboard mount it with the wrong answer',
+  )
+
+  check(
+    'an unauthenticated subscription is never POSTed',
+    /if \(authenticated\) await portalApi\.subscribeToPush/.test(usePush),
+    'that would store an endpoint with nothing to say who it belongs to',
+  )
+
+  check(
+    'and says so, rather than claiming a delivery it cannot make yet',
+    /pending/.test(toggle) && /log in and they are linked/i.test(toggle),
+    'the honest version of "on" before there is an account',
+  )
+
   /* -- cleanup --------------------------------------------------------------- */
 
   if (createdEndpoints.length > 0) {

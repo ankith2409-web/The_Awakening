@@ -2,12 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { portalApi, PortalError, PORTAL_ERROR_MESSAGES } from '@/api'
 import type {
   AdminUser,
-  AgendaItem,
   Attendee,
   CheckIn,
   EventInfo,
   RegistrationMode,
-  Team,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
 import { LIVE_POLL_MS, eventChanged } from './liveEvent'
@@ -28,7 +26,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const [admin, setAdmin] = useState<AdminUser | null>(null)
   const [attendees, setAttendees] = useState<readonly Attendee[]>([])
   const [attendance, setAttendance] = useState<readonly CheckIn[]>([])
-  const [teams, setTeams] = useState<readonly Team[]>([])
   const [event, setEvent] = useState<EventInfo | null>(null)
   const [loadingData, setLoadingData] = useState(false)
   const [scanning, setScanning] = useState(false)
@@ -92,17 +89,14 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     */
     const isOwner = admin?.role === 'owner'
 
-    const [attendeesResult, attendanceResult, teamsResult, eventResult] =
-      await Promise.allSettled([
+    const [attendeesResult, attendanceResult, eventResult] = await Promise.allSettled([
         isOwner ? portalApi.listAttendees() : Promise.resolve<readonly Attendee[]>([]),
         portalApi.listAttendance(),
-        portalApi.getTeams(),
         portalApi.getEvent(),
       ])
 
     if (attendeesResult.status === 'fulfilled') setAttendees(attendeesResult.value)
     if (attendanceResult.status === 'fulfilled') setAttendance(attendanceResult.value)
-    if (teamsResult.status === 'fulfilled') setTeams(teamsResult.value)
     if (eventResult.status === 'fulfilled') setEvent(eventResult.value)
 
     setLoadingData(false)
@@ -217,7 +211,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     setAdmin(null)
     setAttendees([])
     setAttendance([])
-    setTeams([])
     setEvent(null)
     setStatus('anonymous')
   }, [])
@@ -336,29 +329,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     [toError],
   )
 
-  const setAgendaStatus = useCallback(
-    async (id: string, agendaStatus: AgendaItem['status']) => {
-      setError(null)
-      writeSeq.current += 1
-      try {
-        await portalApi.updateAgendaItem(id, { status: agendaStatus })
-        setEvent((current) =>
-          current === null
-            ? current
-            : {
-                ...current,
-                agenda: current.agenda.map((item) =>
-                  item.id === id ? { ...item, status: agendaStatus } : item,
-                ),
-              },
-        )
-      } catch (cause) {
-        toError(cause)
-      }
-    },
-    [toError],
-  )
-
   const updateEventDay = useCallback(
     async (day: number | null) => {
       setError(null)
@@ -407,14 +377,12 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), [])
   const clearLastScan = useCallback(() => setLastScan(null), [])
 
-
   const value = useMemo<AdminContextValue>(
     () => ({
       status,
       admin,
       attendees,
       attendance,
-      teams,
       event,
       loadingData,
       scanning,
@@ -429,7 +397,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       updateEventDay,
       setLockedDays,
       setRegistrationMode,
-      setAgendaStatus,
       clearError,
       clearLastScan,
     }),
@@ -438,7 +405,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       admin,
       attendees,
       attendance,
-      teams,
       event,
       loadingData,
       scanning,
@@ -453,7 +419,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       updateEventDay,
       setLockedDays,
       setRegistrationMode,
-      setAgendaStatus,
       clearError,
       clearLastScan,
     ],

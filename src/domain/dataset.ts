@@ -1,4 +1,4 @@
-import type { EventInfo, Team } from './types'
+import type { EventInfo } from './types'
 
 /**
  * Seed programme data.
@@ -15,8 +15,8 @@ export const SEED_EVENT: EventInfo = {
   tagline: 'AI agents — built by you',
   organiser: 'Google Developer Groups',
   organiserHost: 'Amity University Bengaluru',
-  date: '2026-10-14',
-  endDate: '2026-10-15',
+  date: '2026-10-13',
+  endDate: '2026-10-14',
   venue: 'Seminar Hall',
   city: 'Bengaluru',
   phase: 'registration',
@@ -39,44 +39,18 @@ export const SEED_EVENT: EventInfo = {
   dayOverride: null,
   lockedDays: [],
   agenda: [
-    { id: 'ag_01', day: 1, startsAt: '09:30', title: 'Registration & Badges', speaker: 'GDG Bengaluru', room: 'Seminar Hall', status: 'done' },
-    { id: 'ag_02', day: 1, startsAt: '10:00', title: 'Opening: What Awakens', speaker: 'Dr. Anjali Rao', room: 'Seminar Hall', status: 'done' },
-    { id: 'ag_03', day: 1, startsAt: '11:15', title: 'Agents That Plan, Act and Recover', speaker: 'Kabir Menon', room: 'Seminar Hall', status: 'live' },
-    { id: 'ag_04', day: 1, startsAt: '13:00', title: 'Build Lab: Tool-Calling & Memory', speaker: 'Sneha Iyer', room: 'Seminar Hall', status: 'upcoming' },
-    { id: 'ag_05', day: 1, startsAt: '15:30', title: 'Ship It: Lightning Demos', speaker: 'Community', room: 'Seminar Hall', status: 'upcoming' },
-    { id: 'ag_06', day: 2, startsAt: '09:30', title: 'Day Two Opening', speaker: 'Kabir Menon', room: 'Seminar Hall', status: 'upcoming' },
-    { id: 'ag_07', day: 2, startsAt: '10:15', title: 'Agent Workflows in Depth', speaker: 'Dr. Anjali Rao', room: 'Seminar Hall', status: 'upcoming' },
-    { id: 'ag_08', day: 2, startsAt: '13:00', title: 'Capstone Build Session', speaker: 'Sneha Iyer', room: 'Seminar Hall', status: 'upcoming' },
-    { id: 'ag_09', day: 2, startsAt: '15:00', title: 'Closing & Awards', speaker: 'Community', room: 'Seminar Hall', status: 'upcoming' },
+    { id: 'ag_01', day: 1, startsAt: null, title: 'Technical sessions', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_02', day: 1, startsAt: null, title: 'Ecosystem exploration', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_03', day: 1, startsAt: null, title: 'Challenge Brief & Rules', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_04', day: 2, startsAt: null, title: 'Challenge kick-off', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_05', day: 2, startsAt: null, title: 'Idea formation', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_06', day: 2, startsAt: null, title: 'Team setup', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_07', day: 2, startsAt: null, title: 'Project development', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_08', day: 2, startsAt: null, title: 'Demonstrations', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_09', day: 2, startsAt: null, title: 'Evaluation', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
+    { id: 'ag_10', day: 2, startsAt: null, title: 'Closing', speaker: 'Aryan Gandhi & Tanisha Sharma', room: null },
   ],
 }
-
-export const SEED_TEAMS: readonly Team[] = [
-  {
-    id: 'team_android',
-    name: 'Android Bengaluru',
-    leadName: 'Sneha Iyer',
-    members: ['Rohan Gupta', 'Meera Nair', 'Arjun Rao', 'Divya Menon'],
-  },
-  {
-    id: 'team_ai',
-    name: 'AI & ML Circle',
-    leadName: 'Kabir Menon',
-    members: ['Ananya Iyer', 'Vikram Shah', 'Nisha Pillai', 'Sameer Khan'],
-  },
-  {
-    id: 'team_web',
-    name: 'Web Platform Guild',
-    leadName: 'Ritika Shah',
-    members: ['Karthik Reddy', 'Pooja Desai', 'Aditya Bose'],
-  },
-  {
-    id: 'team_cloud',
-    name: 'Cloud Native Chapter',
-    leadName: 'Arjun Nair',
-    members: ['Fatima Sheikh', 'Rahul Verma', 'Lakshmi Iyer', 'Tanvi Joshi', 'Zoya Khan'],
-  },
-]
 
 export const SEED_ADMINS = [
   { id: 'adm_01', username: 'admin', displayName: 'Event Operations' },

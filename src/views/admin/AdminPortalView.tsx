@@ -13,7 +13,7 @@ import { GuestListPanel } from './GuestListPanel'
 import { RegistrationSwitch } from './RegistrationSwitch'
 import { AnnouncementPanel } from './AnnouncementPanel'
 import { AddAttendeePanel } from './AddAttendeePanel'
-import type { AdmissionMethod, AgendaItem, EventPhase, Team } from '@/domain/types'
+import type { AdmissionMethod, AgendaItem, EventPhase } from '@/domain/types'
 
 /**
  * How each attendance row was authenticated at the gate.
@@ -51,14 +51,18 @@ const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   Still five, deliberately. A sixth tab would have fixed nothing and made the bar
   narrower on the phone.
 */
-type Tab = 'scan' | 'attendance' | 'people' | 'teams' | 'event'
+type Tab = 'scan' | 'attendance' | 'people' | 'event'
 
 /**
  * The tabs, and who may see each one.
  *
- * `gate` is whoever is on the door: scan a badge, look at the log, look at teams.
- * Nothing else. `owner` additionally gets the Desk (changing somebody's
- * credential is not a door-side job) and the Programme.
+ * `gate` is whoever is on the door: scan a badge, look at the log. Nothing else.
+ * `owner` additionally gets the Desk (changing somebody's credential is not a
+ * door-side job) and the Programme.
+ *
+ * There was a Teams tab. It was removed rather than emptied — the four teams it
+ * showed were invented, and an empty panel with dead code behind it is a feature
+ * that is half-removed.
  *
  * The role is read from the session to decide what to DRAW. It is not what
  * decides what is ALLOWED — every one of these routes checks the role again on
@@ -73,18 +77,15 @@ const TABS: { id: Tab; label: string; ownerOnly: boolean }[] = [
   { id: 'scan', label: 'Scan', ownerOnly: false },
   { id: 'attendance', label: 'Attendance', ownerOnly: false },
   { id: 'people', label: 'People', ownerOnly: true },
-  { id: 'teams', label: 'Teams', ownerOnly: false },
   { id: 'event', label: 'Event', ownerOnly: true },
 ]
 
 const PHASES: EventPhase[] = ['registration', 'live', 'completed']
-const AGENDA_STATUSES: AgendaItem['status'][] = ['done', 'live', 'upcoming']
 
 export function AdminPortalView() {
   const {
     admin,
     attendance,
-    teams,
     event,
     loadingData,
     scanning,
@@ -94,7 +95,6 @@ export function AdminPortalView() {
     refresh,
     scanAttendance,
     setEventPhase,
-    setAgendaStatus,
     updateEventDay,
     setLockedDays,
     setRegistrationMode,
@@ -402,8 +402,6 @@ export function AdminPortalView() {
               </div>
             ) : null}
 
-            {activeTab === 'teams' ? <TeamsList teams={teams} loading={loadingData} /> : null}
-
             {activeTab === 'event' ? (
               <>
                 <ProgrammePanel
@@ -412,7 +410,6 @@ export function AdminPortalView() {
                   onPhaseChange={(phase) => void setEventPhase(phase)}
                   onDayChange={(day) => void updateEventDay(day)}
                   onLockedDaysChange={(days) => void setLockedDays(days)}
-                  onStatusChange={(id, status) => void setAgendaStatus(id, status)}
                 />
 
                 {/*
@@ -1175,74 +1172,6 @@ function AttendanceLog({
   )
 }
 
-/* ------------------------------------------------------------------ teams */
-
-/**
- * Teams, read-only: name, lead, members.
- *
- * Teams are an organiser concern and are not shown on the attendee dashboard.
- */
-function TeamsList({
-  teams,
-  loading,
-}: {
-  teams: readonly Team[]
-  loading: boolean
-}) {
-  if (loading) return <Skeleton className="h-64 w-full" />
-
-  if (teams.length === 0) {
-    return (
-      <p
-        role="status"
-        className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted"
-      >
-        No teams configured
-      </p>
-    )
-  }
-
-  return (
-    <div className="grid grid-cols-1 gap-8 xl:grid-cols-2">
-      {teams.map((team) => (
-        <section key={team.id} className="flex flex-col border-2 border-swiss-ink">
-          <header className="border-b-2 border-swiss-ink bg-swiss-ink px-5 py-3">
-            <h2 className="text-lg font-black uppercase leading-none tracking-tight text-swiss-paper">
-              {team.name}
-            </h2>
-          </header>
-
-          <div className="p-5">
-            <p className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
-              Lead
-            </p>
-            <p className="mt-1 text-base font-black tracking-tight text-swiss-ink">
-              {team.leadName}
-            </p>
-          </div>
-
-          <div className="border-t-2 border-swiss-ink p-5">
-            <p className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">
-              Members — {team.members.length}
-            </p>
-            <ul className="mt-3 flex flex-col gap-2">
-              {team.members.map((member) => (
-                <li
-                  key={member}
-                  className="flex items-center gap-3 border-b border-swiss-ink/15 pb-2 text-sm font-medium text-swiss-ink last:border-b-0"
-                >
-                  <span aria-hidden="true" className="size-2 shrink-0 bg-swiss-accent" />
-                  {member}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      ))}
-    </div>
-  )
-}
-
 /* -------------------------------------------------------------- programme */
 
 function ProgrammePanel({
@@ -1251,14 +1180,12 @@ function ProgrammePanel({
   onPhaseChange,
   onDayChange,
   onLockedDaysChange,
-  onStatusChange,
 }: {
   event: ReturnType<typeof useAdmin>['event']
   loading: boolean
   onPhaseChange: (phase: EventPhase) => void
   onDayChange: (day: number | null) => void
   onLockedDaysChange: (days: readonly number[]) => void
-  onStatusChange: (id: string, status: AgendaItem['status']) => void
 }) {
   const locked = event?.lockedDays ?? []
   if (loading) return <Skeleton className="h-64 w-full" />
@@ -1274,9 +1201,17 @@ function ProgrammePanel({
     )
   }
 
-  // Only mark day boundaries when the programme genuinely spans more than one
-  // day; on a single-day schedule it would be pure noise.
-  const agendaDays = new Set(event.agenda.map((item) => item.day ?? 1)).size
+  // The programme is grouped by day rather than rendered as one flat list. A flat
+  // two-day list has no visible seam, and the seam is the thing a reader is
+  // actually looking for.
+  const byDay = new Map<number, AgendaItem[]>()
+  for (const item of event.agenda) {
+    const day = item.day ?? 1
+    const bucket = byDay.get(day)
+    if (bucket) bucket.push(item)
+    else byDay.set(day, [item])
+  }
+  const programmeByDay = [...byDay.entries()].sort((a, b) => a[0] - b[0])
 
   return (
     <div className="flex flex-col gap-8">
@@ -1457,65 +1392,62 @@ function ProgrammePanel({
       </section>
 
       <section className="border-2 border-swiss-ink">
-        <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
-          Agenda Control
-        </h2>
-        <ul className="flex flex-col">
-          {event.agenda.map((item, index) => {
-            const day = item.day ?? 1
-            const previousDay = index > 0 ? (event.agenda[index - 1]?.day ?? 1) : null
-            const startsNewDay = previousDay !== null && previousDay !== day
-            return (
-              <li
-                key={item.id}
-                className={[
-                  'flex flex-col gap-3 p-4 sm:flex-row sm:items-center',
-                  index > 0 && !startsNewDay ? 'border-t border-swiss-ink/15' : '',
-                  // A heavier rule where the programme rolls over to the next
-                  // day, so the split is visible at a glance.
-                  startsNewDay ? 'border-t-2 border-swiss-ink' : '',
-                ].join(' ')}
-              >
-                <div className="flex w-14 shrink-0 flex-col">
-                  <time className="font-mono text-2xs font-bold text-swiss-ink">
-                    {item.startsAt}
-                  </time>
-                  {agendaDays > 1 ? (
-                    <span className="font-mono text-2xs text-content-muted">D{day}</span>
-                  ) : null}
-                </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-bold tracking-tight text-swiss-ink">
-                  {item.title}
-                </p>
-                <p className="mt-0.5 text-2xs text-content-muted">
-                  {item.speaker} · {item.room}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-px bg-swiss-ink">
-                {AGENDA_STATUSES.map((status) => (
-                  <button
-                    key={status}
-                    type="button"
-                    onClick={() => onStatusChange(item.id, status)}
-                    aria-pressed={item.status === status}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3">
+          <h2 className="text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
+            Programme
+          </h2>
+          {/*
+            Read-only, and it says so.
+
+            This panel used to let an owner set each session to done / live / upcoming,
+            against a timetable of invented 09:30 slots and a "Dr. Anjali Rao" who does
+            not exist. The control was removed rather than left disabled: a button that
+            looks live but does nothing is worse than no button, and "live" against a
+            schedule with no times describes nothing at all.
+          */}
+          <p className="text-2xs text-swiss-paper/70">
+            Not editable — no confirmed timetable.
+          </p>
+        </div>
+        {programmeByDay.length === 0 ? (
+          <p className="p-6 text-2xs text-content-muted">Programme unavailable</p>
+        ) : (
+          programmeByDay.map(([day, items], dayIndex) => (
+            <div
+              key={day}
+              className={[
+                dayIndex > 0 ? 'border-t-2 border-swiss-ink' : '',
+              ].join(' ')}
+            >
+              <h3 className="border-b border-swiss-ink/15 bg-swiss-muted px-6 py-2 text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
+                Day {day}
+              </h3>
+              <ul>
+                {items.map((item, i) => (
+                  <li
+                    key={item.id}
                     className={[
-                      'min-h-11 flex-[1_0_auto] cursor-pointer px-3 py-1.5',
-                      'text-2xs font-bold uppercase tracking-[0.15em]',
-                      'transition-colors duration-150 ease-linear',
-                      item.status === status
-                        ? 'bg-swiss-accent-text text-swiss-paper'
-                        : 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted',
+                      'px-6 py-2.5',
+                      i > 0 ? 'border-t border-swiss-ink/10' : '',
                     ].join(' ')}
                   >
-                    {status}
-                  </button>
+                    <p className="text-sm font-bold tracking-tight text-swiss-ink">
+                      {item.title}
+                    </p>
+                  </li>
                 ))}
-              </div>
-            </li>
-            )
-          })}
-        </ul>
+              </ul>
+              {/*
+                Speakers once per day rather than once per row. Every row carries the
+                same pair, because both speakers are on both days; repeating the string
+                ten times says nothing and reads like a data error.
+              */}
+              <p className="border-t border-swiss-ink/15 px-6 py-2.5 text-2xs text-content-muted">
+                Speakers: {items[0]?.speaker}
+              </p>
+            </div>
+          ))
+        )}
       </section>
     </div>
   )

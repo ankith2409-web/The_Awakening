@@ -1,3 +1,4 @@
+import { useAttendee } from '@/auth/contexts'
 import { usePush } from '@/push/usePush'
 
 /**
@@ -5,8 +6,16 @@ import { usePush } from '@/push/usePush'
  *
  * Deliberately NOT a modal, and not automatic. Browsers only permit a permission
  * prompt inside a user gesture, so any design that interrupts somebody who has just
- * logged in is either impossible or a dark pattern. This is a button on their own
- * dashboard, in their own time, that does nothing at all until pressed.
+ * logged in is either impossible or a dark pattern. This is a button they press, in
+ * their own time, that does nothing at all until then.
+ *
+ * It appears on the login and register pages as well as the dashboard.
+ *
+ * The reason is not discoverability. The reason is that people decide to want
+ * notifications when they arrive and read the login form, and by the time they are
+ * logged in and looking at a dashboard they have already walked past the one screen
+ * that made them think about it. It was the single biggest reason nobody had
+ * subscribed: not a bug, a control behind a door.
  *
  * The important behaviour is what happens AFTER they say no.
  *
@@ -28,8 +37,19 @@ const BLOCKER_COPY: Record<string, string> = {
   not_configured: 'Notifications are not available right now.',
 }
 
+/**
+ * Whether there is a session to register the subscription with.
+ *
+ * Read from the attendee context rather than passed in, so that a caller cannot
+ * mount this on the dashboard and get it wrong. `AttendeeProvider` wraps every
+ * route including `/login`, so this returns `null` there and is a valid answer
+ * rather than a missing one.
+ */
 export function NotificationToggle() {
-  const { status, blocker, enable, disable } = usePush()
+  const { attendee } = useAttendee()
+  const { status, blocker, pending, enable, disable } = usePush({
+    authenticated: attendee !== null,
+  })
 
   /*
     Nothing while we are still finding out.
@@ -80,7 +100,18 @@ export function NotificationToggle() {
     return (
       <div className="flex flex-wrap items-center justify-between gap-3 border-l-4 border-swiss-ink bg-swiss-muted p-4">
         <p className="text-2xs font-medium leading-relaxed text-content-muted">
-          Notifications are on. We will reach you here if something changes on the day.
+          {/*
+            Two different true statements, and the difference matters.
+
+            With a session, the subscription is on the server and a broadcast will
+            reach this phone. Without one, it is sitting in this browser waiting —
+            which is genuinely on, but will not become deliverable until they log
+            in. Saying "we will reach you here" before then would be a promise the
+            portal cannot yet keep.
+          */}
+          {pending
+            ? 'Notifications are on for this browser. Log in and they are linked to your account — nothing else to do.'
+            : 'Notifications are on. We will reach you here if something changes on the day.'}
         </p>
         <button
           type="button"
@@ -106,6 +137,7 @@ export function NotificationToggle() {
         </span>
         <span className="mt-1 block text-2xs font-medium leading-relaxed text-content-muted">
           A message from the organisers, even if this page is closed.
+          {!pending && attendee === null ? ' Turn it on before you log in and it keeps working.' : ''}
         </span>
       </span>
       <span

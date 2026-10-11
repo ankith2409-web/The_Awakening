@@ -602,13 +602,33 @@ check(
 
 check(
   'every mutation bumps that counter',
-  (admin.match(/writeSeq\.current \+= 1/g) ?? []).length >= 6,
+  /*
+    Six writers once: setEventPhase, updateEventDay, setLockedDays,
+    setRegistrationMode, scanAttendance, setAttendeePassword — plus setAgendaStatus,
+    which is gone. Five is the correct floor now, and the point of the check is the
+    floor rather than the exact number: a new mutation that forgets to bump the
+    counter must not be able to slip in under it.
+  */
+  (admin.match(/writeSeq\.current \+= 1/g) ?? []).length >= 5,
   `only ${(admin.match(/writeSeq\.current \+= 1/g) ?? []).length} writes bump it`,
 )
 
 check(
   'the poll does not touch loadingData, which would strobe the skeletons every tick',
-  !/setLoadingData\(true\)[\s\S]{0,400}listAttendance[\s\S]{0,400}setLoadingData/.test(admin),
+  /*
+    Scoped to the poll body, like the two assertions below it.
+
+    It used to be a 400-character window over the whole file, which matched the
+    INITIAL LOAD — setLoadingData(true), then listAttendance, then
+    setLoadingData(false) — as though it were the poll. That was fine while the
+    load block happened to be longer than the window. Deleting one line from the
+    load fan-out brought it inside, and the assertion started reporting a strobe
+    that does not exist.
+
+    A window over a file this size will always eventually match something; naming
+    the function is the only version of this that cannot.
+  */
+  /const poll = async[\s\S]{0,600}?setLoadingData/.test(admin) === false,
   'the poll is toggling the loading state',
 )
 

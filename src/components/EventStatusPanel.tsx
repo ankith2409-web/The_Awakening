@@ -13,18 +13,17 @@ const PHASE_LABEL: Record<EventPhase, string> = {
   completed: 'Completed',
 }
 
-const STATUS_STYLE: Record<AgendaItem['status'], string> = {
-  done: 'bg-swiss-ink text-swiss-paper border-swiss-ink',
-  live: 'bg-swiss-accent-text text-swiss-paper border-swiss-accent-text',
-  upcoming: 'bg-swiss-paper text-swiss-ink border-swiss-ink',
-}
-
 /**
  * Event status column.
  *
- * The phase is the headline; the agenda beneath it is a definition list so the
- * time, title and speaker stay programmatically associated rather than being
- * loose text.
+ * The phase is the headline; the programme beneath it is grouped by day.
+ *
+ * There is no per-session time, room or status. The programme is what happens,
+ * not a timetable: the previous version showed a "Programme complete" bar and a
+ * DONE / LIVE / UPCOMING badge per session, both driven by a control an owner
+ * would have had to press every few minutes during the event. With that control
+ * gone, a bar fed by those flags would sit at 0% all day and a badge would sit
+ * at UPCOMING all day — both of which are worse than showing neither.
  */
 export function EventStatusPanel({
   event,
@@ -53,12 +52,9 @@ export function EventStatusPanel({
     )
   }
 
-  const done = event.agenda.filter((item) => item.status === 'done').length
-  const progress = event.agenda.length === 0 ? 0 : Math.round((done / event.agenda.length) * 100)
-
   // Agenda grouped by day, preserving order. A two-day programme rendered as
-  // one flat list would not say which session falls on the 14th and which on
-  // the 15th.
+  // one flat list would not say which session falls on the 13th and which on
+  // the 14th.
   const totalDays = new Set(event.agenda.map((item) => item.day ?? 1)).size
   const byDay = new Map<number, AgendaItem[]>()
   for (const item of event.agenda) {
@@ -95,36 +91,30 @@ export function EventStatusPanel({
         </p>
       </div>
 
-      {/* Progress: hard-edged segments, no gradients. */}
-      <div className="border-b-2 border-swiss-ink p-6">
-        <div className="flex items-baseline justify-between">
+      {/*
+        Attendance, not progress.
+
+        This used to be a "Programme complete" bar. It was honest only while
+        somebody kept the per-session status flags current, which during a live
+        event means pressing a button every few minutes — so in practice it read
+        0% on the dashboard of every attendee at the exact moment the programme
+        was furthest from 0%.
+      */}
+      {typeof checkedInCount === 'number' ? (
+        <div className="border-b-2 border-swiss-ink p-6">
           <span className="text-2xs font-bold uppercase tracking-[0.2em] text-swiss-ink">
-            Programme complete
+            Checked in
           </span>
-          <span className="font-mono text-sm font-black text-swiss-ink">{progress}%</span>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="font-mono text-2xl font-black leading-none text-swiss-ink">
+              {checkedInCount}
+            </span>
+            <span className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
+              of {event.capacity} capacity
+            </span>
+          </div>
         </div>
-        <div
-          className="mt-3 flex gap-1"
-          role="img"
-          aria-label={`${progress} percent of the programme complete`}
-        >
-          {event.agenda.map((item) => (
-            <div
-              key={item.id}
-              className={[
-                'h-2 flex-1 border-2 border-swiss-ink',
-                item.status === 'done' ? 'bg-swiss-ink' : 'bg-swiss-paper',
-                item.status === 'live' ? 'bg-swiss-accent-text' : '',
-              ].join(' ')}
-            />
-          ))}
-        </div>
-        {typeof checkedInCount === 'number' ? (
-          <p className="mt-3 text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-            {checkedInCount} checked in · {event.capacity} capacity
-          </p>
-        ) : null}
-      </div>
+      ) : null}
 
       {/*
         Agenda, grouped by day. A day heading appears only when the event
@@ -145,32 +135,27 @@ export function EventStatusPanel({
                 key={item.id}
                 style={stagger(index)}
                 className={[
-                  'motion-stagger flex items-start gap-4 p-4',
+                  'motion-stagger p-4',
                   index > 0 ? 'border-t border-swiss-ink/15' : '',
                 ].join(' ')}
               >
-                <time className="w-14 shrink-0 pt-0.5 font-mono text-2xs font-bold text-swiss-ink">
-                  {item.startsAt}
-                </time>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold leading-snug tracking-tight text-swiss-ink">
-                    {item.title}
-                  </p>
-                  <p className="mt-1 text-2xs font-medium text-content-muted">
-                    {item.speaker} · {item.room}
-                  </p>
-                </div>
-                <span
-                  className={[
-                    'shrink-0 border-2 px-2 py-0.5 text-2xs font-bold uppercase tracking-[0.15em]',
-                    STATUS_STYLE[item.status],
-                  ].join(' ')}
-                >
-                  {item.status}
-                </span>
+                <p className="text-sm font-bold leading-snug tracking-tight text-swiss-ink">
+                  {item.title}
+                </p>
               </li>
             ))}
           </ol>
+
+          {/*
+            Speakers once per day. Both presenters are on both days, so every row
+            carries the same string; printed ten times it reads like a fault
+            rather than a fact.
+          */}
+          {items[0] ? (
+            <p className="border-t border-swiss-ink/15 px-4 py-2.5 text-2xs font-medium text-content-muted">
+              Speakers: {items[0].speaker}
+            </p>
+          ) : null}
         </div>
       ))}
     </Panel>

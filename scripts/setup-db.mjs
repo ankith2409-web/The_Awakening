@@ -91,13 +91,12 @@ try {
     `select
        (select count(*) from events)   as events,
        (select count(*) from agenda)   as agenda,
-       (select count(*) from teams)    as teams,
        (select count(*) from admins)   as admins,
        (select count(*) from attendees) as attendees`,
   )
   const row = counts.rows[0]
   console.log(
-    `\n  Done. events=${row.events} agenda=${row.agenda} teams=${row.teams} ` +
+    `\n  Done. events=${row.events} agenda=${row.agenda} ` +
       `admins=${row.admins} attendees=${row.attendees}\n`,
   )
 } catch (error) {

@@ -158,7 +158,7 @@ const publicAttendee = (row: AttendeeRow) => ({
  * Staff access levels.
  *
  * `owner` runs the event: the roster, credentials, the programme. `gate` is a
- * volunteer with a phone at the door: mark attendance, read the log, read teams.
+ * volunteer with a phone at the door: mark attendance, read the log.
  * Nothing in the codebase may widen a `gate` session.
  *
  * There is exactly one `gate` credential, shared by whoever is on the door. It is
@@ -189,7 +189,14 @@ async function route(
   method: string,
   path: string[],
 ): Promise<void> {
-  const [group, action, ...rest] = path
+  /*
+    `action` and `rest` are no longer destructured.
+
+    They existed for `GET /teams` and `PATCH /admin/agenda/:id`, both of which are
+    gone. Left in place they read as though those routes might still come back, and
+    an unused destructuring is one more thing to grep past when auditing.
+  */
+  const [group] = path
   const key = `${method} /${path.join('/')}`
 
   /* -- public programme data -------------------------------------------- */
@@ -215,24 +222,16 @@ async function route(
       publicKey: vapidPublicKey(),
     })
   }
-  if (key === 'GET /teams') {
-    // Teams are an organiser concern. Exposed publicly because the admin
-    // portal is the only consumer and it holds a session anyway, but a
-    // dedicated admin route exists below for that.
-    const { rows } = await db().query(
-      'select id, name, lead_name, members from teams order by sort_order',
-    )
-    return json(
-      res,
-      200,
-      rows.map((r: Record<string, unknown>) => ({
-        id: r.id,
-        name: r.name,
-        leadName: r.lead_name,
-        members: r.members,
-      })),
-    )
-  }
+
+  /*
+    There is no GET /teams.
+
+    There was one, and it served four invented teams to anyone who asked, with no
+    session required. Removing the route and the table together matters: leaving
+    the route would 500 against the dropped table, which during an event looks
+    like the portal is broken rather than like a feature that was removed on
+    purpose.
+  */
 
   /* -- attendee --------------------------------------------------------- */
   if (group === 'attendee') {
@@ -1492,50 +1491,21 @@ async function route(
         })
       }
 
-      case 'GET /admin/agenda':
-      case 'PATCH /admin/agenda': {
+      case 'GET /admin/agenda': {
         requireAdmin()
         return sendEvent(res)
       }
     }
 
-    // PATCH /admin/agenda/:id
-    if (method === 'PATCH' && group === 'admin' && action === 'agenda' && rest[0]) {
-      requireOwner()
-      const id = rest[0]
-      const body = await readJson<Record<string, unknown>>(req)
-      const status = body.status
-      if (status !== 'done' && status !== 'live' && status !== 'upcoming') {
-        throw badRequest('unknown', 'Invalid status.')
-      }
-      const { rows: updated } = await db().query<{
-        id: string
-        starts_at: string
-        title: string
-        speaker: string
-        room: string
-        status: string
-      }>(
-        `update agenda set status = $2
-           where id = $1
-         returning id, starts_at, title, speaker, room, status`,
-        [id, status],
-      )
-      const item = updated[0]
-      if (!item) throw notFound('That agenda item does not exist.')
+    /*
+      There is no PATCH /admin/agenda/:id.
 
-      // Returns the single updated item, matching the client contract. The
-      // event phase endpoint returns the whole event because that is what the
-      // caller replaces its state with; here the caller patches one row.
-      return json(res, 200, {
-        id: item.id,
-        startsAt: item.starts_at,
-        title: item.title,
-        speaker: item.speaker,
-        room: item.room,
-        status: item.status,
-      })
-    }
+      It existed so an owner could mark a session done / live / upcoming against
+      a timetable. There is no timetable, so the flag described nothing, and an
+      unattended event would have shown every attendee a permanent "upcoming"
+      badge. Removing the route and the control together means neither the
+      button nor a way to re-enable it survives.
+    */
   }
 
   throw notFound('No such endpoint.')
@@ -1680,7 +1650,7 @@ async function sendEvent(
   const dayState = await resolveEventDay()
 
   const { rows: agenda } = await db().query(
-    `select id, day, starts_at, title, speaker, room, status
+    `select id, day, starts_at, title, speaker, room
        from agenda where event_id = $1 order by sort_order`,
     [event.id],
   )
@@ -1750,7 +1720,6 @@ async function sendEvent(
       title: item.title,
       speaker: item.speaker,
       room: item.room,
-      status: item.status,
     })),
   })
 }

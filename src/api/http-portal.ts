@@ -2,7 +2,6 @@ import {
   PortalError,
   type AdminLoginInput,
   type AdminSession,
-  type AgendaItem,
   type Attendee,
   type AttendeeLoginInput,
   type AttendeeRegisterInput,
@@ -16,7 +15,6 @@ import {
   type PortalErrorCode,
   type PushState,
   type PushSubscriptionPayload,
-  type Team,
   type Ticket,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
@@ -145,10 +143,6 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('GET', '/event')
   }
 
-  getTeams(): Promise<readonly Team[]> {
-    return this.#request('GET', '/teams')
-  }
-
   getTicket(): Promise<Ticket> {
     return this.#request('GET', '/attendee/ticket')
   }
@@ -201,17 +195,6 @@ export class HttpPortalApi implements PortalApi {
 
   adminBroadcast(input: { title: string; body: string }): Promise<BroadcastResult> {
     return this.#request('POST', '/admin/push/send', input)
-  }
-
-  updateAgendaItem(
-    id: string,
-    patch: Partial<AgendaItem>,
-  ): Promise<AgendaItem> {
-    return this.#request(
-      'PATCH',
-      `/admin/agenda/${encodeURIComponent(id)}`,
-      patch,
-    )
   }
 
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {

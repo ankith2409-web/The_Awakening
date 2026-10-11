@@ -136,9 +136,12 @@ async function main() {
     `venue and city are both "${event.body?.city}"`,
   )
 
+  /*
+    Asserted absent rather than merely unused: a removed endpoint that quietly
+    came back, or that 500s against a dropped table, is the failure worth guarding.
+  */
   const teams = await call(anon, 'GET', '/teams')
-  check('GET /teams returns teams', teams.status === 200 && teams.body?.length === 4)
-  check('teams have name/lead/members', teams.body?.[0] && 'name' in teams.body[0] && 'leadName' in teams.body[0] && Array.isArray(teams.body[0].members))
+  check('GET /teams is gone, not merely unused', teams.status === 404, `got ${teams.status}`)
 
   /* -- guards ---------------------------------------------------------- */
   check('anonymous /admin/attendance is forbidden', (await call(anon, 'GET', '/admin/attendance')).status === 403)
@@ -412,30 +415,33 @@ async function main() {
     const badPhase = await call(adminJar, 'PATCH', '/admin/event', { phase: 'nonsense' })
     check('invalid phase rejected', badPhase.status === 400)
 
-    const agendaId = phase.body?.agenda?.[0]?.id
-    check('event carries an agenda id to patch', typeof agendaId === 'string')
+    /*
+      The programme is readable but not writable.
 
-    const patch = await call(adminJar, 'PATCH', `/admin/agenda/${agendaId}`, {
+      There is no confirmed timetable, so there is nothing for a status flag to
+      describe, and the control that moved it was removed. What is asserted here
+      is that the endpoint is GONE — not that it returns an error, which would
+      leave the door open for it to be reinstated by accident.
+    */
+    const agendaId = phase.body?.agenda?.[0]?.id
+    check('event still carries a programme', typeof agendaId === 'string')
+
+    const agendaPatch = await call(adminJar, 'PATCH', `/admin/agenda/${agendaId}`, {
       status: 'live',
     })
     check(
-      'agenda PATCH returns one AgendaItem, not the event',
-      patch.status === 200 &&
-        patch.body?.id === agendaId &&
-        patch.body?.status === 'live' &&
-        patch.body?.agenda === undefined,
-      `keys: ${JSON.stringify(Object.keys(patch.body ?? {}).slice(0, 6))}`,
+      'PATCH /admin/agenda/:id is gone, not merely unused',
+      agendaPatch.status === 404,
+      `got ${agendaPatch.status}`,
     )
 
-    const badAgenda = await call(adminJar, 'PATCH', `/admin/agenda/${agendaId}`, {
-      status: 'nonsense',
-    })
-    check('invalid agenda status rejected', badAgenda.status === 400)
-
-    const missingAgenda = await call(adminJar, 'PATCH', '/admin/agenda/no_such_item', {
-      status: 'live',
-    })
-    check('unknown agenda item 404s', missingAgenda.status === 404)
+    /*
+      And it does not come back with a second meaning either. A row that still
+      carries a status would let something mark a session live again by writing
+      to it directly.
+    */
+    const stillHasStatus = phase.body?.agenda?.[0]?.status !== undefined
+    check('the programme carries no status field', !stillHasStatus)
   }
 
   /* -- attendee sees it ------------------------------------------------- */

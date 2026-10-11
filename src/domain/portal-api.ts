@@ -19,10 +19,8 @@ import type {
   RosterRows,
   RosterState,
   RosterUploadResult,
-  Team,
   Ticket,
 } from './types'
-
 /**
  * Everything the portal can ask the backend for.
  *
@@ -33,7 +31,6 @@ export interface PortalApi {
   /* -- attendee -------------------------------------------------------- */
   getAttendeeSession(): Promise<AttendeeSession | null>
   attendeeLogin(input: AttendeeLoginInput): Promise<AttendeeSession>
-
   /**
    * Registers, and returns the password the PORTAL chose.
    *
@@ -43,7 +40,6 @@ export interface PortalApi {
    * ever stored.
    */
   attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration>
-
   /**
    * Confirms the attendee can reproduce the password they were just given.
    *
@@ -53,7 +49,6 @@ export interface PortalApi {
    * the expected result of reading something aloud.
    */
   verifyAttendeePassword(password: string): Promise<{ readonly matches: boolean }>
-
   /**
    * Replaces one's own password, immediately after registering.
    *
@@ -69,38 +64,28 @@ export interface PortalApi {
     currentPassword: string
     newPassword: string
   }): Promise<{ readonly ok: true }>
-
   attendeeLogout(): Promise<void>
-
   /*
     There is deliberately no `resetAttendeePassword`.
-
     One existed, and it was the most serious weakness in the portal: no OTP, no
     email, no security question, so knowing a phone number was enough to take
     over that account and present its pass. Rate limiting was the only thing
     between it and a script walking the roster, and the endpoint was under
     active probing in production.
-
     Recovery is now admin-mediated. An attendee asks an organiser at the desk and
     `adminSetAttendeePassword` sets a new one — an authenticated, attributable
     action instead of an unauthenticated one. Absence of the method here is the
     reminder that there is no self-service path.
   */
-
   /* -- admin (separate door) -------------------------------------------- */
   getAdminSession(): Promise<AdminSession | null>
   adminLogin(input: AdminLoginInput): Promise<AdminSession>
   adminLogout(): Promise<void>
-
   /* -- programme data --------------------------------------------------- */
   getEvent(): Promise<EventInfo>
-  /** Admin-only. Teams are not exposed to the attendee portal. */
-  getTeams(): Promise<readonly Team[]>
-
   /* -- ticket ----------------------------------------------------------- */
   /** Signed, single-use pass encoded into the attendee's QR. */
   getTicket(): Promise<Ticket>
-
   /* -- attendance ------------------------------------------------------- */
   /**
    * The attendee's own attendance, one record per day they were marked.
@@ -110,7 +95,6 @@ export interface PortalApi {
    * came on day two that they arrived on day one.
    */
   getMyAttendance(): Promise<MyAttendance | null>
-
   /**
    * Records attendance from a scanned SEN.
    *
@@ -128,15 +112,11 @@ export interface PortalApi {
   recordAttendanceBySen(
     sen: string,
   ): Promise<CheckIn & { attendee: Attendee; dayState: DayState }>
-
-
   /* -- admin: directory & controls --------------------------------------- */
   listAttendees(): Promise<readonly Attendee[]>
   /** Every attendance record, oldest first. Carries the attendee name per row. */
   listAttendance(): Promise<readonly CheckIn[]>
-
   /* -- push -------------------------------------------------------------- */
-
   /**
    * The VAPID public key, and whether this deployment can send at all.
    *
@@ -145,16 +125,12 @@ export interface PortalApi {
    * show no toggle at all rather than one that fails when pressed.
    */
   getPushKey(): Promise<{ configured: boolean; publicKey: string | null }>
-
   /** Register this browser to receive pushes. Requires an attendee session. */
   subscribeToPush(subscription: PushSubscriptionPayload): Promise<void>
-
   /** Stop sending this browser pushes. Requires an attendee session. */
   unsubscribeFromPush(endpoint: string): Promise<void>
-
   /** Subscriber count and the last thing sent. Any staff account may read this. */
   getPushState(): Promise<PushState>
-
   /**
    * Broadcast to every opted-in device.
    *
@@ -166,7 +142,6 @@ export interface PortalApi {
     title: string
     body: string
   }): Promise<BroadcastResult>
-
   /**
    * Sets an attendee's password. The only password-change path in the portal.
    *
@@ -184,7 +159,6 @@ export interface PortalApi {
     sen: string
     password: string
   }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }>
-
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo>
   /**
    * Pins the day attendance is recorded against, or clears the pin.
@@ -206,7 +180,6 @@ export interface PortalApi {
    * current set and get it right under exactly the conditions where it matters.
    */
   setLockedDays(lockedDays: readonly number[]): Promise<EventInfo>
-
   /**
    * Opens, restricts or closes registration.
    *
@@ -215,7 +188,6 @@ export interface PortalApi {
    * the list is prepared, the other when the doors open and close.
    */
   setRegistrationMode(mode: RegistrationMode): Promise<EventInfo>
-
   /**
    * Creates one attendee by hand.
    *
@@ -231,7 +203,6 @@ export interface PortalApi {
     sen: string
     password: string
   }): Promise<Attendee>
-
   /**
    * The guest list: who is allowed to register.
    *
@@ -240,7 +211,6 @@ export interface PortalApi {
    * owner has the file they uploaded, so nothing is lost by not echoing it back.
    */
   getRoster(): Promise<RosterState>
-
   /**
    * Replaces the guest list wholesale.
    *
@@ -252,7 +222,6 @@ export interface PortalApi {
     rows: readonly { name: string; sen: string }[],
     mode: RegistrationMode,
   ): Promise<RosterUploadResult>
-
   /**
    * Empties the list.
    *
@@ -261,7 +230,6 @@ export interface PortalApi {
    * everybody as a side effect of tidying up.
    */
   clearRoster(): Promise<RosterState>
-
   /**
    * Every row on the guest list, owner-only, so the names can be checked.
    *
@@ -275,32 +243,22 @@ export interface PortalApi {
    * names and they are all correct" is a claim somebody will act on.
    */
   listRosterRows(): Promise<RosterRows>
-
-  updateAgendaItem(
-    id: string,
-    patch: Partial<Pick<EventInfo['agenda'][number], 'status'>>,
-  ): Promise<EventInfo['agenda'][number]>
 }
-
 /*
   There is deliberately no staff-management surface here.
-
   One existed — a Staff panel with create, role change, password reset and
   deactivation — and it was removed. There is exactly one `gate` credential and a
   couple of `owner` accounts, so a settings screen managed four rows that change
   perhaps twice before the event, while adding three routes that only an `owner`
   session could reach.
-
   Accounts are provisioned by `scripts/manage-staff.mjs` instead. That is the right
   shape when the number of staff is known and small: provisioning is a rare,
   deliberate act done from a machine with database access, not a button that is
   one stolen owner session away from being pressed by someone else.
 */
-
 export type {
   AdminUser,
   AdminRole,
-  Team,
   EventInfo,
   Attendee,
   CheckIn,

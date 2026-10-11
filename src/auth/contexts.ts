@@ -2,7 +2,6 @@ import { createContext, useContext } from 'react'
 import type {
   AdmissionMethod,
   AdminUser,
-  AgendaItem,
   Attendee,
   AttendeeRegistration,
   CheckIn,
@@ -10,17 +9,13 @@ import type {
   MyAttendance,
   PortalErrorCode,
   RegistrationMode,
-  Team,
   Ticket,
 } from '@/domain/types'
-
 export type SessionStatus = 'initialising' | 'active' | 'anonymous'
-
 export interface ErrorState {
   readonly code: PortalErrorCode
   readonly message: string
 }
-
 export interface AttendeeContextValue {
   readonly status: SessionStatus
   readonly attendee: Attendee | null
@@ -37,9 +32,7 @@ export interface AttendeeContextValue {
   readonly ticket: Ticket | null
   readonly loadingData: boolean
   readonly error: ErrorState | null
-
   login: (name: string, phone: string, password: string, remember: boolean) => Promise<void>
-
   /**
    * Creates the account and returns the password the portal generated.
    *
@@ -51,7 +44,6 @@ export interface AttendeeContextValue {
     phone: string,
     sen: string,
   ) => Promise<AttendeeRegistration>
-
   /**
    * Ends the read-back step and sends the attendee to their pass.
    *
@@ -61,13 +53,10 @@ export interface AttendeeContextValue {
    * back — that would show it exactly never.
    */
   completeRegistration: () => void
-
   logout: () => Promise<void>
   clearError: () => void
 }
-
 export const AttendeeContext = createContext<AttendeeContextValue | null>(null)
-
 export function useAttendee(): AttendeeContextValue {
   const context = useContext(AttendeeContext)
   if (context === null) {
@@ -75,7 +64,6 @@ export function useAttendee(): AttendeeContextValue {
   }
   return context
 }
-
 export interface AdminContextValue {
   readonly status: SessionStatus
   readonly admin: AdminUser | null
@@ -89,7 +77,6 @@ export interface AdminContextValue {
   readonly attendees: readonly Attendee[]
   /** Append-only attendance log, oldest first. Carries the attendee name per row. */
   readonly attendance: readonly CheckIn[]
-  readonly teams: readonly Team[]
   readonly event: EventInfo | null
   readonly loadingData: boolean
   /** True while a scan is in flight. */
@@ -122,7 +109,6 @@ export interface AdminContextValue {
     readonly day: number
     readonly totalDays: number
   } | null
-
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<void>
@@ -181,7 +167,6 @@ export interface AdminContextValue {
    * meant to keep closed.
    */
   setLockedDays: (days: readonly number[]) => Promise<void>
-  setAgendaStatus: (id: string, status: AgendaItem['status']) => Promise<void>
   /** Clears the current error banner. */
   clearError: () => void
   /**
@@ -193,9 +178,7 @@ export interface AdminContextValue {
    */
   clearLastScan: () => void
 }
-
 export const AdminContext = createContext<AdminContextValue | null>(null)
-
 export function useAdmin(): AdminContextValue {
   const context = useContext(AdminContext)
   if (context === null) {

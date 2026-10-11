@@ -182,14 +182,21 @@ async function main() {
     ghost.json.message === 'No such endpoint.',
     `message=${JSON.stringify(ghost.json.message)}`)
 
-  // Likewise for a validation failure, which has the most useful copy of all.
-  const badStatus = await call('PATCH', '/api/admin/agenda/999999', {
-    status: 'invented',
+  /*
+    Likewise for a validation failure that still exists.
+
+    This used to be an invalid agenda status. That route is gone, so the
+    surviving case is a bad event phase — the same owner-only, same-validate-then-
+    write shape, so the copy assertion still means what it meant.
+  */
+  const badPhase = await call('PATCH', '/api/admin/event', {
+    phase: 'invented',
   }, admin.cookie)
-  check('invalid agenda status is a 400', badStatus.status === 400, `got ${badStatus.status}`)
-  check('invalid agenda status keeps its specific wording',
-    badStatus.json.message === 'Invalid status.',
-    `message=${JSON.stringify(badStatus.json.message)}`)
+  check('invalid event phase is a 400', badPhase.status === 400, `got ${badPhase.status}`)
+  check('invalid event phase keeps its specific wording',
+    typeof badPhase.json.message === 'string' && badPhase.json.message.length > 0 &&
+      badPhase.json.message !== 'Request failed.',
+    `message=${JSON.stringify(badPhase.json.message)}`)
 
   /* -- codes that DO carry deliberate wording must keep it ------------------ */
 

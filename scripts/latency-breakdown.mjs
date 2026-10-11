@@ -68,7 +68,13 @@ console.log(`\n  Latency breakdown — ${BASE}\n`)
 await get('/event') // warm
 row('GET /event  (1 query)', await time(() => get('/event')), 'HTTP + 1 Neon round trip')
 
-row('GET /teams  (1 query)', await time(() => get('/teams')))
+/*
+  A second "HTTP + 1 round trip" data point used to sit here, measured against
+  `GET /teams`. That endpoint is gone along with the feature, and replacing it
+  with something else would quietly change what the number means — which is the
+  one thing a latency table must not do. The gap that matters is already covered
+  by the two rows below: queries versus no queries.
+*/
 
 // Unknown endpoint: still enters the function, still does nothing in the DB.
 // The gap against /event is pure function + platform overhead.

@@ -326,7 +326,6 @@ async function main() {
     ['POST', '/api/admin/attendees'],
     ['POST', '/api/admin/push/send'],
     ['POST', '/api/admin/attendees/password'],
-    ['PATCH', '/api/admin/agenda/ag_01'],
   ]
 
   for (const [method, path] of ownerOnly) {
@@ -335,21 +334,26 @@ async function main() {
   }
 
   /*
-    The real agenda mutation, checked against the row rather than the status code.
+    The agenda mutation is gone entirely, so it cannot be an authorisation
+    question any more — there is no owner who may do it either.
 
-    `PATCH /admin/agenda` with no id is an aliased GET -- it answers with the event
-    payload and changes nothing, which is why gate gets a 200 from it and why that is
-    not a privilege escalation. The mutation lives one segment deeper, and the only
-    thing worth asserting is that the row is still what it was afterwards. A status code
-    alone would pass even if the write went through and the response were refused.
+    Asserted for every role, because the interesting failure is not `gate` being
+    refused. It is somebody re-adding the route while tidying up, believing it
+    was still a feature.
   */
-  const agendaBefore = await db.query('select status from agenda where id = $1', ['ag_01'])
-  await send(gate, 'PATCH', '/api/admin/agenda/ag_01', { json: { status: 'done' } })
-  const agendaAfter = await db.query('select status from agenda where id = $1', ['ag_01'])
+  for (const [label, session] of [
+    ['gate', gate],
+    ['owner', owner],
+  ]) {
+    const r = await send(session, 'PATCH', '/api/admin/agenda/ag_01', { json: { status: 'done' } })
+    check(`${label} cannot patch an agenda item either`, r.status === 404, `got ${r.status}`)
+  }
+
+  const agendaNow = await db.query('select status from agenda where id = $1', ['ag_01'])
   check(
-    "gate could not move an agenda item, whatever the response said",
-    agendaBefore.rows[0]?.status === agendaAfter.rows[0]?.status,
-    `"${agendaBefore.rows[0]?.status}" became "${agendaAfter.rows[0]?.status}"`,
+    'no role can move an agenda item, whatever the response said',
+    agendaNow.rows[0]?.status === 'upcoming',
+    `status is "${agendaNow.rows[0]?.status}"`,
   )
 
   /*
