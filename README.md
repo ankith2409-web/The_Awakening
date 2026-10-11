@@ -1002,6 +1002,34 @@ denial of service from inside our own function.
 | Notifications collapse on one `tag` | Two messages should replace each other, not stack into a backlog nobody reads |
 | No `requireInteraction` | This is information, not a fire alarm; it is still in history for hours |
 
+**The dashboard banner retires, and the first version of it did not.** The
+attendees who declined the permission prompt get the newest announcement here instead,
+so the fallback has to behave like a notification and not like a layout change.
+
+The first attempt ran a fixed 3.2-second fade animation from *mount*. That is wrong in
+a way that only shows up when you watch it: the element stays mounted for five minutes,
+so the animation finished at 3.2 seconds and left an **invisible panel holding its place
+in the layout** for the remaining four. On a dashboard that refreshes itself every five
+seconds it reads as a layout bug — a gap where a message used to be, that nobody can
+explain.
+
+Arriving and leaving are two different events, so they are two different states. The
+banner holds at full opacity for five minutes, the timer then flips `retiring`, a
+400ms transition fades it, and only once that has run is the element unmounted and its
+ID recorded. `visibility` steps in the same frame so it leaves the accessibility tree
+and stops taking clicks as it goes, without a layout jump.
+
+| Property | Why |
+| --- | --- |
+| Five minutes visible | Somebody has to cross the room, or walk to the next one, before it can go |
+| Fade on retirement, not on mount | A fade from mount has finished long before the banner is meant to leave |
+| Unmounted after the fade | An invisible element still occupies space, and looks like a bug |
+| Recorded against the announcement ID | A single "seen" flag would swallow the *next* message — the one the fallback exists for |
+| All stored IDs enumerated | A device that sees three messages over two days has to know about three |
+| `localStorage` wrapped in try/catch | It *throws* when site data is blocked; private browsing would break the dashboard |
+| No close button | The owner decides when a message stops being relevant, and one way to remove it is one state fewer |
+| `prefers-reduced-motion` drops the transition | The banner still goes; only the animation is withheld |
+
 **What is not verified here.** No automated test can prove a notification reaches a
 real phone — that needs a real browser granting the permission, which a headless
 harness will not do. `test:push` asserts everything up to that boundary: that the key is
@@ -1548,7 +1576,7 @@ are zeroed explicitly.
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:registration` | 36    | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
-| `test:push`        | 41     | yes      | The public VAPID key and that it is public, subscribing needing a session, `gate` being unable to broadcast, an unreachable endpoint counted as a failure rather than a success, dead versus transient failures kept apart, and the service worker having no `fetch` handler at all |
+| `test:push`        | 64     | yes      | The public VAPID key and that it is public, subscribing needing a session, `gate` being unable to broadcast, an unreachable endpoint counted as a failure rather than a success, **a real push payload signed, decrypted and read back**, the service worker having no `fetch` handler at all, and the dashboard banner retiring rather than sitting there |
 | `test:live`      | 53          | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, no character that is the residue of a decoding accident, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |

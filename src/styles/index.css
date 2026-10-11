@@ -152,6 +152,43 @@
 }
 
 /*
+  The announcement banner retiring.
+
+  A TRANSITION, not a keyframe animation, and that distinction is the whole point.
+
+  The first attempt ran a 3.2s animation with `forwards` from mount, on the reasoning
+  that a fixed fade was simpler than a state change. It is wrong: the element stays
+  mounted for five minutes, so the animation finished at 3.2 seconds and left an
+  invisible panel occupying space for the remaining four and a bit. On the dashboard
+  that reads as a layout bug — a gap where a message used to be, that nobody can
+  explain.
+
+  So the fade belongs to the moment of retirement, not to the moment of arrival. The
+  component flips a class when its timer fires, this transitions the opacity, and the
+  component unmounts it once the transition has had time to run. Arriving and leaving
+  are now two different events, which is what they always were.
+
+  `visibility` steps at the very end so the banner leaves the accessibility tree and
+  stops taking clicks as it goes, without a layout jump.
+*/
+.gdg-announcement-retire {
+  transition:
+    opacity 400ms ease-in,
+    visibility 0s linear 400ms;
+}
+
+.gdg-announcement-retire[data-retiring='true'] {
+  opacity: 0;
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gdg-announcement-retire {
+    transition: none;
+  }
+}
+
+/*
   Tear: horizontal slice displacement with a skew. Many small stops inside the
   42-50% window is what reads as a datamosh rather than as a wobble; two stops
   just looks like a jump cut. `steps(1, end)` is deliberately NOT used here.

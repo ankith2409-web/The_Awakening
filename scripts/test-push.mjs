@@ -36,9 +36,11 @@
  */
 
 import { Client } from 'pg'
+import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { loadEnv } from './_env.mjs'
 import { testSen } from './_fixtures.mjs'
+import { decrypt, makeRecipient, verifyVapid } from './_lib/push-crypto.mjs'
 
 loadEnv()
 
@@ -441,7 +443,264 @@ async function main() {
     `got ${exact.status} — the UI says 80/240, so the server must accept exactly that`,
   )
 
-  /* -- 5. the service worker must be inert ----------------------------------- */
+/*
+    The silent failure.
+
+    Every other failure in this feature is visible. A missing key shows as "not
+    configured". A refused route returns 403. A dead endpoint shows up in the counts.
+
+    A broken crypto chain is none of those. The push service rejects the request,
+    nothing comes back that says why, the admin panel reports success, and the first
+    anybody finds out is when the event is half over and nobody was told. There is no
+    way to find that out from our side except by decrypting a payload ourselves.
+
+    So: build the request exactly as `broadcast` does — same VAPID keys, same
+    encryption — then decrypt it and read it back. What comes out is byte-for-byte what
+    a browser would have received.
+
+    `generateRequestDetails` rather than a stand-in push service, because web-push
+    refuses to speak plain HTTP and standing up a real TLS endpoint for a fake would
+    be more machinery than the thing being verified. This is the same call
+    `sendNotification` makes internally, one line earlier, with the network hop left
+    off.
+  */
+
+  const recipient = makeRecipient()
+  const announced = {
+    title: 'Room change',
+    body: 'Capstone build has moved to Seminar Hall.',
+  }
+  const audience = 'https://fcm.googleapis.com/fcm/send/stand-in-endpoint'
+
+  const { default: webpush } = await import('web-push')
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT ?? 'mailto:gdgtechnicalteam@gmail.com',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY,
+  )
+
+  let request = null
+  try {
+    request = webpush.generateRequestDetails(
+      { endpoint: audience, keys: { p256dh: recipient.p256dh, auth: recipient.auth } },
+      JSON.stringify({ title: announced.title, body: announced.body, url: '/dashboard' }),
+    )
+  } catch (error) {
+    console.log(`          ${error.message}`)
+  }
+
+  check('a request could be built at all', request !== null, 'the VAPID key pair may be malformed')
+
+  if (request !== null) {
+    const encoding = request.headers['Content-Encoding'] ?? ''
+    const authorization = request.headers.Authorization ?? ''
+
+    // The raw request bytes. Needed both by the in-band key check below and by the
+    // decrypt further down, so declared once here rather than in either place.
+    const body = Buffer.from(request.body)
+
+    /*
+      The subscriber key travels IN THE BODY, not in a header.
+
+      web-push emits `Encryption` and `Crypto-Key` only for the legacy `aesgcm`
+      encoding. For `aes128gcm`, which it uses by default, there are no such
+      headers at all: the sender ephemeral key and the salt form an 86-byte header
+      inside the body. Asserting `dh=` in a header would be asserting a field this
+      format does not have.
+    */
+    check(
+      'the payload is encrypted for the subscriber, not sent in the clear',
+      /aes128gcm/.test(encoding) && body[20] === 65,
+      'Content-Encoding was ' + encoding + '; in-body keyid length was ' + body[20],
+    )
+
+    /*
+      Not gzipped, and correctly so.
+
+      web-push only applies gzip above roughly 2KB, because compressing a short string
+      usually makes it longer. A small announcement is left uncompressed on purpose.
+      Asserting the presence of gzip here would be asserting the opposite of correct.
+    */
+    check(
+      'a short payload is left uncompressed, which is correct',
+      !/gzip/.test(encoding),
+      `Content-Encoding: ${encoding}`,
+    )
+
+    // --- the VAPID signature, which is what the push service actually checks ---
+
+    let vapid = null
+    try {
+      vapid = verifyVapid(authorization, process.env.VAPID_PUBLIC_KEY)
+    } catch (error) {
+      console.log(`          ${error.message}`)
+    }
+
+    check(
+      'the request carries a VAPID token',
+      vapid !== null,
+      `Authorization: ${authorization.slice(0, 50)}`,
+    )
+
+    if (vapid !== null) {
+      check(
+        'signed with the key this deployment is configured with',
+        vapid.keyMatchesConfig,
+        'a push service rejects a token whose key it was not configured with',
+      )
+
+      check(
+        'and the SIGNATURE actually verifies against it',
+        vapid.signatureValid,
+        'a token that decodes but does not verify is rejected by every push service, and nothing on our side would say so',
+      )
+
+      check(
+        'the token is an ES256 JWT',
+        vapid.header.alg === 'ES256' && vapid.header.typ === 'JWT',
+        JSON.stringify(vapid.header),
+      )
+
+      check(
+        // RFC 8292: `aud` is the ORIGIN of the push resource, not the whole endpoint.
+        // The path identifies one subscription; the origin identifies the service.
+        'aud is the origin of the push endpoint, per RFC 8292',
+        vapid.claims.aud === new URL(audience).origin,
+        `aud was ${vapid.claims.aud}`,
+      )
+
+      check(
+        'sub is a mailto the push service can contact',
+        /^mailto:/i.test(String(vapid.claims.sub)),
+        `sub was ${vapid.claims.sub}`,
+      )
+
+      check(
+        'the token is short-lived, not valid forever',
+        vapid.ttlSeconds > 0 && vapid.ttlSeconds <= 24 * 60 * 60,
+        `expires in ${vapid.ttlSeconds}s`,
+      )
+    }
+
+    // --- the payload itself, decrypted the way a browser would ---
+
+    const record = Buffer.from(request.body)
+    let plaintext = null
+    try {
+      plaintext = decrypt(recipient, body)
+    } catch (error) {
+      console.log(`          decrypt failed: ${error.message}`)
+    }
+
+    check(
+      'the body decrypts with the subscriber private key alone',
+      plaintext !== null,
+      'a payload nobody can decrypt is a payload nobody receives',
+    )
+
+    if (plaintext !== null) {
+      let delivered = null
+      try {
+        delivered = JSON.parse(plaintext.toString('utf8'))
+      } catch {
+        // Reported by the assertion below.
+      }
+
+      check(
+        'and it is the JSON the service worker expects',
+        delivered !== null,
+        plaintext.toString('utf8').slice(0, 120),
+      )
+      check(
+        'the title is exactly what the owner typed',
+        delivered?.title === announced.title,
+        `got ${JSON.stringify(delivered?.title)}`,
+      )
+      check(
+        'the body is exactly what the owner typed',
+        delivered?.body === announced.body,
+        `got ${JSON.stringify(delivered?.body)}`,
+      )
+      check(
+        'and it points at the dashboard',
+        typeof delivered?.url === 'string' && delivered.url.startsWith('/'),
+        `got ${JSON.stringify(delivered?.url)}`,
+      )
+    }
+  }
+
+  /* -- 6. the dashboard banner retires instead of sitting there forever ------- */
+
+  console.log('\n  -- the announcement banner gets out of the way --')
+
+  /*
+    A banner that never leaves is not a banner, it is a permanent layout change. And
+    the first version of this made exactly that mistake in a way no assertion would
+    have caught: a fixed 3.2s fade animation with `forwards`, running from MOUNT rather
+    than from retirement. The element stays mounted for five minutes, so the animation
+    finished at 3.2 seconds and left an invisible panel occupying space for the
+    remaining four. On a self-refreshing dashboard that reads as a layout bug — a gap
+    where a message used to be that nobody can explain.
+
+    So these assert the two properties that version broke: the fade belongs to the
+    retire moment, and the element is actually removed once it has faded.
+  */
+
+  const banner = readFileSync('src/components/AnnouncementBanner.tsx', 'utf8')
+  const css = readFileSync('src/styles/index.css', 'utf8')
+
+  check(
+    'the banner does not run a fixed animation from mount',
+    !/animation:.*gdg-announcement.*\bduration\b/.test(css) && !/animate-\[/.test(banner),
+    'a fade that starts on mount finishes long before the banner is meant to retire',
+  )
+
+  check(
+    'the fade is a transition driven by the retiring state',
+    /transition:[\s\S]{0,80}opacity/.test(css) &&
+      /data-retiring/.test(banner) &&
+      /\[data-retiring='true'\]/.test(css),
+    'arriving and leaving must be two different events, not one',
+  )
+
+  check(
+    'and the element is unmounted once it has faded, not left invisible',
+    /READ_WINDOW_MS \+ FADE_MS/.test(banner) &&
+      /setRetired\(\(current\) => new Set\(current\)\.add\(id\)\)/.test(banner),
+    'an invisible panel holding its place in the layout is the bug this replaced',
+  )
+
+  check(
+    'the read window is long enough to act on',
+    /READ_WINDOW_MS = 5 \* 60 \* 1000/.test(banner),
+    'somebody has to cross the room before this can disappear',
+  )
+
+  check(
+    'a retired announcement is remembered against its own ID',
+    /SEEN_PREFIX \+ id/.test(banner) && /startsWith\(SEEN_PREFIX\)/.test(banner),
+    'a single "seen" flag would silently swallow the NEXT message, which is the one the fallback exists for',
+  )
+
+  check(
+    'and a different announcement still shows afterwards',
+    /const show = id !== null && !retired\.has\(id\)/.test(banner),
+  )
+
+  check(
+    'the stored read cannot throw on a browser that blocks site data',
+    /catch \{[\s\S]{0,400}return new Set\(\)/.test(banner),
+    'private browsing throws rather than returning null, and would break the dashboard',
+  )
+
+  check(
+    'reduced motion suppresses the transition rather than the banner',
+    /prefers-reduced-motion: reduce/.test(css) && /transition: none/.test(css),
+  )
+
+  /* -- 7. the service worker must be inert ----------------------------------- */
+
+  /* -- 6. the service worker must be inert ----------------------------------- */
 
   console.log('\n  -- the service worker cannot touch the app --')
 
