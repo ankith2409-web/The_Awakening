@@ -21,7 +21,7 @@ import { Skeleton } from './Skeleton'
  * Days with no record render as "not yet" rather than being hidden. An absence the
  * attendee can see is information; an absence that is not visible is not.
  *
- * DAY STATE COMES FROM event, not from ttendance.
+ * DAY STATE COMES FROM event, not from attendance.
  *
  * Both used to carry it, and the attendance poll stops once this attendee is marked
  * for the day being scanned into — correctly, because a record is append-only. That

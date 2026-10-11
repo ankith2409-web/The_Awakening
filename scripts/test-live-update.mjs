@@ -318,6 +318,48 @@ check(
     : `${bandOffenders.length} suspect character(s): ${bandOffenders.slice(0, 6).join(', ')}${bandOffenders.length > 6 ? ', ...' : ''}`,
 )
 
+/*
+  A BEL byte in a comment is the same defect, one band lower.
+
+  `AttendancePanel.tsx` carried a literal 0x07 where the "a" of "attendance" should be,
+  in a doc comment. It rendered as nothing, so no reviewer saw it — but it made git
+  classify a SHIPPED source file as binary, which means every future change to it shows
+  as "Bin" with zero insertions and zero deletions. A change nobody can read in a diff
+  is a change nobody can review.
+
+  The Latin-band check above cannot see this: 0x07 is BEL, not a Latin-1 supplement
+  character, so it passed straight under a guard written a day earlier to catch exactly
+  this sort of accident. Same lesson as the change signature — a check scoped to the one
+  instance you have seen is not a check.
+*/
+const controlBytes = []
+
+for (const file of execFileSync('git', ['ls-files'], { encoding: 'utf8' })
+  .split('\n')
+  .filter((f) => /\.(ts|tsx|mjs|js|css|html|json|md|sql|example)$/.test(f))) {
+  const buf = readFileSync(file)
+  const bad = [...buf].filter((b) => b < 9 || (b > 13 && b < 32) || b === 127)
+  if (bad.length > 0) {
+    controlBytes.push(
+      `${file} [${[...new Set(bad)].map((b) => '0x' + b.toString(16)).join(' ')}]`,
+    )
+  }
+}
+
+check(
+  'no tracked text file carries a literal control byte',
+  controlBytes.length === 0,
+  controlBytes.length === 0
+    ? 'every file is text, and every diff of one is reviewable'
+    : `${controlBytes.length} file(s) with invisible characters: ${controlBytes.join('; ')}`,
+)
+
+check(
+  'and there are enough tracked files that the sweep is not vacuous',
+  execFileSync('git', ['ls-files'], { encoding: 'utf8' }).split('\n').filter(Boolean).length > 50,
+  'the sweep matched almost nothing, so it is not checking the repository',
+)
+
 check(
   'and the allowlist has not grown to hide one',
   LATIN_BAND_ALLOWED.size === 3,
