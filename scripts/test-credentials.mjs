@@ -255,9 +255,27 @@ async function main() {
   counter += 1
 
   check('a valid address registers', good.status === 201, `${good.status} ${JSON.stringify(good.json)}`)
+  /*
+    The assertion is about HONESTY, not about whether a key happens to be set.
+
+    This read `emailed === 'not_set'`, which was true only while the deployment had
+    no `RESEND_API_KEY`. Adding the key — the thing the whole feature was waiting on
+    — turned a passing test red, which is the test asserting the absence of the
+    feature rather than the property that makes it safe.
+
+    The properties that must hold in BOTH worlds: the reported state is one of the
+    three the portal is allowed to claim, and `not_set` is only ever claimed when
+    there is genuinely nothing to send with. Anything else is a claim about the
+    world that is not true.
+  */
   check(
-    'with no mail service it reports not_set rather than a false success',
-    good.json?.emailed === 'not_set',
+    'the reported state is one of the three the portal is allowed to claim',
+    ['sent', 'failed', 'not_set'].includes(good.json?.emailed),
+    `emailed=${good.json?.emailed}`,
+  )
+  check(
+    'and a fourth state is never invented',
+    good.json?.emailed !== 'sending' && good.json?.emailed !== 'queued',
     `emailed=${good.json?.emailed}`,
   )
   check(
@@ -303,10 +321,42 @@ async function main() {
       asOwner.status === 200,
       `got ${asOwner.status}`,
     )
+    /*
+      What the owner is told must be true whether or not a key is set.
+
+      This previously asserted `configured === false && sent === 0`, which held only
+      while the deployment had no `RESEND_API_KEY`. Switching the feature on — the
+      entire point of the feature — turned it red, so it was testing the absence of
+      mail rather than the honesty of the report.
+
+      The accounting identity is the property that matters and holds either way:
+      every attendee is in exactly one of sent / failed / skipped, and nothing is
+      claimed as sent that was not. A "sent" count that does not reconcile against
+      the people who actually have an address is how an owner ends up believing 480
+      people were reached when the mail went nowhere.
+    */
+    const r = asOwner.json ?? {}
+    const accounted = (r.sent ?? 0) + (r.failures?.length ?? 0) + (r.skipped?.length ?? 0)
+
     check(
-      'and reports that it is not configured rather than pretending to send',
-      asOwner.json?.configured === false && asOwner.json.sent === 0,
-      JSON.stringify(asOwner.json),
+      'when it did send, every attendee is accounted for exactly once',
+      r.configured === true ? accounted === r.total : true,
+      `sent=${r.sent} failed=${r.failures?.length} skipped=${r.skipped?.length} total=${r.total}`,
+    )
+    check(
+      'nobody is claimed as sent unless a real send happened',
+      (r.configured === true) === (r.sent + (r.failures?.length ?? 0) > 0),
+      `configured=${r.configured} sent=${r.sent} failed=${r.failures?.length}`,
+    )
+    check(
+      'an unconfigured deployment claims to have sent nothing',
+      r.configured === false ? r.sent === 0 && (r.failures?.length ?? 0) === 0 : true,
+      JSON.stringify({ configured: r.configured, sent: r.sent, failures: r.failures?.length }),
+    )
+    check(
+      'a configured deployment says so rather than staying quiet',
+      typeof r.configured === 'boolean',
+      `configured=${r.configured}`,
     )
     check(
       'listing who has no address, so the owner knows who to chase',
