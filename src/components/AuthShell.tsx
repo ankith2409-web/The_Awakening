@@ -62,7 +62,7 @@ export function AuthShell({
         </span>
       </header>
 
-      <main className="flex flex-1 items-center justify-center px-6 py-12 sm:px-10 lg:px-14 lg:py-16">
+      <main className="flex flex-1 items-center justify-center px-6 py-8 sm:px-10 lg:px-14 lg:py-12">
         <div className="w-full max-w-xl">
           <div className="flex items-center gap-3">
             <span className="h-[3px] w-12 bg-swiss-accent" />
@@ -88,11 +88,20 @@ export function AuthShell({
             {title}
           </h1>
 
-          <p className="mt-6 max-w-md text-sm font-medium leading-relaxed text-content-muted">
+          <p className="mt-4 max-w-md text-sm font-medium leading-relaxed text-content-muted">
             {description}
           </p>
 
-          <div className="mt-10">{children}</div>
+          {/*
+            `mt-8`, not `mt-10`.
+
+            Measured: with the old spacing the submit button sat at 824px on the
+            page, which is below the fold on a short phone and only just clears an
+            852px one. On a registration portal the submit button being reachable
+            without a scroll is worth more than the extra air, and the air above is
+            the least valuable space on the page.
+          */}
+          <div className="mt-8">{children}</div>
 
           {footer ? (
             <div className="mt-10 border-t-2 border-swiss-ink pt-6">{footer}</div>

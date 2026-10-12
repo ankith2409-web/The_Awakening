@@ -951,10 +951,21 @@ An announcement reaches an attendee on their phone, whether or not they have the
 open — a phone face down in a queue, a laptop in a backpack, a tab closed an hour ago.
 It is the channel that matters on the day, and an in-page banner is not it.
 
-**Why push and not email.** Every other way of messaging attendees needs something this
-deployment does not have: an email provider and a verified sending domain, or a telecom
-account and a DLT-registered sender ID. Push needs neither. VAPID keys are
-*self-generated* — a P-256 pair created once and stored in the environment — and
+**Email exists too, and it is the only one that carries a password.** Push could not
+solve the actual problem, which is that the portal shows the generated password exactly
+once, on screen. Push cannot help somebody who never turned it on; an email can. So
+registration asks for an address and the credentials follow automatically.
+
+It is built and switched off. `RESEND_API_KEY` is not set, so `sendMail` reports
+`not_set`, registration still succeeds, and the password is still returned on screen —
+and the copy on that screen says so rather than telling somebody to check an inbox that
+will never receive anything. Paste a key and it starts sending; nothing else changes.
+
+**Why push and not email was true, and is only half true now.** Every other way of
+messaging attendees needs something this deployment does not have: an email provider and
+a verified sending domain, or a telecom account and a DLT-registered sender ID. Push needs
+neither. VAPID keys are
+*self-generated* - a P-256 pair created once and stored in the environment - and
 delivery is handled by the browser vendor's push service, which Chrome already talks to
 for every site. It is the one channel that runs entirely on infrastructure that already
 exists, which is the only reason it could be built with three days to go.
@@ -1363,6 +1374,37 @@ middle initial. Collapsing case and spacing does not weaken the second factor, i
 stops it punishing a typing habit. Asserted in `test:api` on all three sides of
 that line.
 
+### The credentials email carries a password, so it is built defensively
+
+Three properties, each of which is a way this feature could leak somebody else's
+account rather than deliver their own.
+
+**A failed send never fails the registration.** The session is created *before* the mail
+is attempted. A mail service that is down cannot cost somebody their registration — and
+on the day, a person who registered and lost the response would have to queue again.
+
+**The owner's button rolls back.** It cannot resend a password: only a bcrypt hash is
+stored, and a hash is not reversible. So it generates a new one, and every password it
+issues replaces the one that attendee had. For each person in turn: generate, store, send.
+If the send fails, the previous hash is written back. Without that, one bounced mailbox
+leaves somebody locked out of their own pass with a password nobody knows — on the day,
+that is the difference between walking in and being turned away at the door. The panel
+says "their password was put back" next to the failures, so the owner does not have to
+work that out.
+
+**It says who it skipped.** The report lists the SENs with no address on file. "Sent 480"
+is a claim about the world; that list is the fact an owner needs, and it is the
+difference between knowing who to chase and finding out from somebody who could not log
+in.
+
+`test:credentials` (41 assertions) also holds the two copies of the email rule in step,
+proves an attendee name is escaped in the HTML part — it is attendee-supplied, and an
+unescaped name is an HTML injection in every inbox the organiser sends to — and asserts
+that `gate` is refused for the ROLE and not because a cookie was lost. The second one
+matters: without the session cookie being read off the raw header, every admin check
+passed by refusing an *anonymous* request, which looked exactly like a working
+authorisation test while testing nothing.
+
 ### Password recovery is by email
 
 There is no self-service password reset, and its absence is deliberate.
@@ -1700,6 +1742,7 @@ are zeroed explicitly.
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
 | `test:perday`   | 30 | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
+| `test:credentials`| 41          | yes      | Email capture and the credentials mail: both copies of the rule agree on every input, ten real address failure modes each name the actual fault, the attendee name is escaped in the HTML part, registration reports a tri-state outcome rather than a false success, and `gate` is refused for the ROLE rather than for a lost cookie |
 | `test:roster`    | 25          | yes      | The guest list survives a test run: the guard refuses a non-empty list without an override, snapshots to disk before clearing, restores in one transaction, verifies the result, and still arms on an already-empty list. Plus that no script outside the guard can clear the roster |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:registration` | 36    | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |

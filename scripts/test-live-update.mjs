@@ -238,7 +238,23 @@ for (const file of srcFiles) {
   const source = read(file)
   // Strip comments, so prose about an address is not mistaken for a copy of one.
   const codeOnly = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
-  for (const match of codeOnly.matchAll(/['"`][^'"`\n]*@[a-z0-9.-]+\.[a-z]{2,}[^'"`\n]*['"`]/gi)) {
+
+  /*
+    Anchored to the opening quote, and that is the whole fix.
+
+    The address must be the ENTIRE literal. A real second inbox is written
+    `Contact gdg@x.com` — wait, no: it is written as its own literal,
+    `'gdg@x.com'`, because that is how a constant is declared. So anchoring at
+    the quote keeps every real case and drops the false ones.
+
+    The looser pattern this replaces matched any quoted string CONTAINING an
+    address, which caught the first version of `src/domain/email.ts`: its copy
+    says "needs an @ — for example, name@example.com". That is a sentence the
+    attendee reads while fixing a typo, not a second inbox, and flagging it
+    taught the lesson backwards: the right fix was to change the test, not to
+    mutilate a helpful error message.
+  */
+  for (const match of codeOnly.matchAll(/['"`][a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}['"`]/gi)) {
     literals.push(`${file}: ${match[0]}`)
   }
 }

@@ -211,11 +211,25 @@ function Hero({
               ['Venue', event ? `${event.venue}, ${event.city}` : '—'],
               ['Hosted by', event?.organiserHost ?? '—'],
             ].map(([term, value]) => (
-              <div key={term} className="bg-swiss-paper px-4 py-3">
+              /*
+                Bottom-aligned, so the VALUES share a baseline.
+
+                The grid already stretches all three cells to the height of the
+                tallest, so the borders line up — but the text sat at the top of
+                each, which made "Amity University Bengaluru" wrapping onto two
+                lines read as a mistake rather than as a choice. Pushing the value
+                down gives every cell one baseline and the strip the look of a
+                table, which is what it is.
+
+                That matters more now than it did: "Auditorium" and "Amity
+                University Bengaluru" are different lengths, so the ragged edge is
+                permanent rather than incidental.
+              */
+              <div key={term} className="flex flex-col bg-swiss-paper px-4 py-3">
                 <dt className="text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
                   {term}
                 </dt>
-                <dd className="mt-1 text-sm font-black tracking-tight text-swiss-ink">
+                <dd className="mt-auto pt-1 text-sm font-black tracking-tight text-swiss-ink">
                   {value}
                 </dd>
               </div>
