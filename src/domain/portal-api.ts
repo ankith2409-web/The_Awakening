@@ -8,6 +8,10 @@ import type {
   CheckInOutcome,
   DayState,
   EventInfo,
+  Team,
+  TeamMember,
+  TeamPassReport,
+  TeamRegistration,
 } from './types'
 /**
  * Everything the portal can ask the backend for.
@@ -45,7 +49,45 @@ export interface PortalApi {
    * whether it landed.
    */
   getAttendanceForSen(sen: string): Promise<readonly CheckIn[]>
+  /* -- teams ------------------------------------------------------------- */
+  /**
+   * Registers a team for the challenge.
+   *
+   * PUBLIC and unauthenticated, for the same reason check-in is: a student scans a
+   * poster and that is the whole interaction.
+   *
+   * The leader is sent as a member too, with `isLeader`, rather than being a
+   * separate kind of person the server has to splice back in. The server decides
+   * which member is the leader; the client cannot claim a teammate is.
+   *
+   * Takes no team size. `TEAM_SIZE` is a constant the server reads from the same
+   * place the form does, and a client that sends a different number is refused
+   * rather than accommodated.
+   */
+  registerTeam(input: {
+    name: string
+    leaderName: string
+    leaderEmail: string
+    leaderPhone: string
+    leaderSen: string
+    members: readonly { name: string; sen: string }[]
+  }): Promise<TeamRegistration>
   /* -- admin (separate door) -------------------------------------------- */
+  /**
+   * Every registered team with its members, newest first.
+   *
+   * Owner-only. The admin portal polls this so a team appears the moment it
+   * registers, without a refresh.
+   */
+  listTeams(): Promise<readonly Team[]>
+  /**
+   * Emails the designed pass to every leader.
+   *
+   * Sequential on the server, never parallel: a burst of twenty sends at once is
+   * what gets a sending domain rate-limited, and the result is a partial send that
+   * reports itself as a failure with no way to tell which half landed.
+   */
+  emailTeamPasses(): Promise<TeamPassReport>
   getAdminSession(): Promise<AdminSession | null>
   adminLogin(input: AdminLoginInput): Promise<AdminSession>
   adminLogout(): Promise<void>
@@ -119,4 +161,10 @@ export type {
   CheckIn,
   CheckInOutcome,
   DayState,
+  Team,
+  TeamMember,
+  TeamPassReport,
+  TeamRegistration,
 }
+
+export { TEAM_SIZE } from './types'

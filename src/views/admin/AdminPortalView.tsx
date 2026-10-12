@@ -9,6 +9,7 @@ import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
 import { MarkByHandPanel } from './MarkByHandPanel'
+import { TeamsPanel } from './TeamsPanel'
 import type { AdmissionMethod, AgendaItem, EventPhase } from '@/domain/types'
 
 /**
@@ -56,31 +57,40 @@ const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   Still five, deliberately. A sixth tab would have fixed nothing and made the bar
   narrower on the phone.
 */
-type Tab = 'scan' | 'attendance' | 'people' | 'event'
+type Tab = 'scan' | 'attendance' | 'teams' | 'people' | 'event'
 
 /**
  * The tabs, and who may see each one.
  *
  * `gate` is whoever is on the door: scan a badge, look at the log. Nothing else.
- * `owner` additionally gets the Desk (changing somebody's credential is not a
- * door-side job) and the Programme.
+ * `owner` additionally gets Teams, the Desk (changing somebody's credential is not
+ * a door-side job) and the Programme.
  *
- * There was a Teams tab. It was removed rather than emptied — the four teams it
- * showed were invented, and an empty panel with dead code behind it is a feature
- * that is half-removed.
+ * There was a Teams tab before this one. That one was removed rather than emptied —
+ * the four teams it showed were invented, and an empty panel with dead code behind
+ * it is a feature that is half-removed. This one is backed by teams that real
+ * people registered.
+ *
+ * TEAMS IS OWNER-ONLY, and it is not about tidiness.
+ *
+ * `gate` marks people present at a door. Reading the chapter's correspondence and
+ * pressing "email every leader" reaches outside the room, and that belongs to
+ * whoever runs the event. The server refuses it independently of what this file
+ * draws — the role arrives in a cookie and a modified browser is not a
+ * hypothetical.
  *
  * The role is read from the session to decide what to DRAW. It is not what
  * decides what is ALLOWED — every one of these routes checks the role again on
- * the server, because this value arrives in a cookie and a volunteer with a
- * modified browser is not a hypothetical.
+ * the server.
  *
- * `desk` sits third, immediately after attendance. The two are one workflow:
- * someone comes to the door and staff check them in; someone else comes to the
- * door and staff fix their password.
+ * `teams` sits third, immediately after attendance. It is the third thing that
+ * happens at this event: somebody arrives, somebody's team registers, somebody
+ * fixes a credential.
  */
 const TABS: { id: Tab; label: string; ownerOnly: boolean }[] = [
   { id: 'scan', label: 'Scan', ownerOnly: false },
   { id: 'attendance', label: 'Attendance', ownerOnly: false },
+  { id: 'teams', label: 'Teams', ownerOnly: true },
   { id: 'people', label: 'People', ownerOnly: true },
   { id: 'event', label: 'Event', ownerOnly: true },
 ]
@@ -377,6 +387,8 @@ export function AdminPortalView() {
               cover — a student whose phone is dead, or whose name they cannot
               type, standing in front of an organiser with the door open.
             */}
+            {activeTab === 'teams' ? <TeamsPanel /> : null}
+
             {activeTab === 'people' ? (
               <div className="flex flex-col gap-6">
                 <MarkByHandPanel onMarked={() => void refresh()} />

@@ -10,6 +10,7 @@
  *   node --experimental-strip-types scripts/test-api-error-copy.mjs
  */
 
+import { readFileSync } from 'node:fs'
 import { PortalError, PORTAL_ERROR_MESSAGES } from '../src/domain/types.ts'
 import { testSen, purgeTestAttendeesOnce, testEmail } from './_fixtures.mjs'
 
@@ -241,6 +242,58 @@ async function main() {
     'and an ignored password field changes nothing',
     badPassword.status === 201 || badPassword.status === 200,
     `got ${badPassword.status}`,
+  )
+
+  /*
+    THE CONTACT ADDRESS MUST BE THE SAME IN BOTH PLACES IT IS WRITTEN.
+
+    `src/domain/contact.ts` drives the footer, the copy in `types.ts` and every
+    "email us" refusal. `server/_lib/mail.ts` drives the Reply-To on everything the
+    portal sends. The server and the client do not share modules — that is the
+    project's standing decision, not an oversight — so the address is written twice
+    and the only thing preventing the two drifting is this assertion.
+
+    What drifts looks like: the footer promises replies arrive at the chapter, and
+    every email the portal actually sends has a Reply-To pointing somewhere else.
+    Nobody notices, because both halves work; it just means nobody ever receives a
+    reply.
+  */
+  const clientAddress = readFileSync('src/domain/contact.ts', 'utf8').match(
+    /CONTACT_EMAIL\s*=\s*'([^']+)'/,
+  )
+  const serverAddress = readFileSync('server/_lib/mail.ts', 'utf8').match(
+    /ORGANISER_EMAIL\s*=\s*'([^']+)'/,
+  )
+
+  check(
+    'the contact address is written on both sides',
+    clientAddress !== null && serverAddress !== null,
+    clientAddress === null ? 'no CONTACT_EMAIL in src/domain/contact.ts' : 'no ORGANISER_EMAIL in server/_lib/mail.ts',
+  )
+  check(
+    'and the footer and the mail Reply-To are the same address',
+    clientAddress !== null && serverAddress !== null && clientAddress[1] === serverAddress[1],
+    `footer says ${clientAddress?.[1]}, mail says ${serverAddress?.[1]}`,
+  )
+
+  /*
+    And the footer actually prints it.
+
+    A "Contact us" link with the address hidden behind it is a promise with no
+    destination: a student standing in a corridor does not open a mail client to
+    find out where to write. The assertion is on the source rather than on the DOM
+    because this suite bundles the client for its error messages and has no browser.
+  */
+  const footerSource = readFileSync('src/components/SiteFooter.tsx', 'utf8')
+  check(
+    'the footer shows the address, not just the words "Contact us"',
+    /\{CONTACT_EMAIL\}/.test(footerSource),
+    'the address is not rendered as text in SiteFooter',
+  )
+  check(
+    'and the contact link carries a subject',
+    /CONTACT_SUBJECT/.test(footerSource),
+    'the mailto has no subject, so replies arrive as "hi"',
   )
 
   // The probe attendee was registered against the live database. Remove it, or it

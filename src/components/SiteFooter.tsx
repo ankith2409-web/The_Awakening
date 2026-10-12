@@ -18,7 +18,7 @@
  * not used — a footer is not a signal.
  */
 
-import { CONTACT_EMAIL } from '@/domain/contact'
+import { CONTACT_EMAIL, CONTACT_SUBJECT } from '@/domain/contact'
 
 const HOST = {
   name: 'Amity University',
@@ -136,8 +136,29 @@ export function SiteFooter() {
                   </FooterLink>
                 </li>
               ))}
-              <li>
-                <FooterLink href={`mailto:${CONTACT_EMAIL}`}>Contact us</FooterLink>
+              {/*
+                CONTACT IS AN ADDRESS, NOT A LABEL.
+
+                "Contact us" with a `mailto:` behind it is a promise with no
+                destination attached — the reader has to open a mail client to find
+                out where it goes, and a student standing in a corridor does not do
+                that. So the address is printed in monospace under the link, and it
+                is the one line in this footer that is a value rather than a label.
+
+                The subject is pre-filled for the reason the password-reset subject
+                is: an email that arrives recognisable gets answered, and one that
+                arrives as "hi" sits in an inbox until the event is over.
+              */}
+              <li className="mt-1">
+                <FooterLink href={`mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(CONTACT_SUBJECT)}`}>
+                  Contact us
+                </FooterLink>
+                <a
+                  href={`mailto:${CONTACT_EMAIL}`}
+                  className="mt-1 block break-all font-mono text-2xs tracking-tight text-content-muted transition-colors duration-150 ease-linear hover:text-swiss-accent-text"
+                >
+                  {CONTACT_EMAIL}
+                </a>
               </li>
             </ul>
           </div>

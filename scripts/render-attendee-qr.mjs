@@ -50,12 +50,40 @@ const require = createRequire(import.meta.url)
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * The attendee portal.
+ * The two public portals, each with its own code on its own sheet.
  *
- * Trailing slash on purpose: some scanners treat a bare host as ambiguous, and
- * this is the string that ends up in somebody's camera roll.
+ * THEY ARE SEPARATE CODES, not one code that offers a choice. A person standing at
+ * a wall in a queue is not going to read two paragraphs and pick one — they will
+ * point a camera at whatever is nearest. A poster near the door says "check in", a
+ * poster at the challenge desk says "register your team", and neither has to be
+ * understood before it works.
+ *
+ * It also keeps the two writes apart. `/` writes to the attendance register and
+ * `/team` writes to the teams table; one code offering both would put both choices
+ * in front of every stranger who scans the door's sheet.
+ *
+ * NEITHER IS EVER `/admin`. These files get printed, stuck on walls and carried
+ * around by people who are not staff, and an admin URL on a public wall is a
+ * password prompt for a stranger to walk into. Asserted per target below.
+ *
+ * Trailing slash on the root, on purpose: some scanners treat a bare host as
+ * ambiguous, and this is the string that ends up in somebody's camera roll.
  */
 export const PORTAL_URL = 'https://the-awakening-portal.vercel.app/'
+export const TEAM_PORTAL_URL = 'https://the-awakening-portal.vercel.app/team'
+
+const TARGETS = [
+  {
+    slug: 'attendee-portal',
+    url: PORTAL_URL,
+    label: 'the attendee portal',
+  },
+  {
+    slug: 'team-portal',
+    url: TEAM_PORTAL_URL,
+    label: 'the team registration portal',
+  },
+]
 
 /** Matches `QrTicket`, so the wall code and the in-app pass come from one source. */
 const ERROR_CORRECTION = 'Q'
@@ -64,8 +92,6 @@ const ERROR_CORRECTION = 'Q'
 const QUIET_MODULES = 4
 
 const OUT_DIR = join(ROOT, 'print')
-const OUT_FILE = join(OUT_DIR, 'attendee-portal-qr.svg')
-const OUT_PNG = join(OUT_DIR, 'attendee-portal-qr.png')
 
 /**
  * The matrix, straight from the library the portal already renders passes with.
@@ -94,7 +120,7 @@ function buildMatrix(url) {
  * where a scanner's sampling error is largest. Snapping to the pixel grid is the
  * difference between a code that prints well and one that prints slightly wrong.
  */
-function renderSvg(url) {
+function renderSvg(url, label) {
   const { count, isDark } = buildMatrix(url)
   const span = count + QUIET_MODULES * 2
 
@@ -114,7 +140,7 @@ function renderSvg(url) {
     svg: [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<!--',
-      '  The attendee portal, as a scannable code.',
+      `  ${label[0].toUpperCase()}${label.slice(1)}, as a scannable code.`,
       '',
       `  Encodes exactly: ${url}`,
       `  ${count}x${count} modules, error correction ${ERROR_CORRECTION}, ${QUIET_MODULES}-module quiet zone.`,
@@ -125,7 +151,7 @@ function renderSvg(url) {
       '  Print at any size. Do not recolour, crop into the quiet zone, or place it',
       '  on a busy background.',
       '-->',
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${span} ${span}" width="${span * 8}" height="${span * 8}" shape-rendering="crispEdges" role="img" aria-label="QR code linking to the attendee portal">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${span} ${span}" width="${span * 8}" height="${span * 8}" shape-rendering="crispEdges" role="img" aria-label="QR code linking to ${label}">`,
       `<rect width="${span}" height="${span}" fill="#ffffff"/>`,
       `<path d="${d}" fill="#000000"/>`,
       '</svg>',
@@ -194,9 +220,9 @@ function checkMatrix(label, count, isDark) {
   check(`${label}: the quiet zone is a full ${QUIET_MODULES} light modules`, true, 'asserted in the SVG')
 }
 
-function checkSvg(svg, url) {
-  check('the SVG declares the exact URL as a comment', svg.includes(`Encodes exactly: ${url}`))
-  check('and the URL is not one of the strings it must never encode',
+function checkSvg(svg, url, label) {
+  check(`[${label}] the SVG declares the exact URL as a comment`, svg.includes(`Encodes exactly: ${url}`))
+  check(`[${label}] and the URL is not one of the strings it must never encode`,
     !svg.includes('/admin') && !/https:\/\/[^\s"]*vercel\.app\/admin/.test(svg),
   )
 
@@ -204,19 +230,19 @@ function checkSvg(svg, url) {
   const modules = Number(viewBox?.[1] ?? 0)
   const quiet = modules - (viewBox ? buildMatrix(url).count : 0)
   check(
-    'the viewBox leaves a four-module quiet zone on every side',
+    `[${label}] the viewBox leaves a four-module quiet zone on every side`,
     quiet === QUIET_MODULES * 2 && viewBox?.[1] === viewBox?.[2],
     `span=${modules} modules=${buildMatrix(url).count} quiet=${quiet / 2}`,
   )
   check(
-    'the background is white, because scanners need light to find the edge',
+    `[${label}] the background is white, because scanners need light to find the edge`,
     svg.includes('<rect width=') && /fill="#ffffff"/.test(svg),
   )
-  check('the modules are pure black', /fill="#000000"/.test(svg))
-  check('edges are snapped to the pixel grid', svg.includes('shape-rendering="crispEdges"'))
-  check('it carries a text alternative for anyone using a screen reader',
+  check(`[${label}] the modules are pure black`, /fill="#000000"/.test(svg))
+  check(`[${label}] edges are snapped to the pixel grid`, svg.includes('shape-rendering="crispEdges"'))
+  check(`[${label}] it carries a text alternative for anyone using a screen reader`,
     svg.includes('aria-label='))
-  check('the file is self-describing without opening the repo',
+  check(`[${label}] the file is self-describing without opening the repo`,
     svg.includes('Regenerate with:') && svg.includes('Verify with:'))
 }
 
@@ -240,17 +266,17 @@ function checkSvg(svg, url) {
  * check, so this is deliberately narrow and says so: it validates comments and
  * tag balance, which is the whole of what this generator can get wrong.
  */
-function checkWellFormed(svg) {
+function checkWellFormed(svg, label = 'portal') {
   const comments = [...svg.matchAll(/<!--([\s\S]*?)-->/g)]
   const commentsDeclared = (svg.match(/<!--/g) ?? []).length
 
   check(
-    'every comment is closed',
+    `[${label}] every comment is closed`,
     comments.length === commentsDeclared,
     `${comments.length} closed, ${commentsDeclared} opened`,
   )
   check(
-    'no comment contains a double hyphen, which XML forbids',
+    `[${label}] no comment contains a double hyphen, which XML forbids`,
     comments.every(([, body]) => !body.includes('--')),
     comments
       .map(([, b], i) => (b.includes('--') ? `comment ${i + 1}` : null))
@@ -286,9 +312,9 @@ function checkWellFormed(svg) {
     balanced = false
     reason = `unclosed: ${stack.join(', ')}`
   }
-  check('the tags balance', balanced, reason)
-  check('there is exactly one root element', (stripped.match(/<svg[\s>]/g) ?? []).length === 1)
-  check('it declares the SVG namespace, or renderers will not open it',
+  check(`[${label}] the tags balance`, balanced, reason)
+  check(`[${label}] there is exactly one root element`, (stripped.match(/<svg[\s>]/g) ?? []).length === 1)
+  check(`[${label}] it declares the SVG namespace, or renderers will not open it`,
     /xmlns="http:\/\/www\.w3\.org\/2000\/svg"/.test(svg))
 }
 
@@ -388,21 +414,21 @@ function renderPng(url) {
  * So the container is walked — signature, chunk order, CRCs, dimensions — and the
  * pixels are compared against the matrix they claim to be.
  */
-function checkPng(png, count) {
+function checkPng(png, count, url, label) {
   const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
   check(
-    'the PNG signature is correct, so anything will recognise it',
+    `[${label}] the PNG signature is correct, so anything will recognise it`,
     SIG.every((b, i) => png[i] === b),
   )
 
   const expectedSide = (count + QUIET_MODULES * 2) * 40
   check(
-    'the declared size is an exact multiple of the module grid',
+    `[${label}] the declared size is an exact multiple of the module grid`,
     png.readUInt32BE(16) === expectedSide && png.readUInt32BE(20) === expectedSide,
     `${png.readUInt32BE(16)}x${png.readUInt32BE(20)}, expected ${expectedSide}`,
   )
-  check('it is 8-bit greyscale, with no wasted colour channels', png[24] === 8 && png[25] === 0)
+  check(`[${label}] it is 8-bit greyscale, with no wasted colour channels`, png[24] === 8 && png[25] === 0)
 
   // Walk the chunks, verifying each CRC. A wrong CRC is a corrupt file that many
   // decoders will still render, which is precisely why it must be checked here.
@@ -420,8 +446,8 @@ function checkPng(png, count) {
     types.push(type)
     at += 12 + len
   }
-  check('every chunk checksum is valid', corrupt === null, corrupt ? `${corrupt} is corrupt` : '')
-  check('the chunks are in the order a decoder requires', types.join(',') === 'IHDR,IDAT,IEND', types.join(','))
+  check(`[${label}] every chunk checksum is valid`, corrupt === null, corrupt ? `${corrupt} is corrupt` : '')
+  check(`[${label}] the chunks are in the order a decoder requires`, types.join(',') === 'IHDR,IDAT,IEND', types.join(','))
 
   // Undo the deflate and compare the pixels to the matrix that was encoded.
   let raw = null
@@ -439,21 +465,27 @@ function checkPng(png, count) {
   }
 
   if (raw === null) {
-    check('the image data inflates', false, 'IDAT would not decompress')
+    check(`[${label}] the image data inflates`, false, 'IDAT would not decompress')
     return
   }
 
   const side = expectedSide
-  check('every scanline is present, with its filter byte', raw.length === side * (side + 1))
+  check(`[${label}] every scanline is present, with its filter byte`, raw.length === side * (side + 1))
 
-  const { isDark } = buildMatrix(PORTAL_URL)
+  /*
+    The matrix the pixels are compared against comes from THIS target's URL, not
+    from a module-level constant. With two codes in one script that is the
+    difference between checking each file and checking both against the first one —
+    which passes every time and proves nothing about the second.
+  */
+  const { isDark } = buildMatrix(url)
   let mismatches = 0
   let sampled = 0
   for (const y of [8, 40, 400, 820, side - 40, side - 8]) {
     const mr = Math.floor(y / 40) - QUIET_MODULES
     const rowStart = y * (side + 1)
     if (raw[rowStart] !== 0) {
-      check('every scanline uses no filter, which is what was written', false, `row ${y}`)
+      check(`[${label}] every scanline uses no filter, which is what was written`, false, `row ${y}`)
       break
     }
     for (let x = 0; x < side; x += 40) {
@@ -465,11 +497,11 @@ function checkPng(png, count) {
     }
   }
   check(
-    'the pixels match the matrix, sampled across finder and body',
+    `[${label}] the pixels match the matrix, sampled across finder and body`,
     mismatches === 0,
     `${mismatches} of ${sampled} wrong`,
   )
-  check('the quiet zone is white all the way round', (() => {
+  check(`[${label}] the quiet zone is white all the way round`, (() => {
     for (const x of [0, 20, side - 1, side - 40]) {
       if (raw[0 * (side + 1) + 1 + x] !== 255) return false
       if (raw[(side - 1) * (side + 1) + 1 + x] !== 255) return false
@@ -486,54 +518,107 @@ function checkPng(png, count) {
 
 const checkOnly = process.argv.includes('--check')
 
-console.log(`\n  Attendee portal QR\n  ${PORTAL_URL}\n`)
+/*
+  ONE TARGET AT A TIME, and the labels carry the portal name.
 
-const { count, svg } = renderSvg(PORTAL_URL)
-const matrix = buildMatrix(PORTAL_URL)
-const png = renderPng(PORTAL_URL)
-console.log(`  ${count}x${count} modules at error correction ${ERROR_CORRECTION}\n`)
+  The first run of a target prints its own heading so a failure reads
+  "[team-portal] the PNG signature is correct" rather than an unlabelled line that
+  could belong to either file. That matters the moment there are two of them: an
+  unlabelled failure in a 60-line report is a guess.
+*/
 
-checkMatrix('matrix', count, matrix.isDark)
-checkWellFormed(svg)
-checkSvg(svg, PORTAL_URL)
-checkPng(png, count)
+for (const target of TARGETS) {
+  const label = target.slug
+  const outFile = join(OUT_DIR, `${target.slug}-qr.svg`)
+  const outPng = join(OUT_DIR, `${target.slug}-qr.png`)
 
-if (checkOnly) {
-  let committedSvg = null
-  let committedPng = null
-  try {
-    committedSvg = readFileSync(OUT_FILE, 'utf8')
-  } catch {
-    console.log(`  FAIL  the committed SVG is missing — run without --check`)
-    failed += 1
+  console.log(`\n  ${target.label}\n  ${target.url}\n`)
+
+  const { count, svg } = renderSvg(target.url, target.label)
+  const matrix = buildMatrix(target.url)
+  const png = renderPng(target.url)
+  console.log(`  ${count}x${count} modules at error correction ${ERROR_CORRECTION}\n`)
+
+  checkMatrix(`[${label}]`, count, matrix.isDark)
+  checkWellFormed(svg, label)
+  checkSvg(svg, target.url, label)
+  checkPng(png, count, target.url, label)
+
+  if (checkOnly) {
+    let committedSvg = null
+    let committedPng = null
+    try {
+      committedSvg = readFileSync(outFile, 'utf8')
+    } catch {
+      console.log(`  FAIL  [${label}] the committed SVG is missing — run without --check`)
+      failed += 1
+    }
+    try {
+      committedPng = readFileSync(outPng)
+    } catch {
+      console.log(`  FAIL  [${label}] the committed PNG is missing — run without --check`)
+      failed += 1
+    }
+
+    if (committedSvg !== null) {
+      check(
+        `[${label}] the committed SVG is exactly what this script would write`,
+        committedSvg === svg,
+        committedSvg === svg ? '' : `${outFile} is stale`,
+      )
+    }
+    if (committedPng !== null) {
+      check(
+        `[${label}] the committed PNG is byte-identical to what this script would write`,
+        committedPng.equals(png),
+        committedPng.equals(png) ? '' : `${outPng} is stale`,
+      )
+    }
+  } else {
+    mkdirSync(OUT_DIR, { recursive: true })
+    writeFileSync(outFile, svg, 'utf8')
+    writeFileSync(outPng, png)
+    console.log(`\n  wrote ${outFile.replace(ROOT, '.')}`)
+    console.log(`  wrote ${outPng.replace(ROOT, '.')}`)
   }
-  try {
-    committedPng = readFileSync(OUT_PNG)
-  } catch {
-    console.log(`  FAIL  the committed PNG is missing — run without --check`)
-    failed += 1
+}
+
+/*
+  The two codes must be DIFFERENT, which is the entire point of having two.
+
+  If someone edits one URL to match the other, or a copy-paste makes both files the
+  same, every other check in this file still passes: each code is a valid QR
+  encoding a valid URL. The failure is visible only in the room — the door's sheet
+  and the challenge desk's sheet both open the check-in.
+
+  Compared as full bitmaps, not as strings. Two different URLs can encode to the
+  same module count, and comparing sizes would call those equal while they are
+  different codes; comparing the rendered text would pass even when the drawing is
+  wrong. Every module of both is compared, because there are about 1,700 of them
+  and the whole loop takes microseconds.
+*/
+{
+  const a = buildMatrix(PORTAL_URL)
+  const b = buildMatrix(TEAM_PORTAL_URL)
+
+  let differs = a.count !== b.count
+  if (!differs) {
+    outer: for (let r = 0; r < a.count; r += 1) {
+      for (let c = 0; c < a.count; c += 1) {
+        if (a.isDark(r, c) !== b.isDark(r, c)) {
+          differs = true
+          break outer
+        }
+      }
+    }
   }
 
-  if (committedSvg !== null) {
-    check(
-      'the committed SVG is exactly what this script would write',
-      committedSvg === svg,
-      committedSvg === svg ? '' : `${OUT_FILE} is stale`,
-    )
-  }
-  if (committedPng !== null) {
-    check(
-      'the committed PNG is byte-identical to what this script would write',
-      committedPng.equals(png),
-      committedPng.equals(png) ? '' : `${OUT_PNG} is stale`,
-    )
-  }
-} else {
-  mkdirSync(OUT_DIR, { recursive: true })
-  writeFileSync(OUT_FILE, svg, 'utf8')
-  writeFileSync(OUT_PNG, png)
-  console.log(`\n  wrote ${OUT_FILE.replace(ROOT, '.')}`)
-  console.log(`  wrote ${OUT_PNG.replace(ROOT, '.')}`)
+  check('the two portal codes are different codes, not one code written twice', differs)
+  check(
+    'and they encode the two different URLs',
+    PORTAL_URL !== TEAM_PORTAL_URL && TEAM_PORTAL_URL.startsWith(PORTAL_URL),
+    `root=${PORTAL_URL} team=${TEAM_PORTAL_URL}`,
+  )
 }
 
 console.log(`\n  ${failed === 0 ? 'all checks passed' : `${failed} check(s) failed`}\n`)

@@ -304,16 +304,6 @@ export interface PushSubscriptionPayload {
   readonly keys: { readonly p256dh: string; readonly auth: string }
 }
 
-/**
- * Deliberately minimal — the attendee dashboard does not surface teams.
- */
-
-
-export interface TeamMember {
-  readonly name: string
-  readonly role: 'Lead' | 'Member'
-}
-
 /* ------------------------------------------------------------------- checkin */
 
 /**
@@ -426,6 +416,73 @@ export interface CheckInOutcome {
     readonly totalDays: number
     readonly overridden: boolean
   }
+}
+
+/**
+ * How many people are on a team.
+ *
+ * The leader is one of them, so a team has two teammates. Written as a constant
+ * rather than a number in each of the four places it matters — the form, the client
+ * validator, the route and the tests — because "3 members" in one place and "2
+ * teammates" in another is a form that submits something the server refuses, in
+ * front of a student, on event day.
+ */
+export const TEAM_SIZE = 3
+
+/** One person on a team, as the admin portal and the pass read them. */
+export interface TeamMember {
+  readonly name: string
+  readonly sen: string
+  readonly isLeader: boolean
+}
+
+/**
+ * A registered team.
+ *
+ * The leader is carried on the team itself rather than only being a member with
+ * `isLeader`, because every single question about a team needs them — the admin row,
+ * the pass, the reply address. Reaching through the member list for one flag on
+ * every read is a join to answer the easy question.
+ */
+export interface Team {
+  readonly id: string
+  readonly name: string
+  readonly leaderName: string
+  readonly leaderEmail: string
+  readonly leaderPhone: string
+  readonly createdAt: string
+  /** When the pass was last emailed. Null means never. */
+  readonly passSentAt: string | null
+  readonly members: readonly TeamMember[]
+}
+
+/** What a successful registration returns. */
+export interface TeamRegistration {
+  readonly ok: true
+  readonly team: {
+    readonly id: string
+    readonly name: string
+    readonly leaderName: string
+    readonly leaderEmail: string
+    readonly leaderPhone: string
+  }
+  readonly members: readonly { name: string; sen: string; isLeader: boolean }[]
+}
+
+/**
+ * What the pass-sending button reports back.
+ *
+ * `configured: false` is carried explicitly rather than folded into a zero count.
+ * "No passes were sent" and "no mail service exists on this deployment" are the
+ * same number and completely different problems, and an owner staring at "0 sent"
+ * has no way to tell which one they are looking at.
+ */
+export interface TeamPassReport {
+  readonly configured: boolean
+  readonly total: number
+  readonly sent: number
+  readonly failures: readonly { team: string; leader: string; reason: string }[]
+  readonly message: string
 }
 
 /** What an upload did, including what it refused and why. */

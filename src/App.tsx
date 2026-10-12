@@ -4,14 +4,22 @@ import { useAdmin, type SessionStatus } from '@/auth/contexts'
 import { AdminLoginView } from '@/views/admin/AdminLoginView'
 import { AdminPortalView } from '@/views/admin/AdminPortalView'
 import { CheckInView } from '@/views/CheckInView'
+import { TeamRegistrationView } from '@/views/TeamRegistrationView'
+import { TEAM_PORTAL_PATH } from '@/domain/contact'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 /**
- * Two routes and nothing else.
+ * Three public routes and one admin door.
  *
- * The attendee side is one page with no guard, because there is no session to
- * guard: `/` is the check-in, it is the same for everybody, and it cannot be
- * reached without being signed in because there is no such thing.
+ * The attendee side is two forms with no guard, because there is no session to
+ * guard: `/` is the check-in and `/team` is the team registration, both the same
+ * for everybody, and neither can be reached without being signed in because there
+ * is no such thing.
+ *
+ * THEY ARE SEPARATE QR CODES ON SEPARATE POSTERS, deliberately. Attendance is per
+ * person per day; a team registers once, for the challenge. One code offering both
+ * would mean the door's QR also wrote to the teams table, and the door's QR is the
+ * one a stranger can type anything into.
  *
  * The landing page, the sign-in form, the registration form, the dashboard and the
  * entry pass were all removed rather than left behind. Each one existed to create
@@ -68,6 +76,9 @@ export default function App() {
           {/* The check-in. One page, open to everyone, no account. */}
           <Route path="/" element={<CheckInView />} />
 
+          {/* The team registration. Its own poster, its own QR, same treatment. */}
+          <Route path={TEAM_PORTAL_PATH} element={<TeamRegistrationView />} />
+
           {/* -- admin: a separate door, never linked from the attendee flow -- */}
           <Route
             path="/admin/login"
@@ -92,7 +103,9 @@ export default function App() {
             `/dashboard`, `/login`, `/register` and `/ticket` used to be routes
             here. They are not 404s — they redirect — because a student holding a
             stale link from before the change should end up somewhere that works
-            rather than on a page that says no.
+            rather than on a page that says no. `/team` is the one path that must
+            NOT be swallowed by this, which is why it is declared above rather than
+            being left to fall through here.
           */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

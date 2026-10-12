@@ -16,6 +16,71 @@ create extension if not exists pgcrypto;
 -- duplicate would make two people indistinguishable when scanned.
 -- -----------------------------------------------------------------------------
 /*
+  TEAMS.
+
+  Separate from the check-in register, deliberately.
+
+  A team is not an attendee: a student checks in for themselves on each day, and a
+  team registers once with the challenge brief. Conflating them would put a team
+  leader in the door's attendance list twice and make the export a mixture of two
+  different things.
+
+  The leader is denormalised onto `teams` rather than only being a member row,
+  because every single query about a team needs them: the admin list, the pass
+  email, and the reply address. Reaching through `team_members` for the one row
+  with `is_leader` on every read would be a join to answer every question.
+*/
+create table if not exists teams (
+  id             uuid primary key default gen_random_uuid(),
+  name           text        not null,
+  leader_name    text        not null,
+  leader_email   text        not null,
+  leader_phone   text        not null,
+  created_at     timestamptz not null default now(),
+  constraint teams_leader_phone_digits check (leader_phone ~ '^[6-9][0-9]{9}$')
+);
+
+/*
+  A SEN may only be on ONE team.
+
+  A student on two teams would appear twice on the leader's pass and twice in the
+  organiser's list, and nothing would say which was real. Rejected at the database
+  rather than only in the form, because the form is the only place a check usually
+  happens and this is the one rule worth being able to trust without a browser.
+
+  `not null` and unique together mean the constraint covers all three rows of a
+  team and any future row beyond them.
+*/
+create table if not exists team_members (
+  id         uuid primary key default gen_random_uuid(),
+  team_id    uuid        not null references teams (id) on delete cascade,
+  name       text        not null,
+  sen        text        not null unique,
+  is_leader  boolean     not null default false,
+  created_at timestamptz not null default now()
+);
+
+/*
+  A team has exactly three members.
+
+  A CHECK on the count cannot be written per-row — each INSERT is a row, and three
+  of them are in flight — so the count is enforced by the route in one transaction
+  and asserted by the tests. The constraint that CAN be per-row is here: two
+  teammates may not share a SEN, and `sen` being unique across the table covers
+  that as well as the same student appearing on two teams.
+*/
+create index if not exists team_members_team_idx on team_members (team_id);
+
+/*
+  When the last pass was emailed, so the admin can see who has had theirs.
+
+  Null means never. Not defaulted to `now()`, because "registered a moment ago"
+  and "was emailed a moment ago" are different facts and a default would assert
+  the second one at registration.
+*/
+alter table teams add column if not exists pass_sent_at timestamptz;
+
+/*
   The check-in register.
 
   There are no accounts. A student scans the QR on the wall, types a name, a
@@ -619,7 +684,7 @@ alter table agenda alter column room drop not null;
 alter table agenda add column if not exists day smallint not null default 1;
 
 create index if not exists agenda_event_order_idx on agenda (event_id, sort_order);
--- Teams — DROPPED.
+-- Teams — THE FABRICATED ONES, DROPPED. And the drop statement itself, now gone.
 --
 -- The four teams that were here were invented: Android Bengaluru led by somebody who
 -- does not exist, a Cloud Native Chapter with five members who do not exist. For an
@@ -630,7 +695,16 @@ create index if not exists agenda_event_order_idx on agenda (event_id, sort_orde
 -- half-removed, and half-removed is how the four fabricated ones came to be shown
 -- in the first place.
 --
--- `drop table if exists` so this is safe to re-run against a database that never had
--- them, and idempotent against one that did.
-
-drop table if exists teams;
+-- This file used to end with `drop table if exists teams;`. It was idempotent while
+-- `teams` meant only the fabricated org chart, and nothing has been dropped by it
+-- since — the fabricated data was removed by hand, in a transaction that also
+-- verified `events`, `agenda` and `admins` were untouched.
+--
+-- It is gone now because `teams` means something real again. There is a live
+-- `teams` table at the top of this file and `team_members` references it, both
+-- created by the same transaction that would then reach this line and try to drop
+-- the parent — which fails with `cannot drop table teams because other objects
+-- depend on it` and rolls the whole migration back.
+--
+-- No statement left to re-run is the correct end state for a one-off deletion that
+-- should never run twice.

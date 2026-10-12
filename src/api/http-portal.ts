@@ -8,6 +8,9 @@ import {
   type DayState,
   type EventInfo,
   type PortalErrorCode,
+  type Team,
+  type TeamPassReport,
+  type TeamRegistration,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
 /**
@@ -95,7 +98,7 @@ export class HttpPortalApi implements PortalApi {
     /*
       The SEN goes in the query string, not the body.
 
-      A GET is the right verb for a read, and a GET has no body by specification —
+      A GET is the right verb for a read, and a GET has no body by specification -
       putting it in one works on this server and works nowhere else. Encoded
       rather than interpolated raw, because a SEN from the URL is untrusted input
       and `&` in it would otherwise read as another parameter.
@@ -104,6 +107,25 @@ export class HttpPortalApi implements PortalApi {
       'GET',
       '/attendee/attendance?sen=' + encodeURIComponent(sen),
     ).then((body) => body.records)
+  }
+
+  registerTeam(input: {
+    name: string
+    leaderName: string
+    leaderEmail: string
+    leaderPhone: string
+    leaderSen: string
+    members: readonly { name: string; sen: string }[]
+  }): Promise<TeamRegistration> {
+    return this.#request('POST', '/team/register', input)
+  }
+
+  listTeams(): Promise<readonly Team[]> {
+    return this.#request<{ teams: Team[] }>('GET', '/admin/teams').then((body) => body.teams)
+  }
+
+  emailTeamPasses(): Promise<TeamPassReport> {
+    return this.#request('POST', '/admin/teams/email')
   }
 
   /**

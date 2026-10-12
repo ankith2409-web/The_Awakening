@@ -26,6 +26,7 @@ import {
   normaliseSen,
   phoneProblem,
 } from './_lib/identifiers.ts'
+import { emailProblem, normaliseEmail } from './_lib/email.ts'
 import { resolveEventDay, isDayLocked } from './_lib/eventDay.ts'
 /*
   Still needed, and only for the gate.
@@ -40,6 +41,8 @@ import { readTicket } from './_lib/ticket.ts'
 // endpoint it protected. See `_lib/reset.ts`.
 import { purgeOldResetAttempts } from './_lib/reset.ts'
 import { latestAnnouncement, pushConfigured, vapidPublicKey } from './_lib/push.ts'
+import { teamPassHtml, teamPassSubject, teamPassText } from './_lib/teamPass.ts'
+import { mailConfigured, sendMail } from './_lib/mail.ts'
 
 export default async function handler(
   req: VercelRequest,
@@ -131,6 +134,99 @@ const publicAttendee = (row: AttendeeRow) => ({
 
 export type EmailOutcome = 'sent' | 'not_set' | 'failed' | 'no_address'
 
+/**
+ * How many people are on a team, leader included.
+ *
+ * One constant, read by the route that validates, the tests, and the copy on both
+ * surfaces. It was a number in a form, a number in a check and a number in an
+ * email at three different times.
+ */
+const TEAM_SIZE = 3
+
+/**
+ * A team, as the API hands it over.
+ *
+ * The database column names are renamed here, once, rather than at every read.
+ * `is_leader` becoming `isLeader` in SQL via `json_build_object` gets the member
+ * objects right but leaves `leader_name` snake_case beside them, so the shape had
+ * to be assembled anyway — and one place that assembles it cannot be got wrong
+ * differently in two places.
+ */
+interface TeamRow {
+  readonly id: string
+  readonly name: string
+  readonly leaderName: string
+  readonly leaderEmail: string
+  readonly leaderPhone: string
+  readonly createdAt: string
+  readonly passSentAt: string | null
+  readonly members: readonly { name: string; sen: string; isLeader: boolean }[]
+}
+
+/**
+ * Every team with its members, newest first.
+ *
+ * THE MEMBERS ARE JOINED HERE AND NOWHERE ELSE. An organiser watching a queue
+ * fill up reads this several times a minute, and assembling three members per
+ * team in the client would be three chances to render a team with two.
+ *
+ * The `filter (where m.id is not null)` is what makes the LEFT JOIN safe: without
+ * it a team with no members yet aggregates to `[{"name": null}]` rather than to an
+ * empty list, and a half-registered team would show a blank member.
+ *
+ * Leader first, then by join order, so the pass and the admin list agree on who
+ * row one is without either of them sorting.
+ */
+async function listTeams(): Promise<TeamRow[]> {
+  const { rows } = await db().query<{
+    id: string
+    name: string
+    leader_name: string
+    leader_email: string
+    leader_phone: string
+    created_at: string
+    pass_sent_at: string | null
+    members: { name: string; sen: string; isLeader: boolean }[]
+  }>(`
+    select t.id, t.name, t.leader_name, t.leader_email, t.leader_phone,
+           t.created_at, t.pass_sent_at,
+           coalesce(
+             json_agg(
+               json_build_object(
+                 'name', m.name, 'sen', m.sen, 'isLeader', m.is_leader
+               ) order by m.is_leader desc, m.created_at
+             ) filter (where m.id is not null),
+             '[]'::json
+           ) as members
+      from teams t
+      left join team_members m on m.team_id = t.id
+     group by t.id
+     order by t.created_at desc`)
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    leaderName: row.leader_name,
+    leaderEmail: row.leader_email,
+    leaderPhone: row.leader_phone,
+    createdAt: row.created_at,
+    passSentAt: row.pass_sent_at,
+    members: row.members,
+  }))
+}
+
+/**
+ * Did the database refuse this because something was already there?
+ *
+ * Used only for the team member SEN, which has a unique index across the whole
+ * table. The distinction matters: "that SEN is on another team" is an answer the
+ * leader can act on, and reporting it as an internal fault would leave them
+ * guessing.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505'
+}
+
 const ADMIN_ROLES = ['owner', 'gate'] as const
 type AdminRole = (typeof ADMIN_ROLES)[number]
 
@@ -188,6 +284,175 @@ async function route(
     purpose.
   */
 
+  /*
+    TEAMS.
+
+    Its OWN group rather than a case inside the attendee one. The dispatcher
+    reads the first path segment, so `/team/register` never reaches an
+    `attendee` block however similar the two forms are — and a case written there
+    is a 404 to a route that is plainly present in the file, which is the worst
+    kind of bug to find on event day.
+
+    No session, no lock, no gate. A team registers whenever it is ready.
+  */
+  if (group === 'team') {
+    switch (key) {
+        case 'POST /team/register': {
+          const body = await readJson<Record<string, unknown>>(req)
+  
+          const name = requireString(body, 'name').trim()
+          const leaderName = requireString(body, 'leaderName').trim()
+          const leaderEmail = normaliseEmail(requireString(body, 'leaderEmail'))
+          const leaderPhone = normalisePhone(requireString(body, 'leaderPhone'))
+  
+          const leaderNameProblem = nameProblem(leaderName)
+          if (leaderNameProblem !== null) throw unprocessable('unknown', leaderNameProblem)
+  
+          const nameProblemMessage = nameProblem(name)
+          if (nameProblemMessage !== null) throw unprocessable('unknown', nameProblemMessage)
+  
+          const phoneProblemMessage = phoneProblem(leaderPhone)
+          if (phoneProblemMessage !== null) throw unprocessable('unknown', phoneProblemMessage)
+  
+          const emailProblemMessage = emailProblem(leaderEmail)
+          if (emailProblemMessage !== null) throw unprocessable('unknown', emailProblemMessage)
+  
+          /*
+            Two teammates, exactly. Not "however many were supplied": a body with one
+            or four is a client that disagrees with the form about the shape of a
+            team, and accepting it would put a two-person team on the leader's pass
+            with three names' worth of promise.
+          */
+          const mates = Array.isArray(body.members) ? body.members : []
+          if (mates.length !== TEAM_SIZE - 1) {
+            throw unprocessable('unknown', `A team has ${TEAM_SIZE} members.`)
+          }
+  
+          const parsedMates = mates.map((raw, index) => {
+            const member = (raw ?? {}) as Record<string, unknown>
+            const memberName = String(member.name ?? '').trim()
+            const memberSen = normaliseSen(String(member.sen ?? ''))
+  
+            const memberNameProblem = nameProblem(memberName)
+            if (memberNameProblem !== null) {
+              throw unprocessable('unknown', `Member ${index + 2}: ${memberNameProblem}`)
+            }
+            if (!isValidSen(memberSen)) {
+              throw unprocessable(
+                'unknown',
+                `Member ${index + 2}: enter a valid SEN, e.g. A866175000012.`,
+              )
+            }
+            return { name: memberName, sen: memberSen }
+          })
+  
+          // The leader is a member too, with their own SEN.
+          const leaderSen = normaliseSen(requireString(body, 'leaderSen'))
+  
+          /*
+            All three SENs are distinct WITHIN the team, checked before anything is
+            written rather than relying on the unique index to fail the third insert
+            and leave the first two behind.
+          */
+          const sens = [leaderSen, ...parsedMates.map((m) => m.sen)]
+          if (new Set(sens.map((s) => s.toUpperCase())).size !== TEAM_SIZE) {
+            throw unprocessable('unknown', 'Each member of a team needs a different SEN.')
+          }
+  
+          const already = await db().query<{ sen: string }>(
+            `select sen from attendees where upper(sen) = any($1::text[])
+               union
+             select sen from team_members where upper(sen) = any($1::text[])`,
+            [sens],
+          )
+          if (already.rows.length > 0) {
+            const taken = already.rows.map((r) => r.sen).join(', ')
+            throw conflict('sen_taken', `Already registered: ${taken}.`)
+          }
+  
+          /*
+            Deliberately NOT gated on the day lock.
+  
+            A team may register for tomorrow's brief on the evening of day one.
+            Closing day one's attendance must not close the challenge registration
+            with it — those are two different decisions and the lock exists for one
+            of them.
+          */
+  
+          const client = await db().connect()
+          try {
+            await client.query('begin')
+  
+            const created = await client.query<{ id: string }>(
+              `insert into teams (name, leader_name, leader_email, leader_phone)
+               values ($1, $2, $3, $4)
+               returning id`,
+              [name, leaderName, leaderEmail, leaderPhone],
+            )
+            const teamId = created.rows[0].id
+  
+            const rows = [
+              { name: leaderName, sen: leaderSen, is_leader: true },
+              ...parsedMates.map((m) => ({ ...m, is_leader: false })),
+            ]
+  
+            try {
+              /*
+                One statement for all three rows, not three inserts.
+
+                `unnest` with an explicit column alias — without `as m(name, sen,
+                is_leader)` Postgres cannot resolve the bare column names in the
+                SELECT list and answers 42703, which is not a message anybody
+                wants to read at 9am on the day.
+              */
+              await client.query(
+                `insert into team_members (team_id, name, sen, is_leader)
+                 select $1, m.name, m.sen, m.is_leader
+                   from unnest($2::text[], $3::text[], $4::boolean[])
+                     as m(name, sen, is_leader)`,
+                [teamId, rows.map((r) => r.name), rows.map((r) => r.sen), rows.map((r) => r.is_leader)],
+              )
+            } catch (error) {
+              /*
+                A SEN on another team, raced between the check above and this insert.
+                Reported as the conflict it is rather than as a fault, because "that
+                student is already on a team" is the one thing the leader needs to know.
+              */
+              if (isUniqueViolation(error)) {
+                throw conflict('sen_taken', 'One of those SENs is already on another team.')
+              }
+              throw error
+            }
+  
+            await client.query('commit')
+  
+            /*
+              The response is assembled here rather than being the row objects.
+
+              `rows` carries `is_leader` because that is the column; the client
+              contract says `isLeader`. Sending the database shape out means the
+              confirmation renders "undefined" against every leader's name and the
+              type says nothing, because the type is on the client and the value is
+              from the server. One mapping, here, is where that stops.
+
+              Leader first, matching the insert order, so the list on the
+              confirmation reads top-down in the order it was typed.
+            */
+            return json(res, 201, {
+              ok: true,
+              team: { id: teamId, name, leaderName, leaderEmail, leaderPhone },
+              members: rows.map((r) => ({ name: r.name, sen: r.sen, isLeader: r.is_leader })),
+            })
+          } catch (error) {
+            await client.query('rollback').catch(() => {})
+            throw error
+          } finally {
+            client.release()
+          }
+        }
+    }
+  }
+
   /* -- attendee --------------------------------------------------------- */
   if (group === 'attendee') {
     /*
@@ -217,6 +482,24 @@ async function route(
         already at the box with the form open, whose only correct answer is "it is
         closed" rather than a database error about a SEN that is not on file.
       */
+      /*
+        REGISTER A TEAM.
+
+        One transaction, because a team is three people and half a team is worse
+        than no team. A leader who sees "saved" must be able to rely on all three
+        rows existing; there is no partial state to repair at a desk during a
+        challenge brief.
+
+        THE THREE SENs ARE CHECKED AGAINST EACH OTHER *AND* THE REGISTER.
+
+        Two teammates may not share a SEN, and the database enforces both of those
+        with a unique index — so this route does not have to. But the database CANNOT
+        enforce the third: whether a teammate has already CHECKED IN. That check
+        happens here, because a member who is standing in the room under a name
+        that does not match their team is a problem nobody would otherwise notice
+        until the final.
+      */
+
       case 'POST /attendee/checkin': {
         const body = await readJson<Record<string, unknown>>(req)
 
@@ -351,7 +634,8 @@ async function route(
     }
   }
 
-  /* -- admin ------------------------------------------------------------ */
+
+      /* -- admin ------------------------------------------------------------ */
   if (group === 'admin') {
     const session = await currentSession(req, 'admin')
 
@@ -392,6 +676,92 @@ async function route(
     }
 
     switch (key) {
+
+    /*
+          EVERY TEAM, newest first, with their members.
+
+          OWNER ONLY, and not because the data is secret — it is names, SENs and one
+          email address each. It is owner-only because emailing every leader at once
+          is a power that reaches outside the room, and that belongs to whoever runs
+          the event rather than to whoever is on the door. `gate` marks people
+          present; it does not correspond with people.
+
+          The members arrive JOINED, never assembled per team by the client. An
+          organiser watching a queue fill up reads this list several times a minute,
+          and three round trips to render one row is three chances to show a team
+          with two members.
+        */
+      case 'GET /admin/teams': {
+        requireOwner()
+        return json(res, 200, { teams: await listTeams() })
+      }
+
+      /*
+        Email the pass to EVERY LEADER.
+
+        SEQUENTIALLY, and never in parallel. One Resend request at a time: a burst
+        of twenty at once is what gets a sending domain rate-limited, and the result
+        would be a partial send that reported itself as a failure with no way to
+        tell which half landed.
+
+        EVERY FAILURE IS REPORTED AND NONE IS RETRIED. A refused address is not
+        going to become deliverable, and the organiser is shown which teams still
+        need a pass so they can send one by hand.
+
+        `pass_sent_at` is stamped per team on success, so the button does not
+        silently re-send to somebody who already has one, and the list shows at a
+        glance who has.
+      */
+      case 'POST /admin/teams/email': {
+          requireOwner()
+
+          const rows = await listTeams()
+
+          const sent: string[] = []
+          const failures: { team: string; leader: string; reason: string }[] = []
+
+          for (const team of rows) {
+            const pass = {
+              name: team.name,
+              leaderName: team.leaderName,
+              leaderEmail: team.leaderEmail,
+              leaderPhone: team.leaderPhone,
+              members: team.members,
+            }
+
+            const outcome = await sendMail({
+              to: pass.leaderEmail,
+              subject: teamPassSubject(pass),
+              text: teamPassText(pass),
+              html: teamPassHtml(pass),
+            })
+
+            if (outcome.ok) {
+              await db().query('update teams set pass_sent_at = now() where id = $1', [
+                team.id,
+              ])
+              sent.push(team.name)
+            } else {
+              failures.push({
+                team: team.name,
+                leader: team.leaderName,
+                reason: outcome.error ?? 'The mail service refused it.',
+              })
+            }
+          }
+
+          return json(res, 200, {
+            configured: mailConfigured(),
+            total: rows.length,
+            sent: sent.length,
+            failures,
+            message:
+              failures.length === 0
+                ? `${sent.length} pass${sent.length === 1 ? '' : 'es'} emailed to the leaders.`
+                : `${sent.length} sent, ${failures.length} could not be delivered.`,
+          })
+        }
+
       case 'GET /admin/session': {
         if (!session) return json(res, 200, null)
         const { rows } = await db().query<{

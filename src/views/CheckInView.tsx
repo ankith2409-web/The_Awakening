@@ -5,6 +5,7 @@ import { Announcement, EventMasthead, FactGrid, Programme } from '@/components/E
 import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { SiteFooter } from '@/components/SiteFooter'
+import { WhatsAppJoin } from '@/components/WhatsAppJoin'
 import { formatEventDateRange } from '@/lib/eventDate'
 import { isValidSen, normaliseSen, phoneProblem } from '@/domain/phone'
 import { nameProblem } from '@/domain/name'
@@ -472,6 +473,16 @@ function CheckedIn({ outcome }: { outcome: CheckInOutcome }) {
               ) : null}
             </aside>
           </div>
+
+          {/*
+            The group, last.
+
+            After the programme and the event facts rather than above them: it is
+            the only thing here that is a request rather than information, and a
+            request that interrupts the reading of a schedule is a request some
+            people skip.
+          */}
+          <WhatsAppJoin />
         </div>
       </div>
 

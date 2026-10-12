@@ -12,7 +12,12 @@ import {
   type CheckIn,
   type CheckInOutcome,
   type EventInfo,
+  type Team,
+  type TeamMember,
+  type TeamPassReport,
+  type TeamRegistration,
 } from '@/domain/types'
+import { TEAM_SIZE } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
 
 const STORE_KEY = 'gdg-portal.store.v1'
@@ -42,6 +47,16 @@ interface Store {
   checkIns: CheckIn[]
   /** The uploaded guest list. Absent on stores seeded before this feature. */
   roster?: { sen: string; name: string; email: string | null }[]
+  /**
+   * Teams registered through the mock, newest first.
+   *
+   * OPTIONAL on read, for the same reason `roster` is: a store persisted in a
+   * browser before teams existed has no such key, and `loadOrSeed` returns it as-is
+   * when the seed fingerprint still matches. Reading `store.teams` directly on an
+   * old store throws `undefined.map`, which surfaces as a blank admin tab with no
+   * explanation. `#teams` reads it once with a fallback so that cannot happen.
+   */
+  teams?: Team[]
   /**
    * Fingerprint of the seed this store was built from.
    *
@@ -74,6 +89,20 @@ export class MockPortalApi implements PortalApi {
     this.#store = loadOrSeed()
     // Only the staff session survives. There is no attendee one to read.
     this.#adminSessionId = readSession('admin')
+  }
+
+  /**
+   * The team's list, tolerating a store that predates the feature.
+   *
+   * Writing through this accessor rather than replacing the array is what keeps a
+   * store from an older build working: it has no `teams` key at all, and every read
+   * of `store.teams` on it would be `undefined`. Returning a fresh empty array each
+   * time would be worse — the writes would vanish on the next `persist` — so the
+   * key is filled in on first touch instead.
+   */
+  get #teams(): Team[] {
+    if (this.#store.teams === undefined) this.#store.teams = []
+    return this.#store.teams
   }
 
 
@@ -402,7 +431,92 @@ export class MockPortalApi implements PortalApi {
       .map((entry) => structuredClone(entry))
   }
 
-  
+  /* --------------------------------------------------------------- teams */
+
+  /*
+    The mock keeps teams in localStorage rather than faking them from the seed.
+
+    A seeded team list would mean the mock shows four teams nobody registered and
+    a student testing the form against it would be told their SEN is taken. The
+    whole point of this surface is that it starts empty and fills up as people
+    register — so the mock does the same, which is also what makes it a useful
+    rehearsal of the real thing.
+  */
+
+  async registerTeam(input: {
+    name: string
+    leaderName: string
+    leaderEmail: string
+    leaderPhone: string
+    leaderSen: string
+    members: readonly { name: string; sen: string }[]
+  }): Promise<TeamRegistration> {
+    await delay(LATENCY_MS)
+
+    const members: TeamMember[] = [
+      { name: input.leaderName, sen: normaliseSen(input.leaderSen), isLeader: true },
+      ...input.members.map((m) => ({ name: m.name, sen: normaliseSen(m.sen), isLeader: false })),
+    ]
+
+    if (members.length !== TEAM_SIZE) {
+      throw new PortalError('unknown', `A team has ${TEAM_SIZE} members.`, { status: 422 })
+    }
+
+    // The same uniqueness rule as the server, so a rehearsal catches the clash the
+    // real thing will produce.
+    const taken = [
+      ...this.#store.attendees.map((a) => (a.sen ?? '').toUpperCase()),
+      ...this.#teams.flatMap((t) => t.members.map((m) => m.sen.toUpperCase())),
+    ]
+    const clash = members.find((m) => taken.includes(m.sen.toUpperCase()))
+    if (clash !== undefined) {
+      throw new PortalError('sen_taken', `Already registered: ${clash.sen}.`, { status: 409 })
+    }
+
+    const team: Team = {
+      id: `team_${this.#teams.length + 1}`,
+      name: input.name,
+      leaderName: input.leaderName,
+      leaderEmail: input.leaderEmail,
+      leaderPhone: input.leaderPhone,
+      createdAt: new Date().toISOString(),
+      passSentAt: null,
+      members,
+    }
+
+    this.#teams.unshift(team)
+    persist(this.#store)
+
+    return {
+      ok: true,
+      team: {
+        id: team.id,
+        name: team.name,
+        leaderName: team.leaderName,
+        leaderEmail: team.leaderEmail,
+        leaderPhone: team.leaderPhone,
+      },
+      members,
+    }
+  }
+
+  async listTeams(): Promise<readonly Team[]> {
+    await delay(LATENCY_MS / 4)
+    return this.#teams.map((t) => structuredClone(t))
+  }
+
+  async emailTeamPasses(): Promise<TeamPassReport> {
+    await delay(LATENCY_MS)
+    // No mail service in the browser. The real one reports per-team failures; this
+    // reports the one that matters, which is that nothing was delivered.
+    return {
+      configured: false,
+      total: this.#teams.length,
+      sent: 0,
+      failures: [],
+      message: 'No email service is configured in the mock.',
+    }
+  }
 
   /* ------------------------------------------------------ event controls */
 
@@ -597,6 +711,10 @@ function loadOrSeed(): Store {
     event: structuredClone(SEED_EVENT),
     checkIns: [],
     roster: [],
+    // Deliberately empty. A seeded team list would let somebody rehearse the form
+    // against four teams nobody registered and be refused for a clash that does not
+    // exist, which teaches them the form is broken rather than what it does.
+    teams: [],
     seedFingerprint: currentSeedFingerprint(),
   }
 
