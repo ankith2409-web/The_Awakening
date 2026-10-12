@@ -29,6 +29,7 @@
     "test:parse": "esbuild scripts/test-roster-parse.mjs --bundle --platform=node --format=esm --target=node22 --tsconfig=tsconfig.app.json --external:node:zlib --outfile=node_modules/.tmp/test-roster-parse.mjs --log-level=error && node node_modules/.tmp/test-roster-parse.mjs",
     "test:guestlist": "node scripts/test-guest-list.mjs",
     "test:roster": "node scripts/test-roster-guard.mjs",
+    "test:qr": "node scripts/render-attendee-qr.mjs --check",
     "test:credentials": "node --experimental-strip-types --no-warnings scripts/test-credentials.mjs",
     "test:registration": "node scripts/test-registration.mjs",
     "test:live": "node scripts/test-live-update.mjs",

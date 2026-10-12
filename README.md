@@ -787,6 +787,63 @@ uploaded, so nothing is lost. The route is owner-only.
 **Already-registered accounts are untouched.** The check is on registration only, so
 enforcing a list never invalidates somebody who signed up before it was uploaded.
 
+**An optional `Email` column is read, and it exists for one reason.** Twelve of the
+thirteen people who registered before the form collected an address have none, and no
+code changes that — but the organiser already holds this spreadsheet. An address from
+the sheet is copied onto any matching registration that has none, which is what makes
+them reachable by the credentials mail at all.
+
+Four rules, each asserted:
+
+- **Optional means optional.** A two-column sheet is still a valid sheet, and the
+  upload behaves exactly as it always has.
+- **Never guessed from position.** A headerless three-column sheet is far more likely
+  to be `SEN | Name | Department` than `SEN | Name | Email`, and guessing would write
+  a student's department into their address. Only a header is ever believed.
+- **A bad address never rejects the row.** This list decides who may *register*; a
+  typo in a column the portal did not previously have must not lock out a real student
+  days before the event. The address is reported, dropped, and the student stays.
+- **The backfill only fills a blank.** An address somebody typed on the form is
+  theirs and beats a spreadsheet cell that may have been edited since. A blank cell
+  says nothing at all: the list is who *may* register, and most of it never did.
+
+`addressesApplied` is reported so "sent to everyone" can be checked against a number,
+and the addresses come back in `GET /admin/roster/rows` so a sheet whose third column
+was something else is visible. Nothing else would reveal it.
+
+### The attendee-portal QR
+
+`print/attendee-portal-qr.svg` and `.png` encode exactly
+`https://the-awakening-portal.vercel.app/` — the attendee portal, never `/admin`,
+because this gets printed and carried by people who are not staff. Regenerate with
+`node scripts/render-attendee-qr.mjs`, verify with `npm run test:qr`.
+
+**Vector, because one file has to be both a table-tent and a banner.** A QR is a grid
+of squares; rasterised for a desk and scaled to A3, a PNG either blurs or leaves a
+300dpi edge scanners struggle with. The PNG exists for the places SVG does not survive
+— a WhatsApp forward, a slide deck — and is written from the same matrix so it is
+reproducible rather than whatever a browser exported today.
+
+**Error correction Q**, matching the in-app entry pass: 25% recovery covers a scuffed
+poster without paying for it in module count. H would add ~15% more modules, and a
+denser code is harder to scan from across a room, which is the only thing the sticker
+is for.
+
+**The quiet zone is computed, not drawn.** Four light modules per the specification.
+`react-qr-code`'s own default is a proportional guess that changes with the code's
+size; a QR that scans on screen and not on a wall is the exact failure this exists to
+prevent. The PNG is an exact multiple of the module grid for the same reason — at any
+other width some module edge falls between two pixels and the finder patterns pick up
+grey edges where a scanner is least forgiving.
+
+**`test:qr` checks that the file can be *opened*, not only that it encodes the right
+URL.** This caught a real one: the comment documenting how to regenerate the file
+contained the text `--check`, and XML forbids `--` inside a comment. Every content
+check passed — the QR was correct, the URL was right — while the document did not
+parse, which Illustrator, Inkscape and every print RIP reject. Asserting what a file
+says is not the same as asserting that the thing carrying it opens, and only the
+second one stands between a QR and a blank print.
+
 ### Adding somebody by hand
 
 `POST /admin/attendees` creates one account without the registration form. It is the
@@ -1749,6 +1806,7 @@ are zeroed explicitly.
 | `test:push`        | 64     | yes      | The public VAPID key and that it is public, subscribing needing a session, `gate` being unable to broadcast, an unreachable endpoint counted as a failure rather than a success, **a real push payload signed, decrypted and read back**, the service worker having no `fetch` handler at all, and the dashboard banner retiring rather than sitting there |
 | `test:live`      | 58 | no       | The live-update wiring itself, plus the UI invariants a request test cannot see: both polls, the change check, the write-ordering guard, the retrying probe, day state having exactly one home, one contact address declared exactly once, no character that is the residue of a decoding accident, fluid display type, the slide link surviving a display override, and the footer reaching every attendee page, and that the removed agenda route is gone for every role |
 | `test:parse`    | 44          | no       | CSV and a real generated `.xlsx`, column matching by header, quoting edge cases, and every malformed input refused by name |
+| `test:qr`       | 28          | no       | The attendee-portal QR: the three finder patterns and both timing patterns by position, a full four-module quiet zone, the document parsing as XML (**a `--` in a comment makes it unopenable in every print tool**), the PNG's chunk checksums and its pixels against the matrix that was encoded, and the committed file being byte-identical to what the generator writes |
 | `test:export`   | 8           | no       | The exact CSV bytes: one SEN per row, no header, other days excluded, BOM, CRLF |
 | `test:errors`   | 291 inputs  | no       | Every field rule, plus client/server agreement on accept, normalisation and rendering. 93 name cases including emoji, skin tones, ZWJ sequences and invisible formatting |
 | `test:landing`  | 99 | no       | Entry points clear a phone; footer destinations; links open safely; the auth verb is "log", never "sign", across every file in `src/`; the error boundary is wired and leaks nothing; both out-of-portal refusals name a contact and stay distinct |
