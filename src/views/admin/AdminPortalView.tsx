@@ -10,7 +10,7 @@ import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
 import { MarkByHandPanel } from './MarkByHandPanel'
 import { TeamsPanel } from './TeamsPanel'
-import type { AdmissionMethod, AgendaItem, EventPhase } from '@/domain/types'
+import type { AdmissionMethod, AgendaItem, EventPhase, RegistrationMode } from '@/domain/types'
 
 /**
  * How each attendance row was authenticated at the gate.
@@ -97,6 +97,27 @@ const TABS: { id: Tab; label: string; ownerOnly: boolean }[] = [
 
 const PHASES: EventPhase[] = ['registration', 'live', 'completed']
 
+/**
+ * The second confirmation before shutting the event.
+ *
+ * Says what will stop, in the words a student at the wall will be shown, rather
+ * than in the words of the field it writes. "Close registration?" would have a
+ * leader deciding it means teams and a volunteer deciding it means the door, and
+ * the button being wrong in one of those readings is the whole cost of pressing it.
+ */
+function confirmShut(eventName: string): boolean {
+  return (
+    typeof window === 'undefined' ||
+    window.confirm(
+      `Close ${eventName} to everybody?\n\n` +
+        'From the next request onwards:\n' +
+        '  · nobody can register a team\n' +
+        '  · nobody can be marked in for attendance\n\n' +
+        'You can reopen it in one press.',
+    )
+  )
+}
+
 export function AdminPortalView() {
   const {
     admin,
@@ -112,6 +133,7 @@ export function AdminPortalView() {
     setEventPhase,
     updateEventDay,
     setLockedDays,
+    setRegistrationMode,
     clearError,
     clearLastScan,
   } = useAdmin()
@@ -410,6 +432,7 @@ export function AdminPortalView() {
                   onPhaseChange={(phase) => void setEventPhase(phase)}
                   onDayChange={(day) => void updateEventDay(day)}
                   onLockedDaysChange={(days) => void setLockedDays(days)}
+                  onRegistrationModeChange={(mode) => void setRegistrationMode(mode)}
                 />
 
                 {/*
@@ -1233,12 +1256,14 @@ function ProgrammePanel({
   onPhaseChange,
   onDayChange,
   onLockedDaysChange,
+  onRegistrationModeChange,
 }: {
   event: ReturnType<typeof useAdmin>['event']
   loading: boolean
   onPhaseChange: (phase: EventPhase) => void
   onDayChange: (day: number | null) => void
   onLockedDaysChange: (days: readonly number[]) => void
+  onRegistrationModeChange: (mode: RegistrationMode) => void
 }) {
   const locked = event?.lockedDays ?? []
   if (loading) return <Skeleton className="h-64 w-full" />
@@ -1266,8 +1291,83 @@ function ProgrammePanel({
   }
   const programmeByDay = [...byDay.entries()].sort((a, b) => a[0] - b[0])
 
+  const registrationClosed = event.registrationMode === 'closed'
+
   return (
     <div className="flex flex-col gap-8">
+      {/*
+        THE ONE SWITCH THAT SHUTS EVERYTHING.
+
+        FIRST IN THE PANEL, and styled as the thing it is rather than as one more
+        row of settings, because it is the control an organiser reaches for at the
+        end of a day or when the hall fills. Buried under the programme it would be
+        found by scrolling, which is not how anybody finds a stop button.
+
+        IT CLOSES BOTH DOORS. No team may register and no attendance may be
+        recorded, from the next request onwards, including for somebody already
+        standing at the wall with the form filled in. Splitting it into two switches
+        would mean the one somebody forgot is the one that lets people in.
+
+        IT IS NOT THE DAY LOCK. Closing a day's attendance is a different decision:
+        a team may still register on the evening of day one for the brief the next
+        morning. Both controls are here, deliberately adjacent, because using the
+        wrong one is the mistake they invite.
+
+        CONFIRMING BEFORE IT SHUTS. It is reversible in one press, but a press is
+        one press, and this one turns away real people at a door. The panel opens a
+        second confirmation rather than trusting the first, and says plainly what
+        will stop — "no new teams, no new marks" — because "close registration"
+        reads narrower than what it actually does.
+      */}
+      <section
+        className={`border-2 ${registrationClosed ? 'border-swiss-accent-text' : 'border-swiss-ink'}`}
+      >
+        <h2
+          className={`border-b-2 px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] ${
+            registrationClosed
+              ? 'border-swiss-accent-text bg-swiss-accent-text text-swiss-paper'
+              : 'border-swiss-ink bg-swiss-ink text-swiss-paper'
+          }`}
+        >
+          Open to the public
+        </h2>
+
+        <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
+          <p className="flex-1 text-2xs font-medium uppercase tracking-[0.15em] text-content-muted">
+            {registrationClosed
+              ? 'Closed. No new teams, and no new marks.'
+              : 'Open. Check-in and team registration both accept.'}
+          </p>
+
+          {/*
+            One control rather than three.
+
+            'open' and 'restricted' are both "accepting", and the difference between
+            them is a guest list that no longer exists. Offering three states would
+            be offering a choice that cannot be acted on, and the middle one would
+            sit there looking like it meant something.
+          */}
+          <button
+            type="button"
+            aria-pressed={registrationClosed}
+            onClick={() => {
+              if (!registrationClosed && !confirmShut(event.name)) return
+              onRegistrationModeChange(registrationClosed ? 'open' : 'closed')
+            }}
+            className={[
+              'min-h-11 cursor-pointer px-4 py-2',
+              'text-2xs font-bold uppercase tracking-[0.2em]',
+              'transition-colors duration-150 ease-linear',
+              registrationClosed
+                ? 'bg-swiss-paper text-swiss-ink hover:bg-swiss-muted'
+                : 'bg-swiss-accent-text text-swiss-paper',
+            ].join(' ')}
+          >
+            {registrationClosed ? 'Reopen' : 'Close registration'}
+          </button>
+        </div>
+      </section>
+
       <section className="border-2 border-swiss-ink">
         <h2 className="border-b-2 border-swiss-ink bg-swiss-ink px-6 py-3 text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
           Event Phase

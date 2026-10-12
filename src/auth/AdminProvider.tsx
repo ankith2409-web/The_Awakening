@@ -5,6 +5,7 @@ import type {
   Attendee,
   CheckIn,
   EventInfo,
+  RegistrationMode,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
 import { LIVE_POLL_MS, eventChanged } from './liveEvent'
@@ -329,6 +330,27 @@ export function AdminProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setError(null), [])
   const clearLastScan = useCallback(() => setLastScan(null), [])
 
+  /*
+    Open or shut the event, for both doors at once.
+
+    The same shape as the other event writes: one field in, the whole `EventInfo`
+    back, so the closed badges on both public pages and every control in the portal
+    reflect the change from a single response rather than from a second request that
+    might land after somebody has already pressed something else.
+  */
+  const setRegistrationMode = useCallback(
+    async (mode: RegistrationMode) => {
+      setError(null)
+      writeSeq.current += 1
+      try {
+        setEvent(await portalApi.setRegistrationMode(mode))
+      } catch (cause) {
+        toError(cause)
+      }
+    },
+    [toError],
+  )
+
   const value = useMemo<AdminContextValue>(
     () => ({
       status,
@@ -347,6 +369,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setEventPhase,
       updateEventDay,
       setLockedDays,
+      setRegistrationMode,
       clearError,
       clearLastScan,
     }),
@@ -367,6 +390,7 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       setEventPhase,
       updateEventDay,
       setLockedDays,
+      setRegistrationMode,
       clearError,
       clearLastScan,
     ],

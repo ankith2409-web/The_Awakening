@@ -12,6 +12,7 @@ import type {
   TeamMember,
   TeamPassReport,
   TeamRegistration,
+  RegistrationMode,
 } from './types'
 /**
  * Everything the portal can ask the backend for.
@@ -140,6 +141,20 @@ export interface PortalApi {
    * A closed day refuses new check-ins before anything is written.
    */
   setLockedDays(lockedDays: readonly number[]): Promise<EventInfo>
+  /**
+   * Opens or shuts the event to everybody.
+   *
+   * ONE SWITCH, BOTH DOORS. `registrationMode: 'closed'` refuses team registration
+   * AND attendance, on the next request, with nothing already on a form escaping
+   * it. It is the control an organiser reaches for when the event is over, or when
+   * the hall has filled.
+   *
+   * Separate from `setLockedDays` on purpose. Closing day one's attendance is a
+   * decision about attendance; a team may still be formed on the evening of day one
+   * for the brief the next morning. Closing the event is a decision about both, and
+   * conflating them would mean an organiser could not close one without the other.
+   */
+  setRegistrationMode(mode: RegistrationMode): Promise<EventInfo>
 }
 /*
   There is deliberately no staff-management surface here.

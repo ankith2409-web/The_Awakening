@@ -6,6 +6,7 @@ import type {
   CheckIn,
   EventInfo,
   PortalErrorCode,
+  RegistrationMode,
 } from '@/domain/types'
 
 export type SessionStatus = 'initialising' | 'active' | 'anonymous'
@@ -111,6 +112,14 @@ export interface AdminContextValue {
    * next request onwards.
    */
   setLockedDays: (days: readonly number[]) => Promise<void>
+  /**
+   * Opens or shuts the event for everybody.
+   *
+   * `'closed'` refuses team registration AND attendance together, on the next
+   * request. Distinct from `setLockedDays`, which closes attendance for particular
+   * days and deliberately leaves the challenge open.
+   */
+  setRegistrationMode: (mode: RegistrationMode) => Promise<void>
   /** Clears the current error banner. */
   clearError: () => void
   /**

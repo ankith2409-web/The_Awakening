@@ -14,8 +14,10 @@
  * SWISS, and email-safe. Table layout, inline styles, no flexbox, no web fonts,
  * no background images. An email is rendered by whatever the reader's client
  * happens to be, and the two hard constraints are Outlook's Word engine and the
- * fact that most people never load remote assets at all.
+ * fact that most people never load remote assets at all — which is also why the
+ * logos are inlined as data URIs rather than linked, and why they are optional.
  */
+import { BRAND, chapterLogo, fetchAiLogo } from './brand.ts'
 
 export interface TeamPassInput {
   readonly name: string
@@ -53,6 +55,78 @@ const ACCENT = '#d62500'
 const PAPER = '#ffffff'
 
 /**
+ * The footer: the chapter's mark, the event's title, and who made it possible.
+ *
+ * BUILT AS A TABLE ROW AND NOTHING ELSE.
+ *
+ * A `<div>` with `margin-top` works in some clients and not others; a table cell
+ * with `padding` works in all of them, including Outlook's Word engine, which is the
+ * one renderer that cannot be avoided. The rule height comes from a `padding` on an
+ * empty cell rather than a `border-top` on the row, because Outlook draws table
+ * borders inconsistently at the edges of a cell.
+ *
+ * THE LOGOS ARE OPTIONAL, NOT REQUIRED. Both marks are null until somebody runs
+ * `scripts/embed-brand.mjs`, and a missing mark renders as no mark at all rather
+ * than as a broken-image icon in the header of the one document a team leader has
+ * been told to keep. An email that is merely plain is still an email somebody can
+ * read their SEN out of.
+ */
+function brandBlock(eventName: string): string {
+  const marks = [chapterLogo, fetchAiLogo].filter((uri): uri is string => typeof uri === 'string')
+
+  const markCells = marks
+    .map(
+      (uri, index) => `
+                      <td align="${index === 0 ? 'left' : 'right'}" style="padding:0 ${index === 0 ? '16px 16px 0 0' : '0'};">
+                        <img
+                          src="${uri}"
+                          alt="${esc(index === 0 ? 'Google Developer Groups On Campus' : 'fetch.ai')}"
+                          width="150"
+                          style="display:block;width:150px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;"
+                        />
+                      </td>`,
+    )
+    .join('')
+
+  const markRow =
+    marks.length > 0
+      ? `
+                    <tr>
+                      <td style="padding:20px 0 0 0;">
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+                          <tr>${markCells}
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>`
+      : ''
+
+  return `
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                    ${markRow}
+                    <tr>
+                      <td style="padding:18px 0 0 0;border-top:1px solid ${INK}22;">
+                        <p style="margin:0;font-size:13px;line-height:1.4;font-weight:800;letter-spacing:-.01em;color:${INK};text-transform:uppercase;">
+                          ${esc(eventName)}
+                        </p>
+                        <p style="margin:7px 0 0 0;font-size:11px;line-height:1.6;color:${INK};opacity:.7;">
+                          <span style="font-weight:700;letter-spacing:.14em;text-transform:uppercase;">Powered by</span>
+                          ${BRAND.poweredBy.map((name) => esc(name)).join(' &middot; ')}
+                        </p>
+                        <p style="margin:3px 0 0 0;font-size:11px;line-height:1.6;color:${INK};opacity:.7;">
+                          <span style="font-weight:700;letter-spacing:.14em;text-transform:uppercase;">Sponsored by</span>
+                          ${BRAND.sponsoredBy.map((name) => esc(name)).join(' &middot; ')}
+                        </p>
+                        <p style="margin:12px 0 0 0;font-size:11px;line-height:1.5;color:${INK};opacity:.5;">
+                          You are receiving this because you registered as the team leader.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>`
+}
+
+
+/**
  * The rows, in leader-first order.
  *
  * The leader is rendered first because they are the recipient and should be able
@@ -64,8 +138,7 @@ function orderedMembers(team: TeamPassInput) {
   return [...team.members].sort((a, b) => Number(b.isLeader) - Number(a.isLeader))
 }
 
-export function teamPassHtml(team: TeamPassInput): string {
-  /*
+export function teamPassHtml(team: TeamPassInput): string {  /*
     THE MEMBERS AND THE MARKUP ARE TWO DIFFERENT VARIABLES, on purpose.
 
     They were one. `rows` was the array mapped and joined into a string, and the
@@ -175,10 +248,8 @@ export function teamPassHtml(team: TeamPassInput): string {
                   </td>
                 </tr>
               </table>
-              <p style="margin:18px 0 0 0;font-size:11px;line-height:1.5;color:${INK};opacity:.55;">
-                Sent by The Awakening &middot; Amity University Bengaluru.
-                You are receiving this because you registered as the team leader.
-              </p>
+
+              ${brandBlock(team.name)}
             </td>
           </tr>
 

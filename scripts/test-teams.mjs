@@ -167,6 +167,77 @@ check(
   JSON.stringify(reused.json),
 )
 
+/*
+  The wording matters as much as the status.
+
+  "Already registered" was the original copy, and it is the sentence that made the
+  bug above look like a mistake in the portal rather than in the rule: the owner
+  read "already registered" and checked their SENs, which were different, and
+  concluded something was wrong. "Already on a team" names the thing that is
+  actually full, so a reader who was right the first time can tell immediately.
+*/
+check(
+  'and says "already on a team", not "already registered"',
+  /already on a team/i.test(reused.json.message ?? ''),
+  JSON.stringify(reused.json),
+)
+check(
+  'and says why, rather than only what',
+  /one team only/i.test(reused.json.message ?? ''),
+  JSON.stringify(reused.json),
+)
+
+/*
+  A SEN THAT HAS CHECKED IN MUST STILL BE ABLE TO LEAD A TEAM.
+
+  This is the regression test for the bug the owner hit on the day. The route
+  UNIONed the check-in register into its "already registered" query, so anybody who
+  had marked themselves in for day one was told they were already on a team —
+  naming their own SEN, for a team they had never joined. Every attendee of this
+  event is a candidate to lead one, so that made the feature unusable for exactly
+  the people it exists for.
+
+  It reads as "already registered" and the SENs genuinely are different, which is
+  what made it look like the portal was wrong about something it should know.
+
+  The fixture checks in first and then registers a team with the same SEN, so it
+  reproduces the owner's exact sequence rather than asserting the rule in the
+  abstract.
+*/
+const checkedInSen = sen(88)
+const checkedIn = await fetch(
+  (process.env.TEST_BASE_URL ?? 'http://localhost:3000') + '/attendee/checkin',
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Checked In Person', phone: '9845012388', sen: checkedInSen }),
+  },
+)
+check(
+  'the fixture checks in first, so this reproduces the real sequence',
+  checkedIn.status === 200 || checkedIn.status === 201,
+  `check-in answered ${checkedIn.status}`,
+)
+
+const afterCheckIn = await call(
+  team({
+    tag: 'checkedin',
+    n: 8,
+    patch: {
+      leaderSen: checkedInSen,
+      members: [
+        { name: 'Alpha Person', sen: sen(81) },
+        { name: 'Beta Person', sen: sen(82) },
+      ],
+    },
+  }),
+)
+check(
+  'a SEN that has checked in can still lead a team',
+  afterCheckIn.status === 201,
+  `got ${afterCheckIn.status}: ${afterCheckIn.json.message ?? ''}`,
+)
+
 const badEmail = await call(team({ tag: 'email', n: 6, patch: { leaderEmail: 'not-an-email' } }))
 check('a bad leader email is refused', badEmail.status === 422, `got ${badEmail.status}`)
 
@@ -298,6 +369,18 @@ try {
     [`%-${RUN}-%@example.com`],
   )
   console.log(`\n  cleaned up ${rows.length} probe team(s)`)
+
+  /*
+    The check-in the regression test above made has to go too, or it sits on the
+    real roster for the owner to wonder about. By explicit SEN: it is the one row
+    this script created, and it is named in the fixture rather than pattern-matched.
+  */
+  const { rows: gone } = await client.query(
+    'delete from attendees where sen = any($1::text[]) returning sen',
+    [[checkedInSen]],
+  )
+  if (gone.length > 0) console.log(`  cleaned up the probe check-in ${gone.map((g) => g.sen).join(', ')}`)
+
   await client.end()
 } catch (error) {
   console.log(`\n  cleanup failed: ${error.message}`)

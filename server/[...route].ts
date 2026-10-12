@@ -144,6 +144,36 @@ export type EmailOutcome = 'sent' | 'not_set' | 'failed' | 'no_address'
 const TEAM_SIZE = 3
 
 /**
+ * Is the event shut to everybody?
+ *
+ * ONE SWITCH FOR BOTH DOORS, because an organiser closing registration at the end
+ * of a day means both things at once: no more teams may be created, and no more
+ * attendance may be recorded. They are the same decision, and making them two would
+ * mean the one that was forgotten is the one that lets people in.
+ *
+ * THE COLUMN ALREADY EXISTED AND DID NOTHING. `events.registration_mode` has carried
+ * `'open' | 'restricted' | 'closed'` since the guest list was removed, the server
+ * returned it in `/event`, and the client's `EventInfo` declared it. No public route
+ * read it and no admin control wrote it — a field that is persisted, transmitted and
+ * typed, and enforces nothing. Half of a feature is worse than none of it, because
+ * it reads on a screen as though it were working.
+ *
+ * `'restricted'` means the guest list is being enforced and is NOT shut. Only
+ * `'closed'` stops anything, so a team running with a restricted list is unaffected.
+ *
+ * Read once per request and passed in, never cached on the module: an organiser
+ * pressing the switch expects the next request to be refused, and a cached answer
+ * would keep the door open for the life of a warm lambda.
+ */
+async function registrationIsClosed(): Promise<boolean> {
+  const { rows } = await db().query<{ registration_mode: string | null }>(
+    'select registration_mode from events order by date desc limit 1',
+  )
+  return rows[0]?.registration_mode === 'closed'
+}
+
+
+/**
  * A team, as the API hands it over.
  *
  * The database column names are renamed here, once, rather than at every read.
@@ -359,15 +389,34 @@ async function route(
             throw unprocessable('unknown', 'Each member of a team needs a different SEN.')
           }
   
-          const already = await db().query<{ sen: string }>(
-            `select sen from attendees where upper(sen) = any($1::text[])
-               union
-             select sen from team_members where upper(sen) = any($1::text[])`,
+          /*
+            ALREADY ON A TEAM — and ONLY that.
+
+            This query used to UNION the check-in register in as well, so a student
+            who had checked in for day one could not lead a team, and was told
+            "Already registered: <their own SEN>" for a SEN that appeared on no team
+            at all. Every attendee of this event is a candidate to lead one, so that
+            check made the feature unusable for exactly the people it is for.
+
+            Attendance and team membership are separate records about a person for
+            separate reasons. Somebody attends on their own SEN every day and leads
+            a team once. Nothing about the first has any bearing on the second.
+
+            So the scope is `team_members` alone. A SEN may still only be on one
+            team, which is the rule that actually matters: it stops a person being
+            listed twice on two leaders' passes and two teams claiming the same
+            student.
+          */
+          const onATeam = await db().query<{ sen: string }>(
+            'select sen from team_members where upper(sen) = any($1::text[])',
             [sens],
           )
-          if (already.rows.length > 0) {
-            const taken = already.rows.map((r) => r.sen).join(', ')
-            throw conflict('sen_taken', `Already registered: ${taken}.`)
+          if (onATeam.rows.length > 0) {
+            const taken = onATeam.rows.map((r) => r.sen).join(', ')
+            throw conflict(
+              'sen_taken',
+              `Already on a team: ${taken}. Each student can be on one team only.`,
+            )
           }
   
           /*
@@ -377,8 +426,19 @@ async function route(
             Closing day one's attendance must not close the challenge registration
             with it — those are two different decisions and the lock exists for one
             of them.
+
+            It IS gated on the whole-event switch, because closing the event shuts
+            every door at once. A leader who registers after an organiser has closed
+            it has been told something that is no longer true.
           */
-  
+
+          if (await registrationIsClosed()) {
+            throw conflict(
+              'registration_closed',
+              'Team registration is closed. Speak to an organiser.',
+            )
+          }
+
           const client = await db().connect()
           try {
             await client.query('begin')
@@ -482,24 +542,6 @@ async function route(
         already at the box with the form open, whose only correct answer is "it is
         closed" rather than a database error about a SEN that is not on file.
       */
-      /*
-        REGISTER A TEAM.
-
-        One transaction, because a team is three people and half a team is worse
-        than no team. A leader who sees "saved" must be able to rely on all three
-        rows existing; there is no partial state to repair at a desk during a
-        challenge brief.
-
-        THE THREE SENs ARE CHECKED AGAINST EACH OTHER *AND* THE REGISTER.
-
-        Two teammates may not share a SEN, and the database enforces both of those
-        with a unique index — so this route does not have to. But the database CANNOT
-        enforce the third: whether a teammate has already CHECKED IN. That check
-        happens here, because a member who is standing in the room under a name
-        that does not match their team is a problem nobody would otherwise notice
-        until the final.
-      */
-
       case 'POST /attendee/checkin': {
         const body = await readJson<Record<string, unknown>>(req)
 
@@ -519,6 +561,25 @@ async function route(
 
         const dayState = await resolveEventDay()
         const day = dayState.activeDay
+
+        /*
+          The whole event being shut is checked before the day, and before the
+          lookup.
+
+          Order matters: a student who arrives after the event is closed should be
+          told the event is closed, not that day one is locked. They are at the door
+          for the first time and have no idea which day it is, and "day 1 is locked"
+          sends them looking for an organiser instead of at the door.
+
+          Checked before any write, for the same reason the day lock is: closing
+          must be instant and total rather than "from the next request onwards".
+        */
+        if (await registrationIsClosed()) {
+          throw conflict(
+            'registration_closed',
+            'Registration and attendance are both closed. Speak to an organiser.',
+          )
+        }
 
         if (isDayLocked(dayState, day)) {
           throw conflict(
@@ -557,15 +618,44 @@ async function route(
         let attendeeId = existing.rows[0]?.id
         const recordedName = existing.rows[0]?.name ?? name
 
+        /*
+          Whether this request is the one that created the person.
+
+          Decided by the INSERT, not by the SELECT above. The two disagree under
+          concurrency: twenty taps for a brand new SEN all read "no such person"
+          before any of them wrote, so every one of them concluded it was the first
+          — and nineteen of them were wrong. The INSERT is the authority, because
+          only it knows which of the twenty actually inserted the row.
+
+          The flag is now false whenever the mark did not land either, so the pair
+          can no longer say `firstTime: true, alreadyMarked: true` at the same time.
+        */
+        let firstTime = existing.rows.length === 0
+
         if (attendeeId === undefined) {
-          const created = await db().query<{ id: string }>(
+          const created = await db().query<{ id: string; inserted: boolean }>(
+            /*
+              `xmax = 0` tells an INSERT from an UPDATE.
+
+              Without it, this statement cannot say which of the two happened — and
+              the two mean different things to the person in front of the portal.
+              Twenty simultaneous taps for a brand new SEN all read "no such person"
+              in the SELECT above, all reached this statement, one inserted and
+              nineteen took the conflict branch, and every one of them answered
+              `firstTime: true`. The register was right. The answers were not.
+
+              `xmax` is zero on a freshly inserted tuple and holds a transaction id
+              on a row an UPDATE just rewrote, which is the only way to tell them
+              apart inside the statement itself.
+            */
             `insert into attendees (name, phone, sen, email, password_hash)
              values ($1, $2, $3, null, null)
              on conflict (sen) do update set name = excluded.name
-             returning id`,
+             returning id, (xmax = 0) as inserted`,
             [name, phone, sen],
           )
           attendeeId = created.rows[0].id
+          firstTime = created.rows[0].inserted
         }
 
         if (attendeeId === undefined) {
@@ -594,7 +684,25 @@ async function route(
         return json(res, alreadyMarked ? 200 : 201, {
           ok: true,
           alreadyMarked,
-          firstTime: existing.rows.length === 0,
+          /*
+            Two INDEPENDENT facts, and they are allowed to both be true.
+
+            `alreadyMarked` says the attendance row was already there.
+            `firstTime` says THIS REQUEST created the person in the register.
+
+            An intermediate version tied them together with `&& !alreadyMarked`, on
+            the reasoning that the two contradicting each other would be a bug. Under
+            a burst of twenty taps it made twenty responses say `firstTime: false`,
+            including the one that genuinely created the person — because the two
+            races are independent and the request that wins the attendee INSERT does
+            not necessarily win the attendance INSERT. "First time" and "already
+            marked" are not opposites: the first arrival can lose a race it still
+            won, and the loser can be the one whose mark lands.
+
+            The confirmation reads `alreadyMarked` and never this, so nothing on
+            screen depends on the pairing.
+          */
+          firstTime,
           name: recordedName,
           sen,
           day,

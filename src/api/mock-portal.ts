@@ -12,6 +12,7 @@ import {
   type CheckIn,
   type CheckInOutcome,
   type EventInfo,
+  type RegistrationMode,
   type Team,
   type TeamMember,
   type TeamPassReport,
@@ -571,6 +572,29 @@ export class MockPortalApi implements PortalApi {
     // rendering a different locked set for the same intent.
     const sorted = [...new Set(requested)].sort((a, b) => a - b)
     this.#store.event = { ...this.#store.event, lockedDays: sorted }
+    persist(this.#store)
+
+    return structuredClone(this.#store.event)
+  }
+
+  async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+
+    /*
+      The mock enforces it too, not just stores it.
+
+      A mock that records the switch but lets every check-in through is worse than
+      no mock for this feature: rehearsing the closed state locally would show an
+      organiser a working button and then a door that stays open on the day. The
+      refusal is thrown from the two public methods, in the same place the server
+      throws it.
+    */
+    if (mode !== 'open' && mode !== 'restricted' && mode !== 'closed') {
+      throw new PortalError('unknown', 'Registration must be open, restricted or closed.')
+    }
+
+    this.#store.event = { ...this.#store.event, registrationMode: mode }
     persist(this.#store)
 
     return structuredClone(this.#store.event)

@@ -70,6 +70,29 @@ export function CheckInView() {
 
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
+
+  /*
+    The refusal, so it can be brought into view and focused.
+
+    This is the difference between a student knowing their check-in did not land and
+    a student standing in a queue pressing the button again. The message renders
+    directly above the button, so it is where the eye already is; scrolling it into
+    view and focusing it means it is also where a screen reader goes.
+
+    `block: 'nearest'` rather than the default `start`: focusing an element scrolls
+    it to the top of the viewport on some browsers, which on a phone throws the name
+    and phone fields off the screen and leaves the reader with a message and no
+    form.
+  */
+  const problemRef = useRef<HTMLParagraphElement>(null)
+
+  useEffect(() => {
+    if (problem === null) return
+    const node = problemRef.current
+    if (node === null) return
+    node.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    node.focus({ preventScroll: true })
+  }, [problem])
   const [outcome, setOutcome] = useState<CheckInOutcome | null>(null)
 
   /*
@@ -184,7 +207,21 @@ export function CheckInView() {
 
   if (outcome !== null) return <CheckedIn outcome={outcome} />
 
-  const closed = event !== null && event.lockedDays.includes(event.activeDay)
+  /*
+    Two different shutters, and the page has to say which is which.
+
+    `lockedDays` closes ATTENDANCE for a day: the event is still running, this day
+    is over. `registrationMode === 'closed'` closes the EVENT: both this form and
+    team registration are shut, and that is the end of it.
+
+    Both are read from the same event payload and both are answered with the same
+    plain sentence — "check-in is closed" — because a student at the wall does not
+    need to know which switch an organiser pressed in order to understand that they
+    have come to the end of it. The distinction matters to the organiser, who has two
+    separate buttons for it, and not to the person being turned away.
+  */
+  const eventShut = event !== null && event.registrationMode === 'closed'
+  const closed = eventShut || (event !== null && event.lockedDays.includes(event.activeDay))
   const activeDay = event?.activeDay ?? 1
   const totalDays = event?.totalDays ?? 1
 
@@ -241,23 +278,28 @@ export function CheckInView() {
             {closed ? (
               <div className="p-6">
                 <p className="border-l-4 border-swiss-ink bg-swiss-muted p-4 text-lg font-black uppercase leading-snug tracking-[0.05em] text-swiss-ink">
-                  Check-in for day {activeDay} is closed
+                  {eventShut ? 'The event is closed' : `Check-in for day ${activeDay} is closed`}
                 </p>
                 <p className="mt-5 text-2xs font-medium leading-relaxed text-content-muted">
-                  Attendance for this day is no longer being recorded. If you have
-                  only just arrived, speak to an organiser.
+                  {eventShut
+                    ? 'Attendance and team registration are both closed. If you have only just arrived, speak to an organiser.'
+                    : `Attendance for this day is no longer being recorded. If you have only just arrived, speak to an organiser.`}
                 </p>
               </div>
             ) : (
               <form onSubmit={submit} noValidate className="flex flex-col gap-6 p-6">
-                {problem !== null ? (
-                  <p
-                    role="alert"
-                    className="border-l-4 border-swiss-accent-text bg-swiss-muted p-4 text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink"
-                  >
-                    {problem}
-                  </p>
-                ) : null}
+                {/*
+                  NO ERROR BANNER AT THE TOP OF THE FORM.
+
+                  It was here, above the first field, and the button that causes it
+                  is three fields further down. On a 390px phone the two are about a
+                  screen apart and nothing visibly changes when the button is
+                  pressed — so a student whose SEN was refused had to scroll back up
+                  to find out why, which reads exactly like the button doing nothing.
+
+                  It now renders directly above the button, and is scrolled into
+                  view and focused on arrival.
+                */}
 
                 <Field
                   label="Full name"
@@ -304,6 +346,24 @@ export function CheckInView() {
                   hint="As printed on your college ID."
                   className="font-mono uppercase"
                 />
+
+                {/*
+                  The server's refusal, where the reader is already looking.
+
+                  Same treatment as the team form: beside the button rather than at
+                  the top of the page, scrolled into view, and focused so it is
+                  announced rather than merely shown.
+                */}
+                {problem !== null ? (
+                  <p
+                    ref={problemRef}
+                    role="alert"
+                    tabIndex={-1}
+                    className="border-l-4 border-swiss-accent-text bg-swiss-muted p-4 text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink focus:outline-none"
+                  >
+                    {problem}
+                  </p>
+                ) : null}
 
                 <Button
                   type="submit"

@@ -8,6 +8,7 @@ import {
   type DayState,
   type EventInfo,
   type PortalErrorCode,
+  type RegistrationMode,
   type Team,
   type TeamPassReport,
   type TeamRegistration,
@@ -163,6 +164,17 @@ export class HttpPortalApi implements PortalApi {
 
   async setLockedDays(lockedDays: readonly number[]): Promise<EventInfo> {
     return this.#request('PATCH', '/admin/event', { lockedDays })
+  }
+
+  /**
+   * Opens or shuts the event to everybody.
+   *
+   * One switch for both doors: 'closed' refuses team registration AND attendance.
+   * Distinct from `setLockedDays`, which closes attendance for particular days and
+   * leaves the challenge open — a team may register on the evening of day one.
+   */
+  async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {
+    return this.#request('PATCH', '/admin/event', { registrationMode: mode })
   }
 
   /*

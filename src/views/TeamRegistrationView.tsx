@@ -108,6 +108,30 @@ export function TeamRegistrationView() {
   const [problem, setProblem] = useState<string | null>(null)
   const [done, setDone] = useState<TeamRegistration | null>(null)
 
+  /*
+    The refusal, so it can be brought into view and focused.
+
+    Both halves are needed and neither is enough. Scrolling alone leaves the
+    message on screen but not focused, so a screen-reader user is told nothing and a
+    keyboard user's next Tab goes somewhere else. Focusing alone scrolls the
+    element to the top of the viewport on some browsers, which on a long form
+    throws away the reader's place.
+
+    `scrollIntoView` is `block: 'nearest'` rather than the default `start`: this
+    form is taller than a phone screen, and a message that has scrolled the team
+    name and the leader's block off the top is no more findable than the one that
+    was never visible.
+  */
+  const problemRef = useRef<HTMLParagraphElement>(null)
+
+  useEffect(() => {
+    if (problem === null) return
+    const node = problemRef.current
+    if (node === null) return
+    node.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    node.focus({ preventScroll: true })
+  }, [problem])
+
   const [touched, setTouched] = useState<Record<string, boolean>>({})
   const firstRef = useRef<HTMLInputElement>(null)
 
@@ -268,6 +292,15 @@ export function TeamRegistrationView() {
 
   if (done !== null) return <TeamRegistered result={done} />
 
+  /*
+    THE EVENT BEING SHUT IS THE ONLY STATE THIS FORM HAS.
+
+    Unlike the check-in page there is no per-day version of this, and there is no
+    reason to build one: teams are formed once, for the challenge, so "closed" means
+    closed. The button an organiser pressed is the same one either way.
+  */
+  const eventShut = event !== null && event.registrationMode === 'closed'
+
   return (
     <main className="flex min-h-dvh flex-col">
       <div className="flex-1 px-5 py-10 sm:px-8 sm:py-14">
@@ -300,19 +333,44 @@ export function TeamRegistrationView() {
           <section className="border-2 border-swiss-ink">
             <header className="border-b-2 border-swiss-ink bg-swiss-ink px-5 py-3.5">
               <h2 className="text-2xs font-bold uppercase tracking-[0.25em] text-swiss-paper">
-                Register your team
+                {eventShut ? 'Registration closed' : 'Register your team'}
               </h2>
             </header>
 
-            <form onSubmit={submit} noValidate className="flex flex-col gap-6 p-6">
-              {problem !== null ? (
-                <p
-                  role="alert"
-                  className="border-l-4 border-swiss-accent-text bg-swiss-muted p-4 text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink"
-                >
-                  {problem}
+            {eventShut ? (
+              /*
+                The form is not rendered at all, not rendered disabled.
+
+                A disabled nine-field form is a wall. Somebody scanning the poster
+                still has to be told the answer before they start typing, and the
+                cheapest honest version of that is no form and a sentence.
+              */
+              <div className="p-6">
+                <p className="border-l-4 border-swiss-ink bg-swiss-muted p-4 text-lg font-black uppercase leading-snug tracking-[0.05em] text-swiss-ink">
+                  Team registration is closed
                 </p>
-              ) : null}
+                <p className="mt-5 text-2xs font-medium leading-relaxed text-content-muted">
+                  The event has been closed by an organiser, so no more teams can be
+                  added and nobody can be marked in. If you have only just arrived,
+                  speak to them.
+                </p>
+              </div>
+            ) : (
+            <form onSubmit={submit} noValidate className="flex flex-col gap-6 p-6">
+              {/*
+                NO ERROR BANNER AT THE TOP.
+
+                This form is nine fields long and the submit button is at the bottom
+                of it. A refusal rendered above the first field is roughly a screen
+                and a half away from the button the reader just pressed, and the
+                whole surface does not visibly change — so a leader whose SEN was
+                already on a team pressed the button, saw nothing happen, and had to
+                scroll back up to find out why. That is the same failure as no
+                message at all, with extra steps.
+
+                The refusal now renders directly above the button, where the eye
+                already is, and is scrolled into view on arrival. See `problemRef`.
+              */}
 
               <Field
                 ref={firstRef}
@@ -465,6 +523,28 @@ export function TeamRegistrationView() {
                 </p>
               ) : null}
 
+              {/*
+                THE SERVER'S REFUSAL, WHERE THE READER IS LOOKING.
+
+                Directly above the button rather than at the top of the form, and
+                `role="alert"` so it is announced rather than only shown.
+
+                It is rendered in the same place as the duplicate-SEN warning
+                because they answer the same question — "why did nothing happen?" —
+                and a form that answers a refusal in one place and a validation
+                fault in another makes the reader check both before pressing again.
+              */}
+              {problem !== null ? (
+                <p
+                  ref={problemRef}
+                  role="alert"
+                  tabIndex={-1}
+                  className="border-l-4 border-swiss-accent-text bg-swiss-muted p-4 text-2xs font-bold uppercase leading-relaxed tracking-[0.15em] text-swiss-ink focus:outline-none"
+                >
+                  {problem}
+                </p>
+              ) : null}
+
               <Button type="submit" variant="accent" size="lg" loading={busy} disabled={!ready}>
                 {busy ? 'Registering' : 'Register team'}
               </Button>
@@ -474,6 +554,7 @@ export function TeamRegistrationView() {
                 in at the door on their own SEN.
               </p>
             </form>
+            )}
           </section>
         </div>
       </div>
