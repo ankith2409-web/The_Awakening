@@ -98,10 +98,18 @@ async function main() {
     await client.query('commit')
 
     const after = await client.query('select sen, name from event_roster order by sen')
-    const got = after.rows.map((r) => `${r.sen} ${r.name}`)
-    const want = rows.map((r) => `${r.sen} ${r.name}`)
+    /*
+      Compared field by field.
 
-    const exact = got.length === want.length && got.every((v, i) => v === want[i])
+      A space separator would be ambiguous: a name may contain a space, so
+      ("A B", "C") and ("A", "B C") would compare equal — and this is the check
+      somebody reads to decide whether their guest list came back.
+    */
+    const got = after.rows
+    const want = rows
+    const exact =
+      got.length === want.length &&
+      got.every((row, i) => row.sen === want[i].sen && row.name === want[i].name)
 
     console.log(`\n  ${exact ? 'Restored and verified' : 'RESTORED BUT MISMATCHED'}: ${got.length} row(s)`)
     if (!exact) {
