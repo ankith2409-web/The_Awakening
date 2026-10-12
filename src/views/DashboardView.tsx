@@ -92,7 +92,7 @@ export function DashboardView() {
                 ...(event?.organiserHost
                   ? ([['Hosted by', event.organiserHost]] as [string, string][])
                   : []),
-                ['Venue', event ? `${event.venue}, ${event.city}` : '—'],
+                ['Venue', event ? event.venue : '-'],
                 ['Date', event ? formatEventDateRange(event.date, event.endDate) : '—'],
               ].map(([term, value]) => (
                 <div key={term} className="bg-swiss-muted px-4 py-3">

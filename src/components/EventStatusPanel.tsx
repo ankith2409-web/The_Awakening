@@ -84,7 +84,18 @@ export function EventStatusPanel({
           {event.organiserHost ? ` · ${event.organiserHost}` : ''}
         </p>
         <p className="mt-1 text-2xs font-medium uppercase tracking-[0.2em] text-content-muted">
-          {event.venue}, {event.city}
+          {/*
+            The venue alone, not the venue and the city.
+
+            "Auditorium, Bengaluru" was the city appended to a venue that already
+            implied it, which reads as padding rather than as information — and on
+            the hero it made a one-line value sit beside a two-line one for no reason.
+
+            `city` is still in `EventInfo` and still in the change signature, so
+            changing it still re-renders this panel. The full postal address is in
+            the footer, where an address belongs.
+          */}
+          {event.venue}
         </p>
         <p className="mt-1 font-mono text-sm font-bold text-swiss-ink">
           {formatEventDateRange(event.date, event.endDate)}

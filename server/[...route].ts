@@ -194,7 +194,8 @@ async function credentialContext(): Promise<{
         : start
           ? formatDay(start)
           : '',
-    venue: event ? `${event.venue}, ${event.city}` : '',
+    // The venue alone. The email says where to go, not where the city is.
+    venue: event?.venue ?? '',
   }
 }
 

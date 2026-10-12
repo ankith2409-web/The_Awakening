@@ -208,7 +208,7 @@ function Hero({
           >
             {[
               ['Date', event ? formatEventDateRange(event.date, event.endDate) : '—'],
-              ['Venue', event ? `${event.venue}, ${event.city}` : '—'],
+              ['Venue', event ? event.venue : '-'],
               ['Hosted by', event?.organiserHost ?? '—'],
             ].map(([term, value]) => (
               /*
