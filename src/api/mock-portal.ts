@@ -1,5 +1,6 @@
 import { SEED_ADMINS, SEED_ATTENDEE, SEED_EVENT } from '@/domain/dataset'
 import { normalisePhone, normaliseSen, isValidSen, phoneProblem } from '@/domain/phone'
+import { normaliseEmail, isValidEmail } from '@/domain/email'
 import { nameProblem } from '@/domain/name'
 import { signTicket } from '@/domain/ticket'
 import {
@@ -55,7 +56,7 @@ interface Store {
   event: EventInfo
   checkIns: CheckIn[]
   /** The uploaded guest list. Absent on stores seeded before this feature. */
-  roster?: { sen: string; name: string }[]
+  roster?: { sen: string; name: string; email: string | null }[]
   /**
    * Fingerprint of the seed this store was built from.
    *
@@ -662,7 +663,7 @@ export class MockPortalApi implements PortalApi {
   }
 
   async uploadRoster(
-    rows: readonly { name: string; sen: string }[],
+    rows: readonly { name: string; sen: string; email?: string | null }[],
     mode: RegistrationMode,
   ): Promise<RosterUploadResult> {
     this.#requireOwner()
@@ -670,20 +671,37 @@ export class MockPortalApi implements PortalApi {
 
     const problems: string[] = []
     const seen = new Set<string>()
-    const accepted: { sen: string; name: string }[] = []
+    const accepted: { sen: string; name: string; email: string | null }[] = []
+    // Counted, not `problems.length` — a bad email is a warning on an imported row,
+    // and reporting it as a skip would say 5 landed and 1 was lost when all 5 are
+    // there. Same rule and same reason as the server.
+    let skipped = 0
 
     rows.forEach((row, index) => {
       const sen = normaliseSen(row.sen)
       if (!isValidSen(sen)) {
         problems.push(`row ${index + 2}: not a valid SEN`)
+        skipped += 1
         return
       }
       if (seen.has(sen)) {
         problems.push(`row ${index + 2}: duplicate`)
+        skipped += 1
         return
       }
       seen.add(sen)
-      accepted.push({ sen, name: row.name.trim().slice(0, 80) })
+      // An address the rules refuse is reported and dropped, never a rejected row.
+      // The same rule as the parser and the server, asserted by the same tests.
+      const rawEmail = (row.email ?? '').trim()
+      const normalised = rawEmail === '' ? null : normaliseEmail(rawEmail)
+      if (normalised !== null && !isValidEmail(normalised)) {
+        problems.push(
+          `row ${index + 2}: "${rawEmail.slice(0, 48)}" is not a usable email address — the student is still on the list`,
+        )
+        accepted.push({ sen, name: row.name.trim().slice(0, 80), email: null })
+        return
+      }
+      accepted.push({ sen, name: row.name.trim().slice(0, 80), email: normalised })
     })
 
     if (accepted.length === 0) {
@@ -691,6 +709,28 @@ export class MockPortalApi implements PortalApi {
     }
 
     this.#store.roster = accepted
+
+    /*
+      The same backfill the server does: addresses reach the people who already
+      registered, and only where they have none.
+
+      An address somebody typed on the registration form is theirs and beats a
+      spreadsheet cell that may have been edited since; a blank cell says nothing at
+      all, because this list is who MAY register and most of it never did.
+    */
+    let addressesApplied = 0
+    const withAddress = new Map(
+      accepted.filter((r) => r.email !== null).map((r) => [r.sen, r.email as string]),
+    )
+    if (this.#store.attendees) {
+      this.#store.attendees = this.#store.attendees.map((a) => {
+        const next = withAddress.get(a.sen)
+        if (next === undefined || a.email) return a
+        addressesApplied += 1
+        return { ...a, email: next }
+      })
+    }
+
     /*
       The mode goes on `event`, and only on `event`.
 
@@ -703,7 +743,14 @@ export class MockPortalApi implements PortalApi {
     this.#store.event = { ...this.#store.event, registrationMode: mode }
     persist(this.#store)
 
-    return { imported: accepted.length, skipped: problems.length, problems, mode }
+    return {
+      imported: accepted.length,
+      skipped,
+      problems,
+      mode,
+      addressesOnSheet: accepted.filter((r) => r.email !== null).length,
+      addressesApplied,
+    }
   }
 
   async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {

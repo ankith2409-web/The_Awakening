@@ -163,6 +163,24 @@ const asFile = (bytes, name) => {
   }
 }
 
+/**
+ * Parses CSV text as a guest-list sheet, in one step.
+ *
+ * `asFile` exists for the binary and malformed cases, where how the file is
+ * constructed is itself part of what is under test. It also needs its `_init`
+ * called by hand before the bytes exist, and reaching for `_init` directly trips
+ * the dangling-underscore rule — so a test that merely wanted to read a sheet had
+ * two ways to be written and only one of them lint-clean.
+ *
+ * This builds the Blob inside `arrayBuffer` instead, which is what a real
+ * `File` does and needs no second step.
+ */
+const readSheet = (text, name = 'roster.csv') =>
+  parseRosterFile({
+    name,
+    arrayBuffer: async () => new Blob([new TextEncoder().encode(text)]).arrayBuffer(),
+  })
+
 /* ------------------------------------------------------------------ CSV */
 
 console.log('\n  CSV parsing')
@@ -235,6 +253,120 @@ check('unrecognised headers fall back to position, and say so',
   guessed?.senIndex === 1 && guessed?.guessed === true, JSON.stringify(guessed))
 
 check('a single column is refused', findColumns(['SEN']) === null)
+
+/* ----------------------------------------------------- the optional column */
+
+console.log('\n  the optional email column')
+
+/*
+  Email is the only optional column, and "optional" has to mean three specific
+  things or it is not optional at all:
+
+    - its absence changes nothing about a two-column sheet,
+    - it is never guessed from position, and
+    - it can never be pointed at the SEN or the name.
+
+  The third is the one that would do real damage: a column silently believed to
+  hold addresses is where wrong addresses come from, and a wrong address is a
+  credential handed to a stranger.
+*/
+
+check(
+  'a two-column sheet reports no email column at all',
+  senFirst.emailIndex === -1,
+  JSON.stringify(senFirst),
+)
+check(
+  'and that is not the same as an email column at index 0',
+  findColumns(['Email', 'Name', 'SEN'])?.emailIndex === 0,
+  JSON.stringify(findColumns(['Email', 'Name', 'SEN'])),
+)
+check(
+  'the order of all three does not matter',
+  findColumns(['Name', 'Email', 'SEN'])?.emailIndex === 1 &&
+    findColumns(['SEN', 'Name', 'Email'])?.emailIndex === 2,
+  JSON.stringify([findColumns(['Name', 'Email', 'SEN']), findColumns(['SEN', 'Name', 'Email'])]),
+)
+check(
+  'common synonyms resolve',
+  ['Email Address', 'Mail', 'Mail ID', 'E-mail'].every(
+    (h) => findColumns(['Name', 'SEN', h])?.emailIndex === 2,
+  ),
+  JSON.stringify(['Email Address', 'Mail', 'Mail ID', 'E-mail'].map((h) => findColumns(['Name', 'SEN', h]))),
+)
+
+check(
+  'an unrecognised header set never guesses an email column',
+  findColumns(['Department', 'Roll No', 'Name'])?.emailIndex === -1,
+  JSON.stringify(findColumns(['Department', 'Roll No', 'Name'])),
+)
+check(
+  'a header that says Email but sits on the SEN column is refused',
+  findColumns(['Email', 'SEN'])?.emailIndex === -1,
+  JSON.stringify(findColumns(['Email', 'SEN'])),
+)
+check(
+  'and one sitting on the name column likewise',
+  findColumns(['Name', 'Email'])?.emailIndex === -1,
+  JSON.stringify(findColumns(['Name', 'Email'])),
+)
+
+// -- read off the sheet
+
+const withEmail = parseCsv(
+  [['SEN', 'Name', 'Email'], ['A866175000012', 'Ankith Kumar', 'a@b.com']].join('\n'),
+)
+check('a sheet with an email column parses', withEmail.length === 2, `${withEmail.length} rows`)
+check(
+  'into three columns, header and all',
+  withEmail[0].length === 3 && withEmail[0][2] === 'Email',
+  JSON.stringify(withEmail),
+)
+
+const emailSheet = await readSheet(
+  [
+    'SEN,Name,Email',
+    'A866175000012,Ankith Kumar,Ankith.Kumar@Example.COM',
+    'A866175000013,Second Student,  spaced@out.com  ',
+    'A866175000014,Third Student,',
+    'A866175000015,Fourth Student,not an address',
+  ].join('\n'),
+)
+check('every row still lands', emailSheet.rows.length === 4, JSON.stringify(emailSheet.rows))
+check(
+  'the address is lowercased, because two spellings of one inbox is one inbox',
+  emailSheet.rows[0].email === 'ankith.kumar@example.com',
+  JSON.stringify(emailSheet.rows[0]),
+)
+check(
+  'and surrounding space is trimmed',
+  emailSheet.rows[1].email === 'spaced@out.com',
+  JSON.stringify(emailSheet.rows[1]),
+)
+check(
+  'a blank cell is null, not an empty string',
+  emailSheet.rows[2].email === null,
+  JSON.stringify(emailSheet.rows[2]),
+)
+check(
+  'a malformed address does NOT drop the row off the list',
+  emailSheet.rows[3].sen === 'A866175000015' && emailSheet.rows[3].email === null,
+  JSON.stringify(emailSheet.rows[3]),
+)
+check(
+  'and it is reported, because silence would leave a column unexplained',
+  emailSheet.problems.some((p) => /not a usable email address/.test(p) && /still on the list/.test(p)),
+  JSON.stringify(emailSheet.problems),
+)
+
+const twoColumnSheet = await readSheet('SEN,Name\nA866175000012,Ankith Kumar\n')
+check(
+  'a two-column sheet parses exactly as it always did',
+  twoColumnSheet.rows.length === 1 && twoColumnSheet.rows[0].email === null,
+  JSON.stringify(twoColumnSheet.rows),
+)
+check('and reports no problem about a column that was never there',
+  twoColumnSheet.problems.length === 0, JSON.stringify(twoColumnSheet.problems))
 
 /* ----------------------------------------------------------------- XLSX */
 

@@ -383,6 +383,25 @@ create table if not exists event_roster (
   added_at  timestamptz not null default now()
 );
 
+/*
+  Email on the guest list.
+
+  The roster's job is deciding who may REGISTER, and it must keep working on a
+  two-column sheet. But it is also the only realistic way to get addresses onto
+  the people who registered before the form collected one: the organiser already
+  has this spreadsheet, and chasing thirteen people individually is the
+  alternative.
+
+  Nullable and never required. A malformed address is reported and the student is
+  still added — dropping somebody over a typo in an optional column would lock out
+  a real person over a field the feature did not previously have.
+
+  NOT a foreign key to `attendees.email`. The list is who MAY register, which
+  includes people who have not registered yet and never will; tying the two
+  together would mean the roster cannot name somebody before they sign up.
+*/
+alter table event_roster add column if not exists email text;
+
 -- How many are on the list, and whether it is being enforced.
 --
 -- A separate flag rather than deriving enforcement from "the table has rows",

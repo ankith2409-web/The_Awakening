@@ -232,8 +232,21 @@ export interface PortalApi {
    * list and start using it" is one action instead of two, and there is no window
    * where the list has changed but the decision about it has not.
    */
+  /**
+   * Saves the guest list.
+   *
+   * `email` on a row is OPTIONAL and the third argument to nothing at all — a sheet
+   * with two columns is still a valid sheet. It exists because this spreadsheet is
+   * the only realistic way to put an address on the people who registered before the
+   * form collected one; without it, "email everyone their credentials" can only ever
+   * reach people who registered after the field was added.
+   *
+   * An address the rules refuse does not reject the row. This list decides who may
+   * register, and a typo in a column the portal did not previously have must not lock
+   * out a real student — so the address is reported and dropped, and the student stays.
+   */
   uploadRoster(
-    rows: readonly { name: string; sen: string }[],
+    rows: readonly { name: string; sen: string; email?: string | null }[],
     mode: RegistrationMode,
   ): Promise<RosterUploadResult>
   /**

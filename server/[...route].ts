@@ -33,7 +33,7 @@ import {
   passwordProblem,
   phoneProblem,
 } from './_lib/identifiers.ts'
-import { emailProblem, normaliseEmail } from './_lib/email.ts'
+import { emailProblem, isValidEmail, normaliseEmail } from './_lib/email.ts'
 import { mailConfigured, sendMail } from './_lib/mail.ts'
 import { credentialsHtml, credentialsSubject, credentialsText } from './_lib/credentialsEmail.ts'
 import { readTicket, signSen } from './_lib/ticket.ts'
@@ -950,8 +950,16 @@ async function route(
       case 'GET /admin/roster/rows': {
         requireOwner()
 
-        const { rows } = await db().query<{ sen: string; name: string }>(
-          'select sen, name from event_roster order by sen',
+        /*
+          Email comes back too, and only to the owner.
+
+          The organiser needs to see whether the addresses actually landed. A sheet
+          whose third column was `Department` parses, uploads, reports no problem and
+          leaves thirteen people unreachable — reading it back is the only way to
+          notice, so the column is returned rather than trusted.
+        */
+        const { rows } = await db().query<{ sen: string; name: string; email: string | null }>(
+          'select sen, name, email from event_roster order by sen',
         )
 
         const shown = rows.slice(0, ROSTER_ROWS_CAP)
@@ -1115,8 +1123,22 @@ async function route(
         }
 
         const problems: string[] = []
-        const accepted: { sen: string; name: string }[] = []
+        const accepted: { sen: string; name: string; email: string | null }[] = []
         const seen = new Map<string, number>()
+
+        /*
+          Counted, not derived from `problems.length`.
+
+          `skipped` answers "how many students did NOT make it onto the list", and
+          `problems` is also where a WARNING goes. When one row had a bad email
+          address but was still imported, `problems.length` reported it as skipped —
+          so an organiser uploading 500 students saw "500 on the list · 1 skipped" and
+          had no way to tell that all 500 had landed.
+
+          A number that counts the wrong thing is worse than no number, because it is
+          believed. Counted at the point of rejection instead.
+        */
+        let skipped = 0
 
         for (let i = 0; i < rawRows.length; i += 1) {
           const row = rawRows[i] as Record<string, unknown>
@@ -1136,10 +1158,12 @@ async function route(
 
           if (!isValidSen(sen)) {
             problems.push(`row ${lineNumber}: "${field(row.sen).slice(0, 24)}" is not a valid SEN`)
+            skipped += 1
             continue
           }
           if (name === '') {
             problems.push(`row ${lineNumber}: missing a name`)
+            skipped += 1
             continue
           }
 
@@ -1155,11 +1179,32 @@ async function route(
               exported.
             */
             problems.push(`row ${lineNumber}: duplicate of row ${firstSeen} (${sen}) — kept the first`)
+            skipped += 1
             continue
           }
 
           seen.set(sen, lineNumber)
-          accepted.push({ sen, name })
+
+          /*
+            The address is OPTIONAL and never a reason to reject the row.
+
+            This sheet decides who may register. A typo in a column the portal did
+            not previously have must not lock out a real student — so an address the
+            rules refuse becomes null, is reported, and the student stays on the
+            list. The same rule as the parser, asserted by the same tests, because
+            the client is not the only thing that can be wrong.
+          */
+          const rawEmail = optionalString(row, 'email')
+          const email = rawEmail === null || rawEmail.trim() === '' ? null : normaliseEmail(rawEmail)
+          if (email !== null && !isValidEmail(email)) {
+            problems.push(
+              `row ${lineNumber}: "${String(rawEmail).slice(0, 48)}" is not a usable email address — the student is still on the list`,
+            )
+            accepted.push({ sen, name, email: null })
+            continue
+          }
+
+          accepted.push({ sen, name, email })
         }
 
         /*
@@ -1183,15 +1228,48 @@ async function route(
         */
         const registrationMode = readRegistrationMode(body.registrationMode) ?? 'open'
 
+        let backfillCount = 0
         const client = await db().connect()
         try {
           await client.query('begin')
           await client.query('delete from event_roster')
           await client.query(
-            `insert into event_roster (sen, name)
-             select * from unnest($1::text[], $2::text[])`,
-            [accepted.map((r) => r.sen), accepted.map((r) => r.name)],
+            `insert into event_roster (sen, name, email)
+             select * from unnest($1::text[], $2::text[], $3::text[])`,
+            [
+              accepted.map((r) => r.sen),
+              accepted.map((r) => r.name),
+              accepted.map((r) => r.email),
+            ],
           )
+
+          /*
+            Copy addresses onto the people who already registered.
+
+            This is the whole point of reading email off the guest list. The thirteen
+            who signed up before the form collected an address cannot be emailed at
+            all, and the organiser already holds this spreadsheet — so matching on SEN
+            is what makes them reachable without chasing anybody down.
+
+            ONLY WHERE THE ATTENDEE HAS NO ADDRESS.
+
+            An address a person typed on the registration form is theirs, and is more
+            likely to be right than a spreadsheet cell that may have been edited since.
+            Overwriting it would silently destroy the better of the two. A blank cell
+            does not clear an existing address either: the roster is who MAY register,
+            and most of it has never registered, so absence here means nothing at all.
+          */
+          backfillCount = (
+            await client.query(
+              `update attendees a
+                  set email = r.email
+                 from event_roster r
+                where r.sen = a.sen
+                  and r.email is not null
+                  and a.email is null
+               returning a.sen`,
+            )
+          ).rowCount ?? 0
           /*
             The registration MODE is settable here, so uploading a list and choosing
             what it means is one action rather than two. Left alone when absent, so
@@ -1213,9 +1291,17 @@ async function route(
 
         return json(res, 200, {
           imported: accepted.length,
-          skipped: problems.length,
+          skipped,
           problems: problems.slice(0, 10),
           mode: registrationMode,
+          /*
+            How many of the people who had already registered just became
+            emailable. Reported because the organiser needs to know whether the
+            "email everyone their credentials" button will now reach the thirteen
+            from before the form collected an address, or only the new ones.
+          */
+          addressesApplied: backfillCount,
+          addressesOnSheet: accepted.filter((r) => r.email !== null).length,
         })
       }
 

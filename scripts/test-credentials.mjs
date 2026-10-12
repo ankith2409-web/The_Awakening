@@ -378,6 +378,49 @@ async function main() {
     'a failed email does not fail the registration',
     !/deliverCredentials[\s\S]{0,120}throw/.test(regBody),
   )
+
+  /* -- 6. what the owner is told when a send is refused ---------------------- */
+
+  /*
+    The message is the whole product at this point.
+
+    Every provider that will not send you email fails with a body that says the
+    recipient is at fault. If that is passed through as "the address was refused",
+    the owner reads a list of twelve students, concludes those twelve have broken
+    mailboxes, and sends nothing — while the actual fault is one unverified DNS
+    record that only they can fix. So each refusal is classified, and the test is
+    on the classification rather than on a string, because the string will be
+    rewritten and the behaviour must not be.
+  */
+  const mail = readFileSync('server/_lib/mail.ts', 'utf8')
+
+  check(
+    'an unverified sending domain is named as the cause',
+    /domain is not verified/i.test(mail) && /sending domain is not verified/i.test(mail),
+  )
+  check(
+    'and a pre-domain provider limit is named separately',
+    /only send testing emails to your own email address/i.test(mail) &&
+      /Only your own address can receive/i.test(mail),
+  )
+  check(
+    'a genuinely refused address still says so',
+    /The address was refused\./.test(mail),
+  )
+  check(
+    "the provider's body is never echoed to the owner",
+    !/error:\s*(detail|raw|body)\b/.test(mail),
+    'the body contains the address that failed',
+  )
+  check(
+    'and no hint is built by interpolating anything from it',
+    !/hint\s*=\s*`[^`]*\$\{[^}]*(detail|body|raw)[^}]*\}/.test(mail),
+  )
+  check(
+    'the sender still defaults to the one address that works unverified',
+    /MAIL_FROM[\s\S]{0,120}onboarding@resend\.dev/.test(mail),
+    'an unverified from-address would 403 every single send',
+  )
 }
 
 /* -- helpers --------------------------------------------------------------- */

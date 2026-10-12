@@ -248,7 +248,7 @@ export class HttpPortalApi implements PortalApi {
     functions registration uses, so a client that skipped the checks gains nothing.
   */
   async uploadRoster(
-    rows: readonly { name: string; sen: string }[],
+    rows: readonly { name: string; sen: string; email?: string | null }[],
     mode: RegistrationMode,
   ): Promise<RosterUploadResult> {
     return this.#request('POST', '/admin/roster', { rows, registrationMode: mode })

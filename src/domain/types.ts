@@ -393,6 +393,23 @@ export interface RosterUploadResult {
   readonly skipped: number
   readonly problems: readonly string[]
   readonly mode: RegistrationMode
+  /**
+   * Addresses read off the sheet, out of how many rows.
+   *
+   * Two numbers, not one, because they answer different questions. This says the
+   * sheet carried addresses at all — so a sheet with none is visibly a sheet with
+   * none rather than a column the portal silently ignored.
+   */
+  readonly addressesOnSheet: number
+  /**
+   * People who had already registered and had NO address, and now have one.
+   *
+   * This is the count that decides whether the credential button can reach anybody
+   * who signed up before the form collected an address — which, on the day the
+   * button is needed, is most of the list. Reporting it is the difference between
+   * "it sent to everyone" and "it reached the four who registered this week".
+   */
+  readonly addressesApplied: number
 }
 
 /**
@@ -406,7 +423,18 @@ export interface RosterUploadResult {
 export interface RosterRows {
   readonly total: number
   readonly truncated: boolean
-  readonly rows: readonly { readonly sen: string; readonly name: string }[]
+  /**
+   * `email` is what the sheet actually held, not what the portal made of it.
+   *
+   * Null on a row the organiser believes has an address is the signal that the
+   * column was not the one they thought, and it is the only place that can be seen
+   * without going to the database.
+   */
+  readonly rows: readonly {
+    readonly sen: string
+    readonly name: string
+    readonly email?: string | null
+  }[]
 }
 
 /**

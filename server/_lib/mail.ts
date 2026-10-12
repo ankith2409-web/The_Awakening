@@ -88,14 +88,38 @@ export async function sendMail(input: {
 
     if (!response.ok) {
       /*
-        The provider's body is read but never surfaced verbatim: it echoes the
-        address that failed, and an owner's error panel is not the place for that.
-        The status is enough to act on, and the address is already on their roster.
+        The provider's body is read but NEVER surfaced verbatim.
+
+        It echoes the address that failed, and an owner's error panel is not the
+        place for that. It is read only to recognise three specific situations,
+        because each one has a completely different fix and "the address was
+        refused" sends the owner chasing the wrong person:
+
+          - The sending domain is not verified. Nothing can be delivered to anyone,
+            and no student can fix it. The fix is one DNS record, on the organiser's
+            side.
+          - Only the account's own address is allowed, which is what a provider
+            permits before a domain exists. Same fix, said differently, because the
+            owner is looking at a list of students who "could not be reached" and
+            needs to know none of it is their fault.
+          - Anything else. Refused, rate-limited, or down.
+
+        The words are matched on, never printed: the messages themselves contain the
+        address, and the substring tests below are what keeps it off the screen.
       */
       const detail = await response.text().catch(() => '')
-      const hint = detail.includes('validation_error')
-        ? 'The address was refused.'
-        : `The mail service replied ${response.status}.`
+
+      let hint: string
+      if (/domain is not verified|domain you are sending from|is not verified/i.test(detail)) {
+        hint = 'The sending domain is not verified, so nothing can be delivered until it is.'
+      } else if (/only send testing emails to your own email address/i.test(detail)) {
+        hint = 'Only your own address can receive until a sending domain is verified.'
+      } else if (detail.includes('validation_error')) {
+        hint = 'The address was refused.'
+      } else {
+        hint = `The mail service replied ${response.status}.`
+      }
+
       return { attempted: true, ok: false, id: null, error: hint }
     }
 

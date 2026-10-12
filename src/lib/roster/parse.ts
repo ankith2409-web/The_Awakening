@@ -31,6 +31,7 @@
  */
 
 import { isValidSen } from '@/domain/phone'
+import { isValidEmail, normaliseEmail } from '@/domain/email'
 
 /** Hard ceiling on rows, mirrored by the server. */
 export const MAX_ROWS = 5000
@@ -48,6 +49,19 @@ const MAX_ENTRY_BYTES = 32 * 1024 * 1024
 export interface RosterRow {
   readonly name: string
   readonly sen: string
+  /**
+   * Email from the sheet, or null.
+   *
+   * OPTIONAL, and that is the point. The guest list's job is deciding who may
+   * register, and it must keep working on a sheet with two columns. But it is
+   * also the only realistic way to get addresses onto the people who registered
+   * before the form collected one — the organiser already has this spreadsheet,
+   * and chasing thirteen people individually is the alternative.
+   *
+   * Null here is normal and is never a parse problem. A row with no address is
+   * still a perfectly good roster row.
+   */
+  readonly email: string | null
   /** 1-based row in the file, counting the header as row 1. */
   readonly line: number
 }
@@ -457,17 +471,31 @@ function normaliseHeader(value: string): string {
   it produces plausible-looking wrong output, which is the worst kind.
 */
 
+const EMAIL_HEADERS = [
+  'email',
+  'emailaddress',
+  'mail',
+  'mailid',
+  'emailid',
+]
+
 /**
- * Finds the name and SEN columns from the header row.
+ * Finds the name, SEN and email columns from the header row.
  *
  * Falls back to POSITION when the headers are not recognised — first name-ish column
  * and the last column — because a sheet with no recognisable header still contains
  * the data, and refusing it would be pedantic. The fallback is reported so the
  * preview says the columns were guessed rather than read.
+ *
+ * `emailIndex` is -1 when the sheet has no email column at all, which is the normal
+ * case and is never a problem. It is deliberately NOT guessed from position: a
+ * three-column sheet with no header row is far more likely to be SEN | Name |
+ * something-else than SEN | Name | Email, and guessing would write a student's
+ * department into their email address.
  */
 export function findColumns(
   header: readonly string[],
-): { senIndex: number; nameIndex: number; guessed: boolean } | null {
+): { senIndex: number; nameIndex: number; emailIndex: number; guessed: boolean } | null {
   // Two columns is the documented shape, and there is nothing sensible to do with
   // one. Checked first: a single "SEN" column matches the header list, and without
   // this guard it produced a confident answer pointing at a column that is not there.
@@ -477,20 +505,41 @@ export function findColumns(
 
   const senIndex = normalised.findIndex((h) => SEN_HEADERS.includes(h))
   const nameIndex = normalised.findIndex((h) => NAME_HEADERS.includes(h))
+  const emailIndex = normalised.findIndex((h) => EMAIL_HEADERS.includes(h))
 
   if (senIndex !== -1) {
+    /*
+      The name index is RESOLVED first, then the email is checked against both.
+
+      The order matters and the mistake is easy to make. Guarding the email against
+      the raw header match rather than the resolved one let a sheet headed
+      `Email | SEN` through: the name fell back to the first non-SEN column, which
+      was the Email column, and the guard then compared the email index against the
+      UNRESOLVED name index of -1 — found no collision, and returned both pointing at
+      column 0. Every student on that sheet would have been given a "name" that was
+      actually their address, and their real name would have been dropped.
+
+      A column that is already spoken for cannot be the address column, whatever it
+      is labelled.
+    */
+    const resolvedName =
+      nameIndex !== -1 && nameIndex !== senIndex ? nameIndex : senIndex === 0 ? 1 : 0
+
     return {
       senIndex,
-      // A sheet with a header but no name column: take the first column that is not
-      // the SEN, rather than pairing the SEN with itself.
-      nameIndex: nameIndex !== -1 && nameIndex !== senIndex ? nameIndex : senIndex === 0 ? 1 : 0,
+      nameIndex: resolvedName,
+      emailIndex:
+        emailIndex !== -1 && emailIndex !== senIndex && emailIndex !== resolvedName
+          ? emailIndex
+          : -1,
       guessed: nameIndex === -1 || nameIndex === senIndex,
     }
   }
 
   // No recognisable header at all. Two columns is the documented shape, so take the
-  // first as the name and the last as the SEN, and report that it was a guess.
-  return { senIndex: header.length - 1, nameIndex: 0, guessed: true }
+  // first as the name and the last as the SEN, and report that it was a guess. No
+  // email is read, because nothing about position says which column that is.
+  return { senIndex: header.length - 1, nameIndex: 0, emailIndex: -1, guessed: true }
 }
 
 /* ----------------------------------------------------------------- entry */
@@ -608,7 +657,39 @@ export async function parseRosterFile(file: File): Promise<ParsedRoster> {
     }
 
     seen.set(key, line)
-    rows.push({ name, sen, line })
+
+    /*
+      The address is read but NEVER a reason to drop the row.
+
+      A malformed address is reported and the student is still added to the list,
+      because this sheet decides who may REGISTER. Dropping somebody for a typo in
+      an optional column would lock out a real person over a field the feature did
+      not previously have. The server re-checks it, and an address it refuses
+      simply stays null on the attendee.
+
+      An address the rules refuse becomes NULL, not just "reported". Reporting it and
+      storing it anyway put `notanaddress` into the row object, which the panel then
+      previewed as an address and the server then persisted — so the warning existed
+      and the bad value shipped anyway.
+
+      Only SURROUNDING space is trimmed. An internal space is left in place on
+      purpose: `emailProblem` turns it into "an email address cannot contain a
+      space, check for a stray one", which is the one line of advice that fixes a
+      spreadsheet cell. Stripping the spaces first turned `not an address` into
+      `notanaddress` and destroyed that message — and, worse, a cell holding a real
+      name with a space in it would be silently rewritten rather than reported.
+    */
+    const rawEmail =
+      columns.emailIndex === -1 ? '' : (cells[columns.emailIndex] ?? '').trim()
+    const candidate = rawEmail === '' ? null : normaliseEmail(rawEmail)
+    const email = candidate !== null && isValidEmail(candidate) ? candidate : null
+    if (candidate !== null && email === null) {
+      problems.push(
+        `Row ${line}: "${rawEmail.slice(0, 48)}" is not a usable email address — the student is still on the list`,
+      )
+    }
+
+    rows.push({ name, sen, email, line })
   })
 
   return { rows, problems, headers: headerRow, source }

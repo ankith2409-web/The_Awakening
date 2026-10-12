@@ -69,6 +69,10 @@ export function GuestListPanel({
     Name OR SEN, because the two failures an organiser is looking for are different:
     a name that came out wrong is found by name, and a SEN that lost a character is
     found by SEN. Matching on name alone would make the second invisible.
+
+    Email as well, and for the same reason: a sheet whose third column was something
+    other than Email is a failure that is invisible in every count, and it is only
+    findable by looking at what actually landed.
   */
   const filtered = useMemo(() => {
     const all = rows?.rows ?? []
@@ -76,7 +80,9 @@ export function GuestListPanel({
     if (needle === '') return all
     return all.filter(
       (row) =>
-        row.name.toLowerCase().includes(needle) || row.sen.toLowerCase().includes(needle),
+        row.name.toLowerCase().includes(needle) ||
+        row.sen.toLowerCase().includes(needle) ||
+        (row.email ?? '').toLowerCase().includes(needle),
     )
   }, [rows, filter])
 
@@ -143,12 +149,31 @@ export function GuestListPanel({
 
     try {
       const result = await portalApi.uploadRoster(
-        parsed.rows.map((row) => ({ name: row.name, sen: row.sen })),
+        parsed.rows.map((row) => ({ name: row.name, sen: row.sen, email: row.email })),
         next,
       )
 
       const bits = [`${result.imported} student${result.imported === 1 ? '' : 's'} on the list`]
       if (result.skipped > 0) bits.push(`${result.skipped} row(s) skipped`)
+
+      /*
+        Addresses, said plainly either way.
+
+        The interesting case is zero. A sheet with no email column is fine — but
+        "no addresses found" and "nobody was emailed" are very different sentences,
+        and staying silent would let the organiser press the credential button and
+        assume it reached people. So absence is reported as absence.
+      */
+      if (result.addressesOnSheet > 0) {
+        bits.push(
+          result.addressesApplied > 0
+            ? `${result.addressesOnSheet} address${result.addressesApplied === 1 ? '' : 'es'} on the sheet, ${result.addressesApplied} added to people already registered`
+            : `${result.addressesOnSheet} address${result.addressesOnSheet === 1 ? '' : 'es'} on the sheet, none matched an existing registration`,
+        )
+      } else {
+        bits.push('no email addresses on the sheet — nobody can be emailed credentials')
+      }
+
       bits.push(
         next === 'restricted'
           ? 'registration now closed to everyone else'
@@ -317,6 +342,20 @@ export function GuestListPanel({
             SEN in any two columns. Headers are matched by name, so order does not
             matter. In Excel: Save As → CSV, or keep the .xlsx.
           </p>
+          {/*
+            A third column is OPTIONAL and never a reason to reject a row.
+
+            Said here rather than in the file-picker help because this is the one
+            question an organiser has to answer before they know they have it: add
+            an <code>Email</code> column and anybody who already registered but has
+            no address on file becomes reachable by the credential button. Leave it
+            out and the upload works exactly as before.
+          */}
+          <p className="text-2xs font-medium leading-relaxed text-content-muted">
+            Add an <strong>Email</strong> column if you have one. Optional — the list
+            works without it — but anyone who registered before this portal asked for
+            an address can only be emailed if the address comes from here.
+          </p>
         </div>
 
         {/* -- the preview --------------------------------------------------- */}
@@ -478,7 +517,7 @@ export function GuestListPanel({
                       name="roster-filter"
                       value={filter}
                       onChange={(event) => setFilter(event.target.value)}
-                      placeholder="Name or SEN"
+                      placeholder="Name, SEN or email"
                       autoComplete="off"
                     />
 
@@ -511,6 +550,23 @@ export function GuestListPanel({
                           </span>
                           <span className="font-mono text-2xs text-content-muted">
                             {row.sen}
+                          </span>
+                          {/*
+                            The address, or an honest dash.
+
+                            Shown because a sheet whose third column was `Department`
+                            uploads without complaint and leaves people unemailable.
+                            A dash on every row is the visible proof that this column
+                            never matched anything, which no count can tell you.
+                          */}
+                          <span
+                            className={
+                              row.email
+                                ? 'font-mono text-2xs text-swiss-ink'
+                                : 'font-mono text-2xs uppercase tracking-[0.15em] text-content-muted'
+                            }
+                          >
+                            {row.email ?? 'no address'}
                           </span>
                         </li>
                       ))}

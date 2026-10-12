@@ -602,6 +602,188 @@ async function main() {
   check('one skipped', partial.body?.skipped === 1, JSON.stringify(partial.body))
   check('and the problem is explained', (partial.body?.problems ?? []).length > 0, JSON.stringify(partial.body?.problems))
 
+  /* -- addresses on the guest list ------------------------------------------ */
+
+  /*
+    The optional third column, and the backfill it exists for.
+
+    This is the only route to an address for somebody who registered before the
+    form collected one, and on the day it is needed it is the only one — so it has
+    to be right, or "email everybody their credentials" silently reaches nobody.
+
+    Three properties matter, and only the first is obvious:
+
+      1. A bad address never rejects the row. This list decides who may REGISTER,
+         and a typo in a column the portal did not previously have must not lock
+         out a real student.
+      2. The backfill only fills a BLANK. An address somebody typed on the form is
+         theirs and beats a spreadsheet cell; a blank cell says nothing at all,
+         because most of the list has never registered and never will.
+      3. A sheet with no email column still works exactly as before.
+  */
+
+  /*
+    The mode is read first and put back at the end of this section.
+
+    Every upload carries a mode, so a section that tests uploads would otherwise
+    hand `open` to whatever runs next and break an assertion that is about the
+    switch rather than about addresses.
+  */
+  const { rows: modeRow } = await db.query('select registration_mode from events limit 1')
+  const priorMode = modeRow[0]?.registration_mode ?? 'open'
+
+  // Added BY HAND with no address at all.
+
+  // The desk route, not the public form. Registration is `restricted` by this point
+  // in the suite, so the public form would refuse both of these — and more to the
+  // point, "an account with no address" is exactly what the desk route and the
+  // thirteen pre-email registrations produce. The public form cannot make one.
+  const BACKFILL_SEN = testSen(`MAIL${stamp}`)
+  const noAddress = await call(
+    'POST',
+    '/admin/attendees',
+    { name: 'No Address Yet', phone: phoneFor(16), sen: BACKFILL_SEN, password: PASSWORD },
+    owner.cookie,
+  )
+  check('a fixture account with no address exists', noAddress.status === 201, `got ${noAddress.status}/${noAddress.body?.code}`)
+
+  const KEPT_SEN = testSen(`KEEP${stamp}`)
+  const keptAddress = testEmail('typed-on-the-form')
+  const hasAddress = await call(
+    'POST',
+    '/admin/attendees',
+    {
+      name: 'Already Has One',
+      phone: phoneFor(17),
+      sen: KEPT_SEN,
+      password: PASSWORD,
+      email: keptAddress,
+    },
+    owner.cookie,
+  )
+  check('and one with an address', hasAddress.status === 201, `got ${hasAddress.status}/${hasAddress.body?.code}`)
+
+  const sheetAddress = testEmail('from-the-sheet')
+  const withEmails = await call(
+    'POST',
+    '/admin/roster',
+    {
+      rows: [
+        { name: 'No Address Yet', sen: BACKFILL_SEN, email: sheetAddress },
+        // A different address on the sheet, which must NOT win.
+        { name: 'Already Has One', sen: KEPT_SEN, email: testEmail('stale-cell') },
+        { name: 'Malformed', sen: testSen(`MALL${stamp}`), email: 'not an address' },
+        { name: 'No Column Value', sen: testSen(`NOCL${stamp}`), email: '' },
+        { name: 'Nothing At All', sen: testSen(`NONE${stamp}`) },
+      ],
+      registrationMode: priorMode,
+    },
+    owner.cookie,
+  )
+
+  check(
+    'a malformed address still imports the row',
+    withEmails.body?.imported === 5,
+    `imported=${withEmails.body?.imported}`,
+  )
+  check(
+    'and the malformed address is reported',
+    (withEmails.body?.problems ?? []).some((p) => /not a usable email address/.test(p)),
+    JSON.stringify(withEmails.body?.problems),
+  )
+  check(
+    'but it is not counted as skipped, because nobody was skipped',
+    withEmails.body?.skipped === 0,
+    `skipped=${withEmails.body?.skipped}`,
+  )
+  check(
+    'the addresses actually on the sheet are counted',
+    withEmails.body?.addressesOnSheet === 2,
+    `addressesOnSheet=${withEmails.body?.addressesOnSheet}`,
+  )
+  check(
+    'exactly the one person with no address was given one',
+    withEmails.body?.addressesApplied === 1,
+    `addressesApplied=${withEmails.body?.addressesApplied}`,
+  )
+
+  const backfilled = await db.query('select email from attendees where sen = $1', [BACKFILL_SEN])
+  check(
+    'and it is the address that was applied',
+    backfilled.rows[0]?.email === sheetAddress,
+    `got ${backfilled.rows[0]?.email}`,
+  )
+
+  const kept = await db.query('select email from attendees where sen = $1', [KEPT_SEN])
+  check(
+    'an address the person typed is never overwritten by a spreadsheet cell',
+    kept.rows[0]?.email === keptAddress,
+    `got ${kept.rows[0]?.email}`,
+  )
+
+  const storedNull = await db.query(
+    `select email from event_roster where sen = $1`,
+    [testSen(`MALL${stamp}`)],
+  )
+  check(
+    'the refused address is not stored',
+    storedNull.rows[0]?.email === null || storedNull.rows[0]?.email === undefined,
+    `got ${storedNull.rows[0]?.email}`,
+  )
+
+  const readRows = await call('GET', '/admin/roster/rows', undefined, owner.cookie)
+  const readRow = (readRows.body?.rows ?? []).find((r) => r.sen === BACKFILL_SEN)
+  check(
+    'the address is readable back, so a wrong column is visible',
+    readRow?.email === sheetAddress,
+    JSON.stringify(readRow),
+  )
+
+  // -- the sheet with no email column at all
+
+  const twoColumn = await call(
+    'POST',
+    '/admin/roster',
+    {
+      rows: [
+        { name: 'Plain One', sen: testSen(`PLN1${stamp}`) },
+        { name: 'Plain Two', sen: testSen(`PLN2${stamp}`) },
+      ],
+      registrationMode: priorMode,
+    },
+    owner.cookie,
+  )
+  check(
+    'a two-column sheet still imports',
+    twoColumn.body?.imported === 2,
+    JSON.stringify(twoColumn.body),
+  )
+  check(
+    'and reports no addresses, rather than reporting none found',
+    twoColumn.body?.addressesOnSheet === 0,
+    `addressesOnSheet=${twoColumn.body?.addressesOnSheet}`,
+  )
+  check(
+    'and nobody is credited with an address it did not have',
+    twoColumn.body?.addressesApplied === 0,
+    `addressesApplied=${twoColumn.body?.addressesApplied}`,
+  )
+
+  // A blank cell must not clear an address the form already collected.
+  const blankCell = await call(
+    'POST',
+    '/admin/roster',
+    { rows: [{ name: 'Already Has One', sen: KEPT_SEN, email: '' }], registrationMode: priorMode },
+    owner.cookie,
+  )
+  check('a sheet of one blank address still imports', blankCell.body?.imported === 1, JSON.stringify(blankCell.body))
+  const stillKept = await db.query('select email from attendees where sen = $1', [KEPT_SEN])
+  check(
+    'a blank cell never clears an address already on file',
+    stillKept.rows[0]?.email === keptAddress,
+    `got ${stillKept.rows[0]?.email}`,
+  )
+
   /* -- input validation ---------------------------------------------------- */
 
   const notArray = await call('POST', '/admin/roster', { rows: 'nope' }, owner.cookie)
