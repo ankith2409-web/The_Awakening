@@ -73,10 +73,19 @@ export function AdminLoginView() {
       logo={<EventMark />}
       eyebrow="05. Operations"
       title="Admin"
-      description="Restricted area. Staff credentials are issued separately from attendee registration and are not transferable."
+      description="Restricted area. Staff credentials are issued separately and are not transferable."
       footer={
-        <SlideNavLink to="/login" className="border-b-2 border-swiss-ink pb-1">
-          ← Attendee log in
+        /*
+          Points at the CHECK-IN, not at a sign-in form.
+
+          The attendee side is one page with no account and no sign-in, and there
+          used to be a link here saying "Attendee log in". A link on the staff door
+          to a page that no longer exists is worse than no link: it is the first
+          thing somebody clicks when they have been sent to the wrong URL, and it
+          would have taken them to a dead end to learn that.
+        */
+        <SlideNavLink to="/" className="border-b-2 border-swiss-ink pb-1">
+          ← Attendee check-in
         </SlideNavLink>
       }
     >

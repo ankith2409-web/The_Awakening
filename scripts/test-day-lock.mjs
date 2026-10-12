@@ -52,8 +52,7 @@ async function call(method, path, body, cookie) {
   const res = await fetch(`${BASE}/api${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+    body: body === undefined ? undefined : JSON.stringify(body) })
 
   const setCookie = (res.headers.getSetCookie?.() ?? []).map((l) => l.split(';')[0]).join('; ')
   const text = await res.text()
@@ -120,8 +119,7 @@ async function main() {
 
   db = new Client({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-  })
+    ssl: { rejectUnauthorized: false } })
   await db.connect()
 
   const { rows: ev } = await db.query(
@@ -156,8 +154,7 @@ async function main() {
 
   const owner = await call('POST', '/admin/login', {
     username: process.env.ADMIN_USERNAME ?? 'event.control',
-    password: process.env.ADMIN_PASSWORD ?? '',
-  })
+    password: process.env.ADMIN_PASSWORD ?? '' })
   check('owner signed in', owner.status === 200, `got ${owner.status}`)
   if (owner.status !== 200) {
     await cleanup()
@@ -168,25 +165,38 @@ async function main() {
 
   const gate = await call('POST', '/admin/login', {
     username: 'gate',
-    password: process.env.ADMIN_PASSWORD_GATE ?? '',
-  })
+    password: process.env.ADMIN_PASSWORD_GATE ?? '' })
   check('gate signed in', gate.status === 200, `got ${gate.status}`)
 
   /* -- fixtures ---------------------------------------------------------- */
+
+  /*
+    The fixtures are created by CHECK-IN, which marks the day it runs on — and
+    that is now the same act as creating the person. There is no "make an account
+    without marking attendance".
+
+    So the check-ins are deliberately done against DAY TWO, and the suite then pins
+    the live day back to one. Otherwise every fixture would already carry a day-one
+    mark and each admin scan below would answer `already_checked_in` — which is
+    correct behaviour failing a test that was written when creating and marking were
+    two different things.
+  */
+  await call('PATCH', '/admin/event', { dayOverride: 2 }, owner.cookie)
 
   for (const [sen, name] of [
     [SEN_OPEN, 'Lock Open Subject'],
     [SEN_LOCKED, 'Lock Closed Subject'],
     [SEN_ALREADY, 'Lock Done Subject'],
   ]) {
-    const reg = await call('POST', '/attendee/register', {
+    const reg = await call('POST', '/attendee/checkin', {
       name,
       phone: `9${Math.floor(Math.random() * 1e8)}`.padEnd(10, '4'),
       sen,
-      password: PASSWORD,
-      email: testEmail('probe')})
-    check(`registered ${name}`, reg.status === 201, `got ${reg.status}`)
+    })
+    check(`checked in ${name} on day two`, reg.status === 201, `got ${reg.status}`)
   }
+
+  await call('PATCH', '/admin/event', { dayOverride: 1 }, owner.cookie)
 
   /* -- an open day marks, as it always did ------------------------------- */
 
@@ -227,13 +237,47 @@ async function main() {
 
   /* -- the lock is not a data edit --------------------------------------- */
 
-  const count = await db.query('select count(*)::int as n from attendance where sen = $1', [SEN_LOCKED])
+  // Counted for DAY ONE specifically. The fixture carries a day-two mark from its
+// check-in, and "nothing was written" is a claim about the day that was closed.
+const count = await db.query(
+  'select count(*)::int as n from attendance where sen = $1 and day = 1',
+  [SEN_LOCKED],
+)
   check('nothing was written for the refused scan', count.rows[0].n === 0, `got ${count.rows[0].n}`)
 
   /* -- day two is unaffected by a day-one lock --------------------------- */
 
+  /*
+    A FOURTH person, checked in on day one so they are unmarked on day two.
+
+    The other three fixtures were all checked in on day two, so marking them there
+    correctly answers `already_checked_in` — which tests the duplicate path, not
+    this one. "A day-one lock does not close day two" needs somebody genuinely
+    unmarked on day two.
+
+    Day one is UNLOCKED for the check-in and re-locked afterwards, because this
+    point in the suite runs with day one closed, and a closed day refuses a
+    check-in before anything is written. That refusal is the feature working; a
+    fixture that quietly never existed would be a false pass on every later
+    assertion that used it.
+  */
+  await setLocks([])
+  await setOverride(1)
+  const SEN_DAY_ONE_ONLY = testSen(`D1ONLY${stamp}`)
+  const dayOneOnly = await call('POST', '/attendee/checkin', {
+    name: 'Day One Only',
+    phone: `9${Math.floor(Math.random() * 1e8)}`.padEnd(10, '6'),
+    sen: SEN_DAY_ONE_ONLY,
+  })
+  check(
+    'the day-one-only subject exists',
+    dayOneOnly.status === 201,
+    `got ${dayOneOnly.status} ${JSON.stringify(dayOneOnly.body)}`,
+  )
+  await setLocks([1])
+
   await setOverride(2)
-  const dayTwo = await call('POST', '/admin/attendance', { sen: SEN_LOCKED }, owner.cookie)
+  const dayTwo = await call('POST', '/admin/attendance', { sen: SEN_DAY_ONE_ONLY }, owner.cookie)
   check(
     'locking day one does not lock day two',
     dayTwo.status === 201 && dayTwo.body?.day === 2,

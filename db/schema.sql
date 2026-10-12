@@ -23,9 +23,15 @@ create extension if not exists pgcrypto;
   store, no session to issue and no ticket to sign.
 
   `sen` is the identity. It is unique, and it is what the door reads and what the
-  export lists. `phone` is unique too, but only as a first line of defence: two
-  students sharing a household number is a real thing, and refusing the second
-  because of it would be a rule about a field nothing downstream depends on.
+  export lists.
+
+  `phone` is NOT unique, deliberately, and that is a change rather than an oversight.
+  It used to be, because login took a phone number. Two students sharing a household
+  number is a real and ordinary thing, and the constraint refused the second of them
+  over a column indexing an identifier nothing reads any more. Worse, the check-in
+  insert has no handler for the violation, so a shared number produced a 500 — a
+  fault in the portal, reported to a student standing at a wall, for something
+  perfectly normal. The same reasoning already applies to `email`.
 
   `password_hash` is kept, nullable, rather than dropped.
 
@@ -38,12 +44,25 @@ create extension if not exists pgcrypto;
 create table if not exists attendees (
   id            uuid primary key default gen_random_uuid(),
   name          text        not null,
-  phone         text        not null unique,
+  phone         text        not null,
   sen           text        not null unique,
   password_hash text,
   created_at    timestamptz not null default now(),
   constraint attendees_phone_digits check (phone ~ '^[6-9][0-9]{9}$')
 );
+
+/*
+  Drop the uniqueness on `phone`, for the reason given above. `if exists` because
+  a database created before this file existed still carries the constraint, and the
+  `create table if not exists` above is a no-op there — it does not re-read the
+  definition.
+
+  The CONSTRAINT, not the index. `drop index` fails here with 2BP01: a unique
+  constraint on a single column is backed by an index it requires, so the index
+  cannot go without it. The earlier attempt did exactly that and the migration
+  aborted.
+*/
+alter table attendees drop constraint if exists attendees_phone_key;
 
 /*
   The same relaxation for a table created before the accounts were removed.

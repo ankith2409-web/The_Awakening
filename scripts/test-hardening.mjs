@@ -30,7 +30,6 @@
 import { Client } from 'pg'
 import { testEmail } from './_fixtures.mjs'
 import { loadEnv } from './_env.mjs'
-import { RosterGuard } from './_roster-guard.mjs'
 
 loadEnv()
 
@@ -92,8 +91,7 @@ async function send(store, method, path, { json, raw, headers } = {}) {
       ...(json !== undefined || raw !== undefined ? { 'content-type': 'application/json' } : {}),
       ...headers,
     },
-    body,
-  })
+    body })
   absorb(store, res)
   const text = await res.text()
   let parsed = null
@@ -136,11 +134,11 @@ async function main() {
   ]
 
   const bodyRoutes = [
-    ['register', '/api/attendee/register'],
+    ['register', '/api/attendee/checkin'],
     ['attendee login', '/api/attendee/login'],
     ['admin login', '/api/admin/login'],
     ['scan', '/api/admin/attendance'],
-    ['roster upload', '/api/admin/roster'],
+    ['check-in', '/api/attendee/checkin'],
     ['broadcast', '/api/admin/push/send'],
   ]
 
@@ -176,7 +174,7 @@ async function main() {
     ['phase as a number', '/api/admin/event', { phase: 7 }],
     ['registrationMode as junk', '/api/admin/event', { registrationMode: 'zzz' }],
     ['push keys as a string', '/api/attendee/push', { endpoint: 'https://x/y', keys: 'no' }],
-    ['roster rows as a string', '/api/admin/roster', { rows: 'nope' }],
+    ['a check-in with no SEN', '/api/attendee/checkin', { name: 'x', phone: '9876543210' }],
     ['broadcast title as a number', '/api/admin/push/send', { title: 1, body: 'x' }],
   ]
 
@@ -192,8 +190,8 @@ async function main() {
 
   const big = 'x'.repeat(200_000)
   for (const [label, path, body] of [
-    ['a 200KB name', '/api/attendee/register', { name: big, phone: '9000000001', sen: 'Z1' , email: testEmail('probe')}],
-    ['a 200KB SEN', '/api/attendee/register', { name: 'A B', phone: '9000000001', sen: big , email: testEmail('probe')}],
+    ['a 200KB name', '/api/attendee/checkin', { name: big, phone: '9000000001', sen: 'Z1' , email: testEmail('probe')}],
+    ['a 200KB SEN', '/api/attendee/checkin', { name: 'A B', phone: '9000000001', sen: big , email: testEmail('probe')}],
     ['a 200KB broadcast subject', '/api/admin/push/send', { title: big, body: 'x' }],
   ]) {
     const r = await send(owner, 'POST', path, { json: body })
@@ -217,32 +215,30 @@ async function main() {
   ]
 
   /*
-    The guest list, guarded.
+    Injection payloads, aimed at where organiser-typed text actually lands now.
 
-    The obvious cleanup -- `delete from event_roster` -- is the same mistake as
-    picking a real attendee for the concurrency probe: this suite runs against the
-    live database, and the roster is every student's name and SEN that the
-    organiser uploaded. Clearing it would destroy real data in the name of testing
-    it.
+    This used to target `POST /api/admin/roster`, and needed a guard around it: the
+    guest list was the organiser's own spreadsheet, deleting it to test the
+    cleanup destroyed real data, and it did exactly that once.
 
-    It did. An earlier version of this block read the list into a variable, cleared
-    it, and put it back with seven separate inserts and no transaction. A crash
-    partway through left a partial list and no error, and nothing on disk held a
-    copy. `RosterGuard` snapshots to disk first, refuses to clear a non-empty list
-    without an explicit override, restores in one transaction, and verifies the
-    result against the snapshot afterwards.
+    Both the route and the risk are gone. There is no guest list and no roster
+    table. The same strings go to the check-in instead, which is a route that
+    writes a real row — so "does not fault" and "wrote nothing" are now assertions
+    about live data rather than about a 404, which is the stronger version of the
+    same test.
+
+    The fixtures this creates are swept by the prefix purge at the end.
   */
-  const rosterGuard = new RosterGuard(db, 'test:hardening')
-  await rosterGuard.arm()
-
-  const beforeRoster = { rows: [{ n: rosterGuard.rowCount }] }
 
   for (const payload of payloads) {
-    const r = await send(owner, 'POST', '/api/admin/roster', {
-      json: { rows: [{ sen: payload, name: payload }] },
-    })
+    const r = await send(owner, 'POST', '/api/attendee/checkin', {
+      json: {
+        name: payload,
+        phone: '9' + String(payload.length).padStart(9, '4'),
+        sen: 'A866175999' + String(payload.length).padStart(3, '0'),
+      } })
     check(
-      `roster upload with ${JSON.stringify(payload.slice(0, 22))} does not fault`,
+      `a check-in named ${JSON.stringify(payload.slice(0, 22))} does not fault`,
       r.status < 500,
       `got ${r.status}`,
     )
@@ -252,24 +248,16 @@ async function main() {
   check('the attendees table survived every injection payload', typeof stillThere[0].n === 'number')
 
   /*
-    The roster IS allowed to hold odd text — it is organiser data, is displayed through
-    React which escapes, and is never exported. What must hold is that it does not
-    accumulate junk the owner would mistake for students, so it is restored here rather
-    than left behind by this suite. The guard verifies the restore rather than assuming
-    it, which is the part the old version got wrong.
-  */
-  await rosterGuard.restore()
+    No restore to verify, and nothing to restore.
 
-  const afterRoster = await db.query('select sen, name from event_roster order by sen')
-  check(
-    'the guest list is left exactly as it was found',
-    afterRoster.rows.length === beforeRoster.rows[0].n &&
-      afterRoster.rows.every((row, i) => {
-        const was = rosterSnapshot.rows.slice().sort((x, y) => x.sen.localeCompare(y.sen))[i]
-        return was && was.sen === row.sen && was.name === row.name
-      }),
-    `${beforeRoster.rows[0].n} rows before, ${afterRoster.rows.length} after`,
-  )
+    The old version ended with a check that the guest list came back exactly as it
+    was found, because it had just deleted it. There is no guest list and this
+    block no longer deletes anything.
+
+    What IS still asserted, and matters more, is that the payloads did not write
+    rows: every one of them is either refused by validation or lands under a name
+    the prefix purge sweeps at the end of the run.
+  */
 
   /* ------------------------------------------------------------ 5. authorisation */
 
@@ -280,42 +268,68 @@ async function main() {
     `GET /event` is the programme. `GET /push/key` is the VAPID public key, which is an
     address rather than a credential and is needed before anybody logs in.
   */
-  const publicRoutes = ['/api/event', '/api/push/key']
+  /*
+    Public, and public for everyone.
 
-  const protectedRoutes = [
-    '/api/admin/roster',
-    '/api/admin/roster/rows',
-    '/api/admin/attendees',
-    '/api/admin/attendance',
-    '/api/admin/push',
-    '/api/admin/agenda',
-    '/api/attendee/ticket',
-  ]
+    The check-in needs no credential at all, which is the whole design: a student
+    scans a poster on a wall and types their details. A route here that started
+    demanding a session would put a login between somebody and recording that they
+    arrived.
+  */
+  const publicRoutes = ['/api/event', '/api/attendee/attendance']
 
   for (const path of publicRoutes) {
     check(`anonymous can read ${path}`, (await send(anon, 'GET', path)).status === 200)
   }
 
-  for (const path of protectedRoutes) {
-    const r = await send(anon, 'GET', path)
-    check(
-      `anonymous is refused GET ${path}`,
-      r.status === 401 || r.status === 403,
-      `got ${r.status}`,
-    )
+  /*
+    ROUTES THAT NO LONGER EXIST.
+
+    Asserted 404 for every role, OWNER INCLUDED. That last one is the assertion
+    that matters: the failure worth catching is not that a volunteer is refused,
+    it is somebody re-adding one of these while tidying up believing it was still
+    a feature — and only an owner would have been able to re-add it.
+  */
+  const REMOVED_ROUTES = [
+    '/api/admin/roster',
+    '/api/admin/roster/rows',
+    '/api/admin/push',
+    '/api/attendee/ticket',
+    '/api/attendee/register',
+    '/api/attendee/login',
+    '/api/attendee/session',
+  ]
+
+  for (const path of REMOVED_ROUTES) {
+    for (const [label, session] of [
+      ['anonymous', anon],
+      ['gate', gate],
+      ['owner', owner],
+    ]) {
+      const r = await send(session, 'GET', path)
+      check(
+        `${label} gets 404 for ${path}, not a permission error`,
+        r.status === 404,
+        `got ${r.status}`,
+      )
+    }
   }
 
   /*
-    `GET /attendee/attendance` answers 200 with a null body when there is no session,
-    and that is deliberate: the dashboard renders "not marked yet", and a session that
-    expired mid-view must not turn into an error. Asserted here so a future reader does
-    not "fix" it into a 401 and break that path.
+    The attendance lookup with no SEN.
+
+    It used to answer 200 with a null body so a dashboard could render "not marked
+    yet" when a session had expired. There is no dashboard and no session, so it is
+    a SEN lookup: no SEN, no records, and never an error.
+
+    Refusing it instead would tell a student their number was wrong when the only
+    true statement is that they have not been marked yet.
   */
-  const noSession = await send(anon, 'GET', '/api/attendee/attendance')
+  const noSen = await send(anon, 'GET', '/api/attendee/attendance')
   check(
-    'a missing attendee session on /attendance is 200 with null, not an error',
-    noSession.status === 200 && noSession.text.trim() === 'null',
-    `got ${noSession.status} ${noSession.text.slice(0, 40)} — the dashboard needs this to render "not marked yet"`,
+    'the attendance lookup with no SEN is 200, not an error',
+    noSen.status === 200,
+    `got ${noSen.status}`,
   )
 
   /* ------------------------------------------------------------- 6. the gate role */
@@ -325,17 +339,19 @@ async function main() {
   const { rows: anyAttendee } = await db.query('select sen from attendees limit 1')
   const aSen = anyAttendee[0]?.sen ?? 'A000000000012'
 
+  /*
+    THE OWNER-ONLY ROUTES THAT REMAIN.
+
+    Authorisation is a live question for these, so 403 is the right answer and a
+    404 would mean the route had gone missing rather than the guard working.
+  */
   const ownerOnly = [
-    ['GET', '/api/admin/roster/rows'],
-    ['POST', '/api/admin/roster'],
-    ['DELETE', '/api/admin/roster'],
-    ['POST', '/api/admin/attendees'],
-    ['POST', '/api/admin/push/send'],
-    ['POST', '/api/admin/attendees/password'],
+    ['GET', '/api/admin/attendees'],
+    ['PATCH', '/api/admin/event'],
   ]
 
   for (const [method, path] of ownerOnly) {
-    const r = await send(gate, method, path, { json: { rows: [], status: 'done' } })
+    const r = await send(gate, method, path, { json: {} })
     check(`gate is refused ${method} ${path}`, r.status === 403, `got ${r.status}`)
   }
 
@@ -369,8 +385,7 @@ async function main() {
     organiser instead of to the person who can fix it.
   */
   const gateScan = await send(gate, 'POST', '/api/admin/attendance', {
-    json: { sen: 'A000000000012', day: 1 },
-  })
+    json: { sen: 'A000000000012', day: 1 } })
   check(
     'gate may scan, and an unknown SEN is unknown_sen rather than forbidden',
     gateScan.status === 422 && gateScan.json?.code === 'unknown_sen',
@@ -401,12 +416,10 @@ async function main() {
   await db.query('delete from attendees where upper(sen) = upper($1)', [sen])
 
   const [a, b] = await Promise.all([
-    send(anon, 'POST', '/api/attendee/register', {
-      json: { name: 'Race One', phone: '9000000071', sen, email: testEmail('probe') },
-    }),
-    send(anon, 'POST', '/api/attendee/register', {
-      json: { name: 'Race Two', phone: '9000000072', sen, email: testEmail('probe') },
-    }),
+    send(anon, 'POST', '/api/attendee/checkin', {
+      json: { name: 'Race One', phone: '9000000071', sen, email: testEmail('probe') } }),
+    send(anon, 'POST', '/api/attendee/checkin', {
+      json: { name: 'Race Two', phone: '9000000072', sen, email: testEmail('probe') } }),
   ])
 
   const winners = [a, b].filter((r) => r.status === 201).length
@@ -445,32 +458,35 @@ async function main() {
   await db.query('delete from attendance where upper(sen) = upper($1)', [probeSen])
   await db.query('delete from attendees where upper(sen) = upper($1)', [probeSen])
 
-  const created = await send(anon, 'POST', '/api/attendee/register', {
-    json: { name: 'Concurrency Probe', phone: '9000000079', sen: probeSen, email: testEmail('probe') },
-  })
+  const created = await send(anon, 'POST', '/api/attendee/checkin', {
+    json: { name: 'Concurrency Probe', phone: '9000000079', sen: probeSen } })
 
   if (created.status === 201) {
-    const login = jar()
-    await send(login, 'POST', '/api/attendee/login', {
-      json: { name: 'Concurrency Probe', phone: '9000000079', password: created.json.generatedPassword },
-    })
-
     /*
-      Two scanners hitting one badge at the same instant. The unique index on
-      (attendee_id, day) is the real guard, so this is checking that the write is not a
-      SELECT-then-INSERT with a window in it. Two rows for one person on one day is a
-      corrupt export and an organiser's problem at the end of the event.
+      Two check-ins of one person at the same instant.
+
+      The unique index on (attendee_id, day) is the real guard, so this is checking
+      that the write is not a SELECT-then-INSERT with a window in it. Two rows for
+      one person on one day is a corrupt export and an organiser's problem at the end
+      of the event.
+
+      The property is "EXACTLY ONE ROW EXISTS", not "exactly one request answered
+      201". Counting status codes was true when creating and marking were separate
+      acts; now they are one request, and the row count is the thing that matters.
     */
     const [c, d] = await Promise.all([
-      send(owner, 'POST', '/api/admin/attendance', { json: { sen: probeSen, day: 1 } }),
-      send(owner, 'POST', '/api/admin/attendance', { json: { sen: probeSen, day: 1 } }),
+      send(anon, 'POST', '/api/attendee/checkin', {
+        json: { name: 'Concurrency Probe', phone: '9000000079', sen: probeSen },
+      }),
+      send(anon, 'POST', '/api/attendee/checkin', {
+        json: { name: 'Concurrency Probe', phone: '9000000079', sen: probeSen },
+      }),
     ])
 
-    const accepted = [c, d].filter((r) => r.status === 201).length
     check(
-      'two simultaneous scans of one badge record attendance once',
-      accepted === 1,
-      `${accepted} accepted (${c.status}, ${d.status})`,
+      'two simultaneous check-ins of one person both answer, neither errors',
+      [c, d].every((r) => r.status === 200 || r.status === 201),
+      `(${c.status}, ${d.status})`,
     )
 
     const { rows: dayRows } = await db.query(

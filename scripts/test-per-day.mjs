@@ -52,8 +52,7 @@ async function call(method, path, body, cookie) {
   const res = await fetch(`${BASE}/api${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+    body: body === undefined ? undefined : JSON.stringify(body) })
 
   const setCookie = (res.headers.getSetCookie?.() ?? [])
     .map((line) => line.split(';')[0])
@@ -132,8 +131,7 @@ async function main() {
   }
   db = new Client({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-  })
+    ssl: { rejectUnauthorized: false } })
   await db.connect()
 
   const { rows: existing } = await db.query(
@@ -174,8 +172,7 @@ async function main() {
   /* -- an owner, and the event's own idea of the day ----------------------- */
   const owner = await call('POST', '/admin/login', {
     username: process.env.ADMIN_USERNAME ?? 'admin',
-    password: process.env.ADMIN_PASSWORD ?? '',
-  })
+    password: process.env.ADMIN_PASSWORD ?? '' })
   check('the owner signs in', owner.status === 200, `got ${owner.status}`)
   if (owner.status !== 200) {
     await db.end()
@@ -197,16 +194,25 @@ async function main() {
   const totalDays = event.body.totalDays
 
   /* -- day one -------------------------------------------------------------- */
-  const reg = await call('POST', '/attendee/register', {
+
+  /*
+    The probe is created by CHECK-IN, which records attendance as it creates the
+    person — those are the same act now, and there is no way to make an account
+    without a mark.
+
+    So the day-one mark under test is the one the check-in itself writes, and the
+    assertion reads it back rather than making a second identical one. Marking
+    again would correctly answer `already_checked_in`, which is a different test.
+  */
+  const reg = await call('POST', '/attendee/checkin', {
     name: 'Per Day Probe',
     phone: PHONE,
     sen: SEN,
-    password: PASSWORD,
-    email: testEmail('probe')})
-  check('registered a probe attendee', reg.status === 201, `got ${reg.status}`)
+  })
+  check('a probe attendee is created and marked', reg.status === 201, `got ${reg.status}`)
 
-  const first = await call('POST', '/admin/attendance', { sen: SEN }, owner.cookie)
-  check('a scan on day one is accepted', first.status === 201, `got ${first.status}`)
+  const first = { status: reg.status === 201 ? 201 : reg.status, body: reg.body }
+  check('a mark on day one is accepted', first.status === 201, `got ${first.status}`)
   check('the record is day one', first.body?.day === 1, `day=${first.body?.day}`)
   check(
     'the response tells the client which day it recorded',
@@ -260,15 +266,17 @@ async function main() {
   )
 
   /* -- the attendee sees both days ------------------------------------------ */
-  const attendeeLogin = await call('POST', '/attendee/login', {
-    name: 'Per Day Probe',
-    phone: PHONE,
-    password: PASSWORD,
-    remember: false,
-  })
-  check('the probe attendee can sign in', attendeeLogin.status === 200, `got ${attendeeLogin.status}`)
 
-  const mine = await call('GET', '/attendee/attendance', undefined, attendeeLogin.cookie)
+  /*
+    By SEN, not by signing in.
+
+    There is no attendee session any more, so "the attendee sees their own
+    attendance" is a SEN lookup rather than a cookie. The assertions below are
+    unchanged in meaning: one record per day they attended, and each record
+    carrying its own day number.
+  */
+  const mine = await call('GET', `/attendee/attendance?sen=${SEN}`)
+  check('a SEN can be read back without a session', mine.status === 200, `got ${mine.status}`)
   check(
     'they see one record per day, not just the first',
     Array.isArray(mine.body?.records) && mine.body.records.length === 2,
@@ -278,17 +286,18 @@ async function main() {
     'both records carry their day',
     (mine.body?.records ?? []).every((row) => row.day === 1 || row.day === 2),
   )
+
   /*
     The day state is read from the event, not from the attendance payload.
 
-    `/attendee/attendance` returns records only now. It used to repeat `totalDays`
-    and `activeDay` as well, and the attendance poll stops once this attendee is
-    marked for the day being scanned into — correctly, because a record is immutable.
-    That also froze the duplicate, so reopening a closed day left an already-marked
-    attendee reading stale day state until they reloaded.
+    `/attendee/attendance` returns records only. It used to repeat `totalDays` and
+    `activeDay` as well, and the poll that read them stopped once the attendee was
+    marked for the day being scanned into — correctly, because a record is
+    immutable. That also froze the duplicate, so reopening a closed day left an
+    already-marked attendee reading stale day state until they reloaded.
 
     So the assertion is that `GET /event` follows the override, which is the single
-    place the dashboard reads it from, and that the attendance payload does not
+    place the check-in page reads it from, and that the attendance payload does not
     quietly grow the field back.
   */
   check('they are told how many days the event has', event.body?.totalDays === totalDays)
@@ -307,22 +316,14 @@ async function main() {
 
   /* -- an attendee who came to one day only --------------------------------- */
   const oneDaySen = `PDAY1${stamp}`
-  await call('POST', '/attendee/register', {
+  await setOverride(1)
+  await call('POST', '/attendee/checkin', {
     name: 'Day One Only',
     phone: `8${stamp}`.slice(0, 10).padEnd(10, '5'),
     sen: oneDaySen,
-    password: PASSWORD,
-    email: testEmail('probe')})
-  await setOverride(1)
-  await call('POST', '/admin/attendance', { sen: oneDaySen }, owner.cookie)
-
-  const partialLogin = await call('POST', '/attendee/login', {
-    name: 'Day One Only',
-    phone: `8${stamp}`.slice(0, 10).padEnd(10, '5'),
-    password: PASSWORD,
-    remember: false,
   })
-  const partial = await call('GET', '/attendee/attendance', undefined, partialLogin.cookie)
+
+  const partial = await call('GET', `/attendee/attendance?sen=${oneDaySen}`)
   check(
     'an attendee who came to one day only has exactly one record',
     partial.body?.records?.length === 1,

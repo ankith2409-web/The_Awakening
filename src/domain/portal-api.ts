@@ -4,23 +4,10 @@ import type {
   AdminSession,
   AdminUser,
   Attendee,
-  AttendeeLoginInput,
-  AttendeeRegisterInput,
-  AttendeeRegistration,
-  AttendeeSession,
-  BroadcastResult,
-  CredentialSendResult,
   CheckIn,
+  CheckInOutcome,
   DayState,
   EventInfo,
-  MyAttendance,
-  PushState,
-  PushSubscriptionPayload,
-  RegistrationMode,
-  RosterRows,
-  RosterState,
-  RosterUploadResult,
-  Ticket,
 } from './types'
 /**
  * Everything the portal can ask the backend for.
@@ -30,72 +17,41 @@ import type {
  */
 export interface PortalApi {
   /* -- attendee -------------------------------------------------------- */
-  getAttendeeSession(): Promise<AttendeeSession | null>
-  attendeeLogin(input: AttendeeLoginInput): Promise<AttendeeSession>
-  /**
-   * Registers, and returns the password the PORTAL chose.
-   *
-   * The attendee does not pick one. They used to, and then typed it twice on a phone
-   * at a desk in a queue, where one mistyped character locked them out of their own
-   * pass. The generated password comes back ONCE, here, and only its bcrypt hash is
-   * ever stored.
-   */
-  attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration>
-  /**
-   * Confirms the attendee can reproduce the password they were just given.
-   *
-   * Separate from the client-side "do the two boxes match" check, which cannot catch
-   * somebody who misread the password and then faithfully typed the same wrong thing
-   * twice. Session-gated, and a mismatch is an answer rather than an error — it is
-   * the expected result of reading something aloud.
-   */
-  verifyAttendeePassword(password: string): Promise<{ readonly matches: boolean }>
-  /**
-   * Replaces one's own password, immediately after registering.
-   *
-   * NOT the recovery path. Somebody locked out entirely has no self-service route and
-   * must ask at the desk — see the note on `resetAttendeePassword` below. This is for
-   * somebody being offered a replacement for a password they already hold.
-   *
-   * Other sessions are revoked; the one making the request is kept, because signing
-   * the attendee out of the tab they are standing in is indistinguishable from the
-   * portal logging people out by itself.
-   */
-  changeOwnPassword(input: {
-    currentPassword: string
-    newPassword: string
-  }): Promise<{ readonly ok: true }>
-  attendeeLogout(): Promise<void>
   /*
-    There is deliberately no `resetAttendeePassword`.
-    One existed, and it was the most serious weakness in the portal: no OTP, no
-    email, no security question, so knowing a phone number was enough to take
-    over that account and present its pass. Rate limiting was the only thing
-    between it and a script walking the roster, and the endpoint was under
-    active probing in production.
-    Recovery is now admin-mediated. An attendee asks an organiser at the desk and
-    `adminSetAttendeePassword` sets a new one — an authenticated, attributable
-    action instead of an unauthenticated one. Absence of the method here is the
-    reminder that there is no self-service path.
+    CHECK IN. The whole attendee surface.
+
+    There is no session, no account and no password, so there is nothing to sign
+    in to and nothing to sign out of. `attendeeRegister`, `attendeeLogin`,
+    `getAttendeeSession`, `attendeeLogout`, `verifyAttendeePassword` and
+    `changeOwnPassword` were removed rather than left behind: every one existed
+    only to create or maintain an account, and a half-removed one is a way back
+    in.
+
+    Takes NO day. The server resolves it, because a `day` field in the body would
+    let a stale page file a whole queue under any heading it liked, and the export
+    would be the only place that ever showed it.
   */
+  checkIn(input: {
+    name: string
+    phone: string
+    sen: string
+  }): Promise<CheckInOutcome>
+  /**
+   * Which days this SEN is marked for.
+   *
+   * A lookup rather than a disclosure: a student already knows their own SEN, and
+   * a SEN nobody has used returns nothing at all. It exists for the case where
+   * somebody tapped once on a bad connection and has no other way to find out
+   * whether it landed.
+   */
+  getAttendanceForSen(sen: string): Promise<readonly CheckIn[]>
   /* -- admin (separate door) -------------------------------------------- */
   getAdminSession(): Promise<AdminSession | null>
   adminLogin(input: AdminLoginInput): Promise<AdminSession>
   adminLogout(): Promise<void>
   /* -- programme data --------------------------------------------------- */
   getEvent(): Promise<EventInfo>
-  /* -- ticket ----------------------------------------------------------- */
-  /** Signed, single-use pass encoded into the attendee's QR. */
-  getTicket(): Promise<Ticket>
   /* -- attendance ------------------------------------------------------- */
-  /**
-   * The attendee's own attendance, one record per day they were marked.
-   *
-   * Was a single record or null, which was correct while attendance was
-   * once-in-a-lifetime. Returning "the first row" now would tell somebody who
-   * came on day two that they arrived on day one.
-   */
-  getMyAttendance(): Promise<MyAttendance | null>
   /**
    * Records attendance from a scanned SEN.
    *
@@ -117,159 +73,31 @@ export interface PortalApi {
   listAttendees(): Promise<readonly Attendee[]>
   /** Every attendance record, oldest first. Carries the attendee name per row. */
   listAttendance(): Promise<readonly CheckIn[]>
-  /* -- push -------------------------------------------------------------- */
+  /* -- event controls --------------------------------------------------- */
   /**
-   * The VAPID public key, and whether this deployment can send at all.
+   * Moves the event between registration, live and completed.
    *
-   * Unauthenticated on purpose: the browser needs the key to build a subscription, so
-   * it has to be available before anybody logs in. A deployment with no keys should
-   * show no toggle at all rather than one that fails when pressed.
+   * Owner-only. Every event field returns whole, so one control can never leave
+   * another one out of sync with it.
    */
-  getPushKey(): Promise<{ configured: boolean; publicKey: string | null }>
-  /** Register this browser to receive pushes. Requires an attendee session. */
-  subscribeToPush(subscription: PushSubscriptionPayload): Promise<void>
-  /** Stop sending this browser pushes. Requires an attendee session. */
-  unsubscribeFromPush(endpoint: string): Promise<void>
-  /** Subscriber count and the last thing sent. Any staff account may read this. */
-  getPushState(): Promise<PushState>
-  /**
-   * Broadcast to every opted-in device.
-   *
-   * Owner-only, not staff: this reaches every registered attendee on their own
-   * phone, which is a different power entirely from marking somebody present at a
-   * door. The shared `gate` credential is the one that must never hold it.
-   */
-  adminBroadcast(input: {
-    title: string
-    body: string
-  }): Promise<BroadcastResult>
-
-  /**
-   * Issues and emails a fresh set of credentials for every attendee.
-   *
-   * Owner-only, for the same reason as the broadcast: it reaches every registered
-   * attendee, and it changes their password while doing it.
-   *
-   * It is a ROTATION, not a resend. Only a bcrypt hash is stored, so the old
-   * password cannot be recovered — this generates a new one, and every password it
-   * issues replaces the one that attendee had. Any send that fails is rolled back,
-   * so a bounced mailbox leaves somebody able to log in exactly as before.
-   */
-  sendCredentials(): Promise<CredentialSendResult>
-  /**
-   * Sets an attendee's password. The only password-change path in the portal.
-   *
-   * Owner-only. A `gate` account is refused here as firmly as it is refused the
-   * roster — see `adminSetAttendeePassword` for the reasoning.
-   *
-   * Identified by SEN rather than phone or name: the SEN is printed on the badge
-   * and is already the gate's identifier, so an organiser holding a pass does
-   * not have to ask someone to spell out a number.
-   *
-   * Revokes every existing session for that attendee, so a password change
-   * actually locks the previous holder out.
-   */
-  adminSetAttendeePassword(input: {
-    sen: string
-    password: string
-  }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }>
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo>
   /**
-   * Pins the day attendance is recorded against, or clears the pin.
+   * Which day is live, or null to derive it from the calendar.
    *
-   * `null` returns to following the calendar, which is the normal state. A number
-   * makes the portal treat that day as current regardless of the date — how you
-   * exercise day two before it arrives, and how you tell it when a schedule has
-   * slipped.
-   *
-   * Independent of `phase`, so setting one does not clear the other.
+   * The check-in route reads this to decide what day a mark belongs to, so this is
+   * the control that moves the event from day one to day two.
    */
   updateEventDay(dayOverride: number | null): Promise<EventInfo>
   /**
-   * Replaces the whole set of days attendance is closed for.
+   * Which days attendance is CLOSED for.
    *
-   * Takes the intended final set rather than a single day to toggle, so the write
-   * is idempotent — which is what makes it safe to retry on a flaky connection at a
-   * busy door. Sending "unlock day 1" as a delta needs the client to hold the
-   * current set and get it right under exactly the conditions where it matters.
+   * Separate from the override on purpose: which day is live and which days are
+   * finished are different decisions, and an organiser who has locked day one
+   * while day two is live has made both.
+   *
+   * A closed day refuses new check-ins before anything is written.
    */
   setLockedDays(lockedDays: readonly number[]): Promise<EventInfo>
-  /**
-   * Opens, restricts or closes registration.
-   *
-   * Separate from the guest list on purpose. The list is data; this is the decision
-   * about what the data means, and they are changed at different moments — one when
-   * the list is prepared, the other when the doors open and close.
-   */
-  setRegistrationMode(mode: RegistrationMode): Promise<EventInfo>
-  /**
-   * Creates one attendee by hand.
-   *
-   * The only route that makes an account without the registration form, and so the
-   * only one that can bypass the guest list. Owner-only, audited, and it issues no
-   * session: the attendee is not at the computer, and signing them in on a device
-   * they may never see again — without them typing the password the organiser just
-   * read out — defeats the point of setting one.
-   */
-  createAttendee(input: {
-    name: string
-    phone: string
-    sen: string
-    password: string
-  }): Promise<Attendee>
-  /**
-   * The guest list: who is allowed to register.
-   *
-   * A COUNT and a SAMPLE, never the whole list — the full roster is every student's
-   * name and SEN, which is exactly what a `gate` account must never receive. The
-   * owner has the file they uploaded, so nothing is lost by not echoing it back.
-   */
-  getRoster(): Promise<RosterState>
-  /**
-   * Replaces the guest list wholesale.
-   *
-   * The mode travels with the upload rather than being set separately, so "save the
-   * list and start using it" is one action instead of two, and there is no window
-   * where the list has changed but the decision about it has not.
-   */
-  /**
-   * Saves the guest list.
-   *
-   * `email` on a row is OPTIONAL and the third argument to nothing at all — a sheet
-   * with two columns is still a valid sheet. It exists because this spreadsheet is
-   * the only realistic way to put an address on the people who registered before the
-   * form collected one; without it, "email everyone their credentials" can only ever
-   * reach people who registered after the field was added.
-   *
-   * An address the rules refuse does not reject the row. This list decides who may
-   * register, and a typo in a column the portal did not previously have must not lock
-   * out a real student — so the address is reported and dropped, and the student stays.
-   */
-  uploadRoster(
-    rows: readonly { name: string; sen: string; email?: string | null }[],
-    mode: RegistrationMode,
-  ): Promise<RosterUploadResult>
-  /**
-   * Empties the list.
-   *
-   * Does NOT reopen registration. Clearing a spreadsheet is not the same decision as
-   * changing who may register, and doing both on one click would shut the door to
-   * everybody as a side effect of tidying up.
-   */
-  clearRoster(): Promise<RosterState>
-  /**
-   * Every row on the guest list, owner-only, so the names can be checked.
-   *
-   * A SEPARATE call from `getRoster`, which stays a count and an eight-row sample.
-   * The panel header only needs to know whether the upload worked; holding five
-   * hundred students in memory to report "500" is not worth it, and the full list is
-   * every student's name and SEN, which must never reach a `gate` device.
-   *
-   * `truncated` is part of the contract rather than an implementation detail: if a cap
-   * is ever hit the check is incomplete and has to say so, because "I looked at the
-   * names and they are all correct" is a claim somebody will act on.
-   */
-  listRosterRows(): Promise<RosterRows>
 }
 /*
   There is deliberately no staff-management surface here.
@@ -289,7 +117,6 @@ export type {
   EventInfo,
   Attendee,
   CheckIn,
+  CheckInOutcome,
   DayState,
-  MyAttendance,
-  Ticket,
 }

@@ -1,8 +1,6 @@
 import { SEED_ADMINS, SEED_ATTENDEE, SEED_EVENT } from '@/domain/dataset'
 import { normalisePhone, normaliseSen, isValidSen, phoneProblem } from '@/domain/phone'
-import { normaliseEmail, isValidEmail } from '@/domain/email'
 import { nameProblem } from '@/domain/name'
-import { signTicket } from '@/domain/ticket'
 import {
   PortalError,
   type AdmissionMethod,
@@ -10,23 +8,10 @@ import {
   type AdminSession,
   type AdminUser,
   type Attendee,
-  type AttendeeLoginInput,
-  type AttendeeRegisterInput,
-  type AttendeeSession,
   type AttendeeWithSecret,
-  type Announcement,
-  type BroadcastResult,
-  type CredentialSendResult,
   type CheckIn,
+  type CheckInOutcome,
   type EventInfo,
-  type MyAttendance,
-  type PushState,
-  type AttendeeRegistration,
-  type RegistrationMode,
-  type RosterRows,
-  type RosterState,
-  type RosterUploadResult,
-  type Ticket,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
 
@@ -83,212 +68,15 @@ export class MockPortalApi implements PortalApi {
    * is browser state, and persisting it alongside the data is what would let a
    * stale id survive a logout.
    */
-  #attendeeSessionId: string | null
   #adminSessionId: string | null
 
   constructor() {
     this.#store = loadOrSeed()
-    this.#attendeeSessionId = readSession('attendee')
+    // Only the staff session survives. There is no attendee one to read.
     this.#adminSessionId = readSession('admin')
   }
 
-  /* ------------------------------------------------------------ attendee */
 
-  async getAttendeeSession(): Promise<AttendeeSession | null> {
-    await delay(LATENCY_MS / 2)
-    const attendee = this.#store.attendees.find(
-      (candidate) => candidate.id === this.#attendeeSessionId,
-    )
-    return attendee ? { attendee: toPublic(attendee) } : null
-  }
-
-  async attendeeLogin(input: AttendeeLoginInput): Promise<AttendeeSession> {
-    await delay(LATENCY_MS)
-
-    const phone = normalisePhone(input.phone)
-    const name = input.name.trim()
-
-    // One generic message for every failure so the endpoint cannot be used to
-    // discover which phone numbers or names are registered.
-    const attendee = this.#store.attendees.find(
-      (candidate) =>
-        candidate.phone === phone && candidate.name.toLowerCase() === name.toLowerCase(),
-    )
-
-    if (!attendee || attendee.passwordHash !== hash(input.password)) {
-      throw new PortalError('invalid_credentials')
-    }
-
-    this.#attendeeSessionId = attendee.id
-    writeSession('attendee', attendee.id, input.remember)
-
-    return { attendee: toPublic(attendee) }
-  }
-
-  async attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration> {
-    await delay(LATENCY_MS)
-
-    const phone = normalisePhone(input.phone)
-    const name = input.name.trim()
-
-    if (this.#store.attendees.some((candidate) => candidate.phone === phone)) {
-      throw new PortalError('phone_taken')
-    }
-
-    // SEN is unique: it is the attendance identity, so a duplicate would make
-    // two people indistinguishable at the gate. `?? ''` guards a record
-    // persisted before SENs existed.
-    if (
-      this.#store.attendees.some(
-        (candidate) =>
-          (candidate.sen ?? '').toUpperCase() === input.sen.toUpperCase(),
-      )
-    ) {
-      throw new PortalError('sen_taken')
-    }
-
-    /*
-      The password is the PORTAL'S, not the attendee's, so the mock generates one
-      with the same alphabet and grouping the server does. It has to be generated
-      here rather than imported: this module runs in a browser and the generator
-      deliberately uses node:crypto.
-
-      Mirroring the shape by hand rather than by dependency, because the whole point
-      of the shape is that it is fixed — three groups of three, letters and digits
-      only, no look-alikes. A test can then assert the client sees a plausible
-      password, and the one real generator stays the single implementation.
-    */
-    const password = mockGeneratedPassword()
-
-    const attendee: AttendeeWithSecret = {
-      id: `att_${randomSuffix()}`,
-      name,
-      phone,
-      sen: input.sen.toUpperCase(),
-      email: input.email.trim().toLowerCase(),
-      createdAt: new Date().toISOString(),
-      passwordHash: hash(password),
-      ticketCode: randomTicketPayload(),
-    }
-
-    this.#store.attendees.push(attendee)
-    // Persist BEFORE handing back a session: otherwise the account exists
-    // only in memory and a reload loses the attendee we just created.
-    persist(this.#store)
-    this.#attendeeSessionId = attendee.id
-    writeSession('attendee', attendee.id, true)
-
-    /*
-      `not_set`, not `sent`.
-
-      The mock has no mail service, and claiming otherwise would make the demo
-      say "check your inbox" about an email that was never composed. This is the
-      exact value a real deployment reports before its API key is set, so the UI
-      being developed against here is the UI it will show in that state.
-    */
-    return { attendee: toPublic(attendee), generatedPassword: password, emailed: 'not_set' as const }
-  }
-
-  async verifyAttendeePassword(password: string): Promise<{ matches: boolean }> {
-    await delay(LATENCY_MS / 4)
-    const id = this.#attendeeSessionId
-    if (id === null) throw new PortalError('forbidden')
-    const attendee = this.#store.attendees.find((candidate) => candidate.id === id)
-    if (!attendee) throw new PortalError('not_found')
-    return { matches: attendee.passwordHash === hash(password) }
-  }
-
-  async changeOwnPassword(input: {
-    currentPassword: string
-    newPassword: string
-  }): Promise<{ ok: true }> {
-    await delay(LATENCY_MS / 2)
-    const id = this.#attendeeSessionId
-    if (id === null) throw new PortalError('forbidden')
-
-    const index = this.#store.attendees.findIndex((candidate) => candidate.id === id)
-    const attendee = this.#store.attendees[index]
-    if (!attendee) throw new PortalError('not_found')
-
-    if (attendee.passwordHash !== hash(input.currentPassword)) {
-      throw new PortalError('invalid_credentials', 'That is not your current password.')
-    }
-    const problem = passwordProblem(input.newPassword)
-    if (problem !== null) throw new PortalError('weak_password', problem)
-
-    // Replaced rather than mutated: `passwordHash` is readonly.
-    this.#store.attendees[index] = {
-      ...attendee,
-      passwordHash: hash(input.newPassword),
-    }
-    persist(this.#store)
-
-    // The session in use is deliberately kept — see `revokeOtherSessions` on the
-    // server, and `PortalApi.changeOwnPassword`.
-    return { ok: true }
-  }
-
-  async attendeeLogout(): Promise<void> {
-    await delay(LATENCY_MS / 3)
-    this.#attendeeSessionId = null
-    // No persist needed: the session id is not part of the stored data.
-    clearSession('attendee')
-  }
-
-  /* --------------------------------------------------------------- admin */
-
-  /**
-   * Sets an attendee's password. The only password-change path.
-   *
-   * The mock had a self-service `resetAttendeePassword` and it is deliberately
-   * gone rather than kept for parity: a mock that still offers an unverified
-   * reset teaches the shape of an endpoint the server no longer has, and the
-   * next person to read it would assume the vulnerability is still there.
-   *
-   * Mirrors the two guarantees the real one makes — identified by SEN, and any
-   * session the previous password minted is dropped.
-   */
-  async adminSetAttendeePassword(input: {
-    sen: string
-    password: string
-  }): Promise<{ attendee: { id: string; name: string; sen: string }; sessionsRevoked: boolean }> {
-    await delay(LATENCY_MS)
-
-    // Owner-only, matching the server: changing somebody's credential is not a
-    // door-side job.
-    this.#requireOwner()
-
-    const target = normaliseSen(input.sen)
-    if (!isValidSen(target)) {
-      throw new PortalError('unknown_sen', 'That does not look like a SEN.')
-    }
-
-    const problem = passwordProblem(input.password)
-    if (problem) throw new PortalError('weak_password', problem)
-
-    const attendee = this.#store.attendees.find((person) => person.sen === target)
-    if (!attendee) {
-      throw new PortalError('unknown_sen', 'No registered attendee matches that SEN.')
-    }
-
-    // Replaced rather than mutated: `passwordHash` is readonly, and an immutable
-    // swap keeps the store consistent with its own type.
-    this.#store.attendees = this.#store.attendees.map((person) =>
-      person.id === attendee.id ? { ...person, passwordHash: hash(input.password) } : person,
-    )
-
-    // The previous password's session is no longer trustworthy.
-    if (this.#attendeeSessionId === attendee.id) {
-      this.#attendeeSessionId = null
-      clearSession('attendee')
-    }
-    persist(this.#store)
-
-    return {
-      attendee: { id: attendee.id, name: attendee.name, sen: attendee.sen },
-      sessionsRevoked: true,
-    }
-  }
 
   async getAdminSession(): Promise<AdminSession | null> {
     await delay(LATENCY_MS / 3)
@@ -359,35 +147,7 @@ export class MockPortalApi implements PortalApi {
     return structuredClone(this.#store.event)
   }
 
-  /* ------------------------------------------------------------- ticket */
 
-  async getTicket(): Promise<Ticket> {
-    await delay(LATENCY_MS / 4)
-
-    const attendee = this.#requireAttendee()
-    // Signed payload carrying the SEN, so the QR feeds the same scanner path
-    // as a printed barcode instead of introducing a second way in.
-    const code = await signTicket(attendee.sen)
-
-    return { code, encoded: code }
-  }
-
-  /* ---------------------------------------------------------- attendance */
-
-  /**
-   * The attendee's own record, or null if they have not been scanned.
-   * Read-only: there is no way for an attendee to mark themselves present.
-   */
-  async getMyAttendance(): Promise<MyAttendance | null> {
-    await delay(LATENCY_MS / 4)
-    const attendeeId = this.#attendeeSessionId
-    if (attendeeId === null) return null
-    const records = this.#store.checkIns
-      .filter((entry) => entry.attendeeId === attendeeId)
-      .sort((a, b) => a.day - b.day)
-    // Records only. Day state lives on `event` and only there — see `MyAttendance`.
-    return { records: structuredClone(records) }
-  }
 
   /**
    * Which day the mock thinks it is.
@@ -521,78 +281,139 @@ export class MockPortalApi implements PortalApi {
       })
   }
 
-  /* --------------------------------------------------------------- push */
+  /* -------------------------------------------------------------- check-in */
 
   /*
-    The mock reports push as NOT configured, and the toggle disappears.
+    The mock creates the person, exactly as the server does.
 
-    That is the honest answer rather than a stub that pretends to work: there is no
-    push service behind a mock, so a toggle that appeared and then did nothing would
-    teach a developer the wrong thing about the feature. The UI is built to render
-    nothing at all in this state, which is the same thing it does on a deployment
-    missing its VAPID keys.
+    That is the part worth getting right in a mock. One that only ever marks
+    people who already exist would pass every screen built against it and then
+    fail on the only thing a student actually does — arriving for the first time.
   */
-
-  async getPushKey(): Promise<{ configured: boolean; publicKey: string | null }> {
-    await delay(LATENCY_MS / 4)
-    return { configured: false, publicKey: null }
-  }
-
-  async subscribeToPush(): Promise<void> {
-    await delay(LATENCY_MS / 4)
-    return undefined
-  }
-
-  async unsubscribeFromPush(): Promise<void> {
-    await delay(LATENCY_MS / 4)
-    return undefined
-  }
-
-  async getPushState(): Promise<PushState> {
-    this.#requireAdmin()
-    await delay(LATENCY_MS / 4)
-    return { configured: false, subscribers: 0, latest: null }
-  }
-
-  async adminBroadcast(input: { title: string; body: string }): Promise<BroadcastResult> {
-    this.#requireOwner()
+  async checkIn(input: { name: string; phone: string; sen: string }): Promise<CheckInOutcome> {
     await delay(LATENCY_MS / 2)
-    const announcement: Announcement = {
-      id: `ann_${this.#store.event.agenda.length}_${input.title.length}`,
-      title: input.title,
-      body: input.body,
-      createdAt: new Date().toISOString(),
+
+    const name = input.name.trim()
+    const phone = normalisePhone(input.phone)
+    const sen = normaliseSen(input.sen)
+
+    const phoneProblemMessage = phoneProblem(phone)
+    if (phoneProblemMessage !== null) throw new PortalError('unknown', phoneProblemMessage)
+
+    const nameProblemMessage = nameProblem(name)
+    if (nameProblemMessage !== null) throw new PortalError('unknown', nameProblemMessage)
+
+    if (!isValidSen(sen)) {
+      throw new PortalError('unknown', 'Enter a valid SEN, e.g. A866175000012.')
     }
-    return { sent: 0, pruned: 0, failed: 0, total: 0, announcement }
-  }
 
-  /**
-   * Reports "not configured", exactly as the real API does before a key is set.
-   *
-   * Not a simulated success. The mock has no mail service, and a demo that said
-   * "sent 3" would be teaching the owner a shape they would then misread on the
-   * day. `skipped` carries the SENs with no address, which is the list they would
-   * actually have to chase.
-   */
-  async sendCredentials(): Promise<CredentialSendResult> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
+    const dayState = this.#dayState()
+    const day = dayState.activeDay
 
-    const withoutEmail = this.#store.attendees
-      .filter((a) => !a.email)
-      .map((a) => a.sen)
+    // A closed day refuses BEFORE anything is written, same order as the server,
+    // so a screen built against the mock behaves the same on the day.
+    if (this.#store.event.lockedDays.includes(day)) {
+      throw new PortalError(
+        'day_locked',
+        `Attendance for day ${day} is closed. Ask an organiser to reopen it.`,
+      )
+    }
+
+    let person = this.#store.attendees.find(
+      (a) => (a.sen ?? '').toUpperCase() === sen.toUpperCase(),
+    )
+    const firstTime = person === undefined
+
+    if (person === undefined) {
+      const created: AttendeeWithSecret = {
+        id: `att_${randomSuffix()}`,
+        name,
+        phone,
+        sen,
+        email: null,
+        passwordHash: '',
+        ticketCode: '',
+        createdAt: new Date().toISOString(),
+      }
+      this.#store.attendees = [...this.#store.attendees, created]
+      person = created
+    }
+
+    const known = person
+
+    /*
+      Already marked is a SUCCESS with a note, not a throw.
+
+      The server answers 200 with `alreadyMarked`, and the confirmation screen is
+      built on that. A mock that threw here would make a duplicate look like a
+      failure in development, and hide the copy that says "you were already
+      marked" until the morning of the event.
+    */
+    const alreadyMarked = this.#store.checkIns.some(
+      (entry) => entry.attendeeId === known.id && entry.day === day,
+    )
+
+    if (!alreadyMarked) {
+      const record: CheckIn = {
+        id: `chk_${randomSuffix()}`,
+        sen: known.sen,
+        attendeeId: known.id,
+        at: new Date().toISOString(),
+        method: 'self',
+        day,
+        attendeeName: known.name,
+      }
+      this.#store.checkIns = [...this.#store.checkIns, record]
+    }
+
+    persist(this.#store)
 
     return {
-      configured: false,
-      total: this.#store.attendees.length,
-      sent: 0,
-      failed: 0,
-      skipped: withoutEmail,
-      failures: [],
-      message: 'No email service is configured on this deployment.',
+      ok: true,
+      alreadyMarked,
+      firstTime,
+      // The name ON FILE, not the name just typed. See the server for why.
+      name: known.name,
+      sen: known.sen,
+      day,
+      at:
+        this.#store.checkIns.find((e) => e.attendeeId === known.id && e.day === day)?.at ?? null,
+      dayState: {
+        activeDay: dayState.activeDay,
+        totalDays: dayState.totalDays,
+        overridden: dayState.overridden,
+      },
     }
   }
 
+  async getAttendanceForSen(sen: string): Promise<readonly CheckIn[]> {
+    await delay(LATENCY_MS / 4)
+    const wanted = normaliseSen(sen)
+    if (!isValidSen(wanted)) return []
+
+    const person = this.#store.attendees.find(
+      (a) => (a.sen ?? '').toUpperCase() === wanted.toUpperCase(),
+    )
+    if (person === undefined) return []
+
+    return this.#store.checkIns
+      .filter((entry) => entry.attendeeId === person.id)
+      .sort((a, b) => a.day - b.day)
+      .map((entry) => structuredClone(entry))
+  }
+
+  
+
+  /* ------------------------------------------------------ event controls */
+
+  /*
+    The mock updates the event exactly as the server stores it.
+
+    Every one of these returns the whole `EventInfo` rather than a field, so a
+    caller cannot set the day and leave the phase behind — the same reason the
+    server does, and the reason the two cannot drift into disagreeing about
+    whether day two is open.
+  */
   async updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
     this.#requireOwner()
     await delay(LATENCY_MS / 2)
@@ -640,204 +461,6 @@ export class MockPortalApi implements PortalApi {
 
     return structuredClone(this.#store.event)
   }
-
-  /* ------------------------------------------------------------- roster */
-
-  async listRosterRows(): Promise<RosterRows> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
-    const rows = [...(this.#store.roster ?? [])].sort((a, b) => a.sen.localeCompare(b.sen))
-    // Same cap as the server, and reported rather than hidden — see `RosterRows`.
-    const cap = 5_000
-    return {
-      total: rows.length,
-      truncated: rows.length > cap,
-      rows: rows.slice(0, cap),
-    }
-  }
-
-  async getRoster(): Promise<RosterState> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 4)
-    return this.#rosterState()
-  }
-
-  async uploadRoster(
-    rows: readonly { name: string; sen: string; email?: string | null }[],
-    mode: RegistrationMode,
-  ): Promise<RosterUploadResult> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
-
-    const problems: string[] = []
-    const seen = new Set<string>()
-    const accepted: { sen: string; name: string; email: string | null }[] = []
-    // Counted, not `problems.length` — a bad email is a warning on an imported row,
-    // and reporting it as a skip would say 5 landed and 1 was lost when all 5 are
-    // there. Same rule and same reason as the server.
-    let skipped = 0
-
-    rows.forEach((row, index) => {
-      const sen = normaliseSen(row.sen)
-      if (!isValidSen(sen)) {
-        problems.push(`row ${index + 2}: not a valid SEN`)
-        skipped += 1
-        return
-      }
-      if (seen.has(sen)) {
-        problems.push(`row ${index + 2}: duplicate`)
-        skipped += 1
-        return
-      }
-      seen.add(sen)
-      // An address the rules refuse is reported and dropped, never a rejected row.
-      // The same rule as the parser and the server, asserted by the same tests.
-      const rawEmail = (row.email ?? '').trim()
-      const normalised = rawEmail === '' ? null : normaliseEmail(rawEmail)
-      if (normalised !== null && !isValidEmail(normalised)) {
-        problems.push(
-          `row ${index + 2}: "${rawEmail.slice(0, 48)}" is not a usable email address — the student is still on the list`,
-        )
-        accepted.push({ sen, name: row.name.trim().slice(0, 80), email: null })
-        return
-      }
-      accepted.push({ sen, name: row.name.trim().slice(0, 80), email: normalised })
-    })
-
-    if (accepted.length === 0) {
-      throw new PortalError('unknown', `No usable rows. First problem: ${problems[0] ?? 'the file is empty'}`)
-    }
-
-    this.#store.roster = accepted
-
-    /*
-      The same backfill the server does: addresses reach the people who already
-      registered, and only where they have none.
-
-      An address somebody typed on the registration form is theirs and beats a
-      spreadsheet cell that may have been edited since; a blank cell says nothing at
-      all, because this list is who MAY register and most of it never did.
-    */
-    let addressesApplied = 0
-    const withAddress = new Map(
-      accepted.filter((r) => r.email !== null).map((r) => [r.sen, r.email as string]),
-    )
-    if (this.#store.attendees) {
-      this.#store.attendees = this.#store.attendees.map((a) => {
-        const next = withAddress.get(a.sen)
-        if (next === undefined || a.email) return a
-        addressesApplied += 1
-        return { ...a, email: next }
-      })
-    }
-
-    /*
-      The mode goes on `event`, and only on `event`.
-
-      It was briefly kept in two places — a top-level `store.registrationMode` and
-      `event.registrationMode` — and the two drifted, so the switch rendered whatever
-      one had been written last rather than what the caller set. Every other event
-      field (phase, lockedDays, dayOverride) lives on `event` for exactly this
-      reason: one place to read, one place to write.
-    */
-    this.#store.event = { ...this.#store.event, registrationMode: mode }
-    persist(this.#store)
-
-    return {
-      imported: accepted.length,
-      skipped,
-      problems,
-      mode,
-      addressesOnSheet: accepted.filter((r) => r.email !== null).length,
-      addressesApplied,
-    }
-  }
-
-  async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
-    this.#store.event = { ...this.#store.event, registrationMode: mode }
-    persist(this.#store)
-    return structuredClone(this.#store.event)
-  }
-
-  async clearRoster(): Promise<RosterState> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 4)
-    this.#store.roster = []
-    persist(this.#store)
-    return this.#rosterState()
-  }
-
-  async createAttendee(input: {
-    name: string
-    phone: string
-    sen: string
-    password: string
-  }): Promise<Attendee> {
-    this.#requireOwner()
-    await delay(LATENCY_MS / 2)
-
-    const name = nameProblem(input.name)
-    if (name) throw new PortalError('unknown', name)
-
-    const phone = normalisePhone(input.phone)
-    const phoneIssue = phoneProblem(phone)
-    if (phoneIssue) throw new PortalError('unknown', phoneIssue)
-
-    const sen = normaliseSen(input.sen)
-    if (!isValidSen(sen)) {
-      throw new PortalError('unknown', 'Enter a valid SEN, e.g. A866175000012.')
-    }
-    const weak = passwordProblem(input.password)
-    if (weak) throw new PortalError('weak_password', weak)
-
-    if (this.#store.attendees.some((a) => a.phone === phone)) {
-      throw new PortalError('phone_taken')
-    }
-    if (this.#store.attendees.some((a) => a.sen === sen)) {
-      throw new PortalError('sen_taken')
-    }
-
-    const created: AttendeeWithSecret = {
-      id: `att_${randomSuffix()}`,
-      name: input.name.trim(),
-      phone,
-      sen,
-      // The admin path has no email field, matching the API where it is optional
-      // for somebody added at the desk.
-      email: null,
-      createdAt: new Date().toISOString(),
-      passwordHash: hash(input.password),
-      ticketCode: randomTicketPayload(),
-    }
-    this.#store.attendees.push(created)
-    // No session is written, deliberately — see the interface note.
-    persist(this.#store)
-
-    return toPublic(created)
-  }
-
-  #rosterState(): RosterState {
-    // Optional on stores seeded before this feature existed, so a local `persist`
-    // from an older session cannot make the panel crash on `undefined.length`.
-    const roster = this.#store.roster ?? []
-    return {
-      count: roster.length,
-      uploadedAt: roster.length > 0 ? this.#store.event.date : null,
-      sample: roster.slice(0, 8),
-    }
-  }
-
-  /* ------------------------------------------------------------- guards */
-
-  #requireAttendee(): AttendeeWithSecret {
-    const attendee = this.#store.attendees.find(
-      (candidate) => candidate.id === this.#attendeeSessionId,
-    )
-    if (!attendee) throw new PortalError('forbidden')
-    return attendee
-  }
 }
 
 /* --------------------------------------------------------------- helpers */
@@ -862,13 +485,6 @@ function toPublicAdmin(admin: {
     // and look like a broken permission model.
     role: admin.role === 'gate' ? 'gate' : 'owner',
   }
-}
-
-function passwordProblem(password: string): string | null {
-  if (password.length < 8) return 'Use at least 8 characters.'
-  if (!/[a-zA-Z]/.test(password)) return 'Include at least one letter.'
-  if (!/\d/.test(password)) return 'Include at least one number.'
-  return null
 }
 
 /**
@@ -990,46 +606,4 @@ function loadOrSeed(): Store {
 
 function persist(store: Store): void {
   localStorage.setItem(STORE_KEY, JSON.stringify(store))
-}
-
-/**
- * A mock-generated password, in the server's shape.
- *
- * Same rules as `server/_lib/password.ts` — three groups of three drawn from an
- * alphabet with no look-alikes, so it always satisfies the portal's own strength rule
- * and is always something a volunteer can read aloud over a queue. See that file for
- * why each character is excluded.
- *
- * Generated here rather than imported because this module runs in a browser and the
- * real generator deliberately uses `node:crypto`.
- */
-function mockGeneratedPassword(): string {
-  const letters = 'abcdefghjkmnpqrstuvwxyz'
-  const digits = '23456789'
-  const alphabet = letters + digits
-  const at = (set: string) => set[Math.floor(Math.random() * set.length)]
-
-  let flat = ''
-  for (let index = 0; index < 9; index += 1) flat += at(alphabet)
-
-  /*
-    The same guarantee the real generator makes: at least one letter and one digit.
-    Checked on the flat string BEFORE grouping, because inserting separators first
-    would make a naive length check count the wrong thing.
-  */
-  for (let attempt = 0; attempt < 32; attempt += 1) {
-    if (!/[a-z]/.test(flat)) {
-      flat = flat.slice(0, 8) + at(letters)
-      continue
-    }
-    if (!/[0-9]/.test(flat)) {
-      flat = flat.slice(0, 8) + at(digits)
-      continue
-    }
-    return (flat.match(/.{1,3}/g) ?? []).join('-')
-  }
-
-  // Unreachable in practice; still returns something usable rather than throwing,
-  // because failing a registration over a password shape would be absurd.
-  return 'grid-2026'
 }

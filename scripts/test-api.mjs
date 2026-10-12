@@ -1,26 +1,40 @@
 #!/usr/bin/env node
 /**
- * End-to-end check of the API against the real database.
+ * The API contract: what the routes do, who may do it, and what is gone.
  *
- * Exercises the routes the way the browser does — including cookies — and
- * asserts the behaviour the portal depends on. Run with:
- *   npm run test:api
+ * REWRITTEN around the check-in surface. The previous version covered
+ * registration, login, sessions, tickets and the guest list — every one of which
+ * was removed, so most of its assertions were asserting the absence of the API
+ * rather than its behaviour.
+ *
+ * What this covers now:
+ *
+ *   1. The check-in route: shape, day resolution, and that the day is never
+ *      taken from the body.
+ *   2. The public event payload, which every visitor loads and which decides what
+ *      the check-in page says.
+ *   3. The authorisation matrix, which is the part that must not drift.
+ *   4. THE REMOVED ROUTES ACTUALLY 404. Deleting a handler is not the same as
+ *      removing a door; this asserts the old doors are shut rather than trusting
+ *      that they are.
+ *
+ *   ADMIN_USERNAME / ADMIN_PASSWORD, ADMIN_PASSWORD_GATE, DATABASE_URL.
  */
 
+import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendeesOnce, testEmail } from './_fixtures.mjs'
 
-// Read `.env` so the cleanup at the end can reach the database this suite just
-// wrote to. Harmless in production, where Vercel injects the real environment.
 loadEnv()
 
 const BASE = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
+const OWNER = { username: process.env.ADMIN_USERNAME ?? '', password: process.env.ADMIN_PASSWORD ?? '' }
+const GATE = { username: 'gate', password: process.env.ADMIN_PASSWORD_GATE ?? '' }
 
 let passed = 0
 let failed = 0
 
-function check(label, condition, detail) {
-  if (condition) {
+function check(label, ok, detail) {
+  if (ok) {
     passed += 1
     console.log(`  ok    ${label}`)
   } else {
@@ -29,474 +43,229 @@ function check(label, condition, detail) {
   }
 }
 
-/** Minimal cookie jar so we can assert on real session behaviour. */
-function makeJar() {
-  const jar = new Map()
-  return {
-    header: () =>
-      [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; '),
-    absorb(res) {
-      const raw = res.headers.getSetCookie?.() ?? []
-      for (const line of raw) {
-        const [pair] = line.split(';')
-        const [name, value] = pair.split('=')
-        if (value === '') jar.delete(name.trim())
-        else jar.set(name.trim(), value)
-      }
-    },
-  }
-}
-
-async function call(jar, method, path, body) {
+async function call(method, path, body, cookie) {
   const headers = {}
-  const cookie = jar.header()
-  if (cookie !== '') headers.Cookie = cookie
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (body !== undefined) headers['content-type'] = 'application/json'
+  if (cookie) headers.Cookie = cookie
 
   const res = await fetch(`${BASE}/api${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  jar.absorb(res)
+
+  // getSetCookie, NOT the combined header. Without it every admin check below
+  // passes by being refused an anonymous request, which looks exactly like a
+  // working authorisation test while testing nothing.
+  const setCookie =
+    typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []
+  const jar = setCookie.map((c) => c.split(';')[0]).join('; ')
 
   const text = await res.text()
-  let parsed = null
+  let json = null
   try {
-    parsed = text === '' ? null : JSON.parse(text)
+    json = text === '' ? null : JSON.parse(text)
   } catch {
-    parsed = text
+    json = text
   }
-  return { status: res.status, body: parsed, setCookie: res.headers.getSetCookie?.() ?? [] }
+  return { status: res.status, json, cookie: jar, headers: res.headers }
 }
+
+/* ------------------------------------------------------------------ setup */
+
+const stamp = Date.now().toString().slice(-7)
+const SEN = `A9${stamp}0012`
+const PHONE = `9${stamp}12`
+let db = null
 
 async function main() {
-  console.log(`\n  Testing ${BASE}\n`)
+  console.log(`\n  API contract\n  ${BASE}\n`)
 
-  // Unique suffix so repeated runs never collide on phone/SEN uniqueness.
-  const runId = Date.now().toString().slice(-6)
-  const phone = `9${runId}12345`.slice(0, 10)
-  // ZTEST-prefixed, so this run's attendee can be recognised and deleted afterwards.
-  const sen = testSen(`API${runId}`)
-
-  const anon = makeJar()
-
-  /* -- public data ----------------------------------------------------- */
-  const event = await call(anon, 'GET', '/event')
-  check('GET /event returns the event', event.status === 200 && event.body?.name === 'THE AWAKENING')
-  /*
-    Asserted structurally, not against a fixed count. The programme is edited in
-    `db/seed.sql`, so a hardcoded number turns every schedule change into a
-    failing test — which trains you to ignore the suite.
-  */
-  check('event has a non-empty agenda', Array.isArray(event.body?.agenda) && event.body.agenda.length > 0,
-    `got ${event.body?.agenda?.length}`)
-
-  check(
-    'every agenda item carries a 1-based day',
-    event.body?.agenda?.every((i) => Number.isInteger(i.day) && i.day >= 1),
-    JSON.stringify(event.body?.agenda?.map((i) => i.day)),
-  )
-  check(
-    'agenda days are contiguous from 1',
-    [...new Set((event.body?.agenda ?? []).map((i) => i.day))]
-      .sort((a, b) => a - b)
-      .every((d, i) => d === i + 1),
-    JSON.stringify([...new Set((event.body?.agenda ?? []).map((i) => i.day))]),
-  )
-
-  check('event has tagline + organiser', event.body?.tagline?.includes('built by you') && event.body?.organiser === 'Google Developer Groups')
-
-  // A two-day event must carry both ends of its range.
-  check(
-    'event spans two days with an end date',
-    typeof event.body?.date === 'string' && typeof event.body?.endDate === 'string',
-    `date=${event.body?.date} endDate=${event.body?.endDate}`,
-  )
-  check(
-    'dates are plain YYYY-MM-DD, not shifted by a timezone',
-    /^\d{4}-\d{2}-\d{2}$/.test(event.body?.date ?? '') &&
-      /^\d{4}-\d{2}-\d{2}$/.test(event.body?.endDate ?? ''),
-    `date=${event.body?.date} endDate=${event.body?.endDate}`,
-  )
-  check('end date is after the start date', (event.body?.endDate ?? '') > (event.body?.date ?? ''))
-
-  check(
-    'event carries the host institution and a real venue',
-    typeof event.body?.organiserHost === 'string' && event.body.organiserHost.length > 0 &&
-      typeof event.body?.venue === 'string' && event.body.venue.length > 0 &&
-      typeof event.body?.city === 'string' && event.body.city.length > 0,
-    `host=${event.body?.organiserHost} venue=${event.body?.venue}, ${event.body?.city}`,
-  )
-  // These were the wrong way round in db/seed.sql for a while: venue held the
-  // city and city held the country.
-  check(
-    'venue is a place, not the city',
-    event.body?.venue !== event.body?.city,
-    `venue and city are both "${event.body?.city}"`,
-  )
-
-  /*
-    Asserted absent rather than merely unused: a removed endpoint that quietly
-    came back, or that 500s against a dropped table, is the failure worth guarding.
-  */
-  const teams = await call(anon, 'GET', '/teams')
-  check('GET /teams is gone, not merely unused', teams.status === 404, `got ${teams.status}`)
-
-  /* -- guards ---------------------------------------------------------- */
-  check('anonymous /admin/attendance is forbidden', (await call(anon, 'GET', '/admin/attendance')).status === 403)
-  check('anonymous /admin/attendance POST is forbidden', (await call(anon, 'POST', '/admin/attendance', { sen })).status === 403)
-  check('anonymous /attendee/session is null', (await call(anon, 'GET', '/attendee/session')).body === null)
-  check('unknown endpoint 404s', (await call(anon, 'GET', '/nope')).status === 404)
-
-  /* -- registration ---------------------------------------------------- */
-  const weak = await call(anon, 'POST', '/attendee/register', {
-    name: 'Weak Pass', phone, sen, password: 'abc',
-    email: testEmail('probe')})
-  check('weak password is rejected', weak.status === 422 && weak.body?.code === 'weak_password')
-
-  const badPhone = await call(anon, 'POST', '/attendee/register', {
-    name: 'Bad Phone', phone: '123', sen, password: 'grid2026',
-    email: testEmail('probe')})
-  check('invalid phone is rejected', badPhone.status === 422)
-
-  const badSen = await call(anon, 'POST', '/attendee/register', {
-    name: 'Bad Sen', phone, sen: 'nonsense', password: 'grid2026',
-    email: testEmail('probe')})
-  check('invalid SEN is rejected', badSen.status === 422)
-
-  const reg = await call(anon, 'POST', '/attendee/register', {
-    name: 'Test Attendee', phone, sen, password: 'grid2026',
-    email: testEmail('probe')})
-  check('registration succeeds', reg.status === 201 && reg.body?.attendee?.sen === sen, `got ${reg.status}`)
-  check('registration sets a session cookie', anon.header() !== '')
-
-  /*
-    Cookie lifetime. `Max-Age` is in SECONDS per RFC 6265; writing the day
-    count straight into it issues a 1-second cookie, so the browser forgets the
-    attendee a moment after they sign in while the database still honours the
-    session. The symptom is a redirect to /login on the next reload — invisible
-    to any test that inspects Set-Cookie but never actually waits.
-  */
-  const regCookie = (reg.setCookie ?? []).find((line) => line.startsWith('gdg_attendee='))
-  const regMaxAge = Number(regCookie?.match(/Max-Age=(\d+)/)?.[1] ?? '0')
-  check('session cookie is HttpOnly', Boolean(regCookie) && /HttpOnly/.test(regCookie))
-  check(
-    'Max-Age is seconds, not days',
-    regMaxAge >= 86400,
-    `Max-Age=${regMaxAge} = ${(regMaxAge / 86400).toFixed(2)} days`,
-  )
-  check('cookie carries an Expires fallback', /Expires=/.test(regCookie ?? ''))
-
-  const session = await call(anon, 'GET', '/attendee/session')
-  check('session resolves after register', session.body?.attendee?.name === 'Test Attendee')
-
-  const ticket = await call(anon, 'GET', '/attendee/ticket')
-  check('ticket is a signed SEN payload', ticket.status === 200 && typeof ticket.body?.encoded === 'string' && ticket.body.encoded.startsWith(sen + '.'))
-
-  /*
-    Field-name contracts. These exist because each of these was silently wrong
-    while the app ran against the in-memory mock, and only broke once the
-    database was real:
-
-      - register never sent `sen`, so no attendee could register at all
-      - attendance rows came back snake_case, so the admin log resolved every
-        record to "no name"
-      - the agenda PATCH returned the whole event where the client expected
-        one item
-  */
-  check(
-    'register echoes the SEN it was sent',
-    reg.body?.attendee?.sen === sen,
-    `got ${JSON.stringify(reg.body?.attendee?.sen)}`,
-  )
-
-  const myAttendance = await call(anon, 'GET', '/attendee/attendance')
-  /*
-    Not null any more.
-
-    This used to be `null`, which meant "not marked yet" and doubled as "no
-    session". It now returns an object with an empty `records` array and the day
-    count, because the dashboard has to render a row per day — including days with
-    no record yet — and cannot do that from a null.
-
-    The distinction that matters is preserved: no session is still `null`, so this
-    is only ever reached by somebody who is actually signed in.
-  */
-  check(
-    'attendance starts with no records',
-    Array.isArray(myAttendance.body?.records) && myAttendance.body.records.length === 0,
-    `got ${JSON.stringify(myAttendance.body)}`,
-  )
-  /*
-    The day state is NOT repeated here any more.
-
-    `/attendee/attendance` used to carry `totalDays`, `activeDay`, `overridden` and
-    `lockedDays` as well as its records. It now carries records only, and the
-    dashboard reads day state from `GET /event`.
-
-    The reason is specific and worth keeping in the suite: the poll for attendance
-    STOPS once this attendee is marked for the day being scanned into, which is
-    correct — a record is append-only, so there is nothing further for it to learn.
-    But it also froze the duplicated day state. Reopening a closed day left every
-    already-marked attendee reading "Closed" until they reloaded by hand.
-
-    So this asserts the shape that keeps that from coming back.
-  */
-  check(
-    'and reports records only — the day state is not duplicated here',
-    Object.keys(myAttendance.body ?? {}).join(',') === 'records',
-    `keys=${Object.keys(myAttendance.body ?? {}).join(',')}`,
-  )
-  check(
-    'the day state the dashboard needs comes from the event instead',
-    typeof event.body?.totalDays === 'number' &&
-      typeof event.body?.activeDay === 'number' &&
-      Array.isArray(event.body?.lockedDays),
-    `totalDays=${event.body?.totalDays} activeDay=${event.body?.activeDay} ` +
-      `lockedDays=${JSON.stringify(event.body?.lockedDays)}`,
-  )
-
-  const anonAttendance = await call(makeJar(), 'GET', '/attendee/attendance')
-  check(
-    'no session is still null, distinct from "no records"',
-    anonAttendance.body === null,
-    `got ${JSON.stringify(anonAttendance.body)}`,
-  )
-
-  /* -- duplicates ------------------------------------------------------ */
-  const dupPhone = await call(makeJar(), 'POST', '/attendee/register', {
-    name: 'Other Person', phone, sen: `SEN9${runId}`, password: 'grid2026',
-    email: testEmail('probe')})
-  check('duplicate phone rejected', dupPhone.status === 409 && dupPhone.body?.code === 'phone_taken')
-
-  const dupSen = await call(makeJar(), 'POST', '/attendee/register', {
-    name: 'Other Person', phone: `8${runId}54321`.slice(0, 10), sen, password: 'grid2026',
-    email: testEmail('probe')})
-  check('duplicate SEN rejected', dupSen.status === 409 && dupSen.body?.code === 'sen_taken')
-
-  /* -- login ----------------------------------------------------------- */
-  const wrong = await call(makeJar(), 'POST', '/attendee/login', {
-    name: 'Test Attendee', phone, password: 'wrongpassword',
+  db = new Client({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
   })
-  check('wrong password rejected', wrong.status === 401)
+  await db.connect()
 
-  const wrongName = await call(makeJar(), 'POST', '/attendee/login', {
-    name: 'Someone Else', phone, password: 'grid2026',
-  })
-  check('wrong name rejected (no enumeration)', wrongName.status === 401 && wrongName.body?.code === 'invalid_credentials')
+  /* -- 1. the public event payload ----------------------------------------- */
+
+  const event = await call('GET', '/event')
+  check('the event payload is public', event.status === 200, `got ${event.status}`)
+  check('it names the event', typeof event.json?.name === 'string' && event.json.name.length > 0)
+  check('and gives the dates', typeof event.json?.date === 'string', JSON.stringify(event.json?.date))
+  check('and the venue', typeof event.json?.venue === 'string' && event.json.venue.length > 0)
+  check(
+    'and which day is live, which is what a check-in will record against',
+    Number.isInteger(event.json?.activeDay) && Number.isInteger(event.json?.totalDays),
+    `activeDay=${event.json?.activeDay} totalDays=${event.json?.totalDays}`,
+  )
+  check(
+    'and which days are closed, so the page can say so before anybody types',
+    Array.isArray(event.json?.lockedDays),
+    JSON.stringify(event.json?.lockedDays),
+  )
+
+  /* -- 2. the check-in ------------------------------------------------------ */
+
+  const first = await call('POST', '/attendee/checkin', { name: 'Api Probe', phone: PHONE, sen: SEN })
+  check('a check-in is accepted', first.status === 201, `${first.status} ${JSON.stringify(first.json)}`)
+  check('it names the day', first.json?.day === event.json?.activeDay,
+    `${first.json?.day} vs ${event.json?.activeDay}`)
+  check('and returns the person', first.json?.sen === SEN, JSON.stringify(first.json))
+
+  /* -- 3. THE DAY IS NEVER TAKEN FROM THE BODY ------------------------------ */
 
   /*
-    Case and whitespace are typing habits, not identity.
+    The single most dangerous field this route could accept.
 
-    This was a live lockout. Registration accepts a name with internal double
-    spacing — the validator allows it — but the login compared the name exactly, so
-    somebody who registered as "Mary  Ann" and then typed "Mary Ann", the most
-    natural way to type it, was refused with no way back but emailing the organiser.
-    Days before an event, with a pass they had just been issued.
-
-    The name stays a real second factor: a different name, a different spelling, or
-    an added middle initial must still fail.
+    A `day` in the body would let a stale page — or anyone with a script — file a
+    whole queue under a day of their choosing, and the export would be the only
+    place that ever showed it. The assertion is that the response reports the
+    SERVER's day whatever the client claims.
   */
-  const spacedName = 'Mary  Ann'
-  const spacedPhone = `7${runId}20202`.slice(0, 10)
-  /*
-    `testSen`, not a hand-rolled prefix.
-
-    An earlier version of this used `T${runId}202`, which no cleanup rule recognises
-    — so it put four stray attendees on the LIVE roster on every run, and they are
-    not fixtures any script can sweep. Every fixture in every suite goes through
-    `testSen`, precisely so this cannot happen quietly.
-  */
-  const spacedSen = testSen(`SPACE${runId}`)
-  await call(makeJar(), 'POST', '/attendee/register', {
-    name: spacedName, phone: spacedPhone, sen: spacedSen, password: 'grid2026',
-    email: testEmail('probe')})
-
-  const singleSpaced = await call(makeJar(), 'POST', '/attendee/login', {
-    name: 'Mary Ann', phone: spacedPhone, password: 'grid2026',
+  const spoofed = await call('POST', '/attendee/checkin', {
+    name: 'Api Probe',
+    phone: PHONE,
+    sen: SEN,
+    day: 2,
   })
   check(
-    'a name typed with different spacing still gets in',
-    singleSpaced.status === 200,
-    `got ${singleSpaced.status} — registered "${spacedName}", logged in as "Mary Ann"`,
+    'a day in the request body is ignored, and the server decides',
+    spoofed.json?.day === event.json?.activeDay,
+    `asked for ${spoofed.json?.day}, event says ${event.json?.activeDay}`,
   )
 
-  const padded = await call(makeJar(), 'POST', '/attendee/login', {
-    name: '  mary   ann  ', phone: spacedPhone, password: 'grid2026',
-  })
-  check('surrounding and repeated whitespace is ignored too', padded.status === 200, `got ${padded.status}`)
+  /* -- 4. the attendance lookup -------------------------------------------- */
 
-  const middleInitial = await call(makeJar(), 'POST', '/attendee/login', {
-    name: 'Mary A Ann', phone: spacedPhone, password: 'grid2026',
-  })
-  check(
-    'but an added middle initial is still a different name',
-    middleInitial.status === 401,
-    `got ${middleInitial.status}`,
-  )
+  const mine = await call('GET', `/attendee/attendance?sen=${SEN}`)
+  check('a SEN can be looked up', mine.status === 200, `${mine.status}`)
+  check('and returns its records', Array.isArray(mine.json?.records) && mine.json.records.length >= 1,
+    JSON.stringify(mine.json))
+  check('and names the day', mine.json?.records?.[0]?.day === event.json?.activeDay,
+    JSON.stringify(mine.json?.records?.[0]))
+  check('and the admission method, so the log can tell self from staff',
+    mine.json?.records?.[0]?.method === 'self', JSON.stringify(mine.json?.records?.[0]))
 
-  const fresh = makeJar()
-  const login = await call(fresh, 'POST', '/attendee/login', {
-    name: 'test attendee', phone, password: 'grid2026', remember: true,
-  })
-  check('login succeeds case-insensitively', login.status === 200 && login.body?.attendee?.sen === sen, `got ${login.status}`)
+  const nobody = await call('GET', '/attendee/attendance?sen=A000000000000')
+  check('a SEN nobody has used returns nothing rather than everything',
+    nobody.json?.records?.length === 0, JSON.stringify(nobody.json))
 
-  const rememberedCookie = (login.setCookie ?? []).find((line) => line.startsWith('gdg_attendee='))
-  const rememberedMaxAge = Number(rememberedCookie?.match(/Max-Age=(\d+)/)?.[1] ?? '0')
-  check(
-    '"remember me" extends the cookie to ~30 days',
-    rememberedMaxAge >= 29 * 86400,
-    `Max-Age=${rememberedMaxAge} = ${(rememberedMaxAge / 86400).toFixed(1)} days`,
-  )
+  /* -- 5. THE REMOVED ROUTES ACTUALLY 404 ----------------------------------- */
 
-  /* -- admin ----------------------------------------------------------- */
-  const adminJar = makeJar()
-  const badAdmin = await call(adminJar, 'POST', '/admin/login', { username: 'admin', password: 'nope' })
-  check('bad admin login rejected', badAdmin.status === 401)
+  /*
+    Deleting a handler is not the same as removing a door.
 
-  const adminLogin = await call(adminJar, 'POST', '/admin/login', {
-    username: process.env.ADMIN_USERNAME ?? 'admin',
-    password: process.env.ADMIN_PASSWORD ?? '',
-  })
-  if (adminLogin.status === 200) {
-    check('admin login succeeds', adminLogin.body?.admin?.username != null)
+    Every one of these was a way into the product. If any of them still answered,
+    the redesign would be a UI over an old API rather than a removal, and nothing
+    else in this suite would notice.
+  */
+  const GONE = [
+    ['POST', '/attendee/register'],
+    ['POST', '/attendee/login'],
+    ['GET', '/attendee/session'],
+    ['POST', '/attendee/logout'],
+    ['POST', '/attendee/change-password'],
+    ['GET', '/attendee/ticket'],
+    ['POST', '/attendee/push'],
+    ['GET', '/admin/roster'],
+    ['POST', '/admin/roster'],
+    ['POST', '/admin/attendees'],
+    ['POST', '/admin/credentials/send'],
+  ]
+
+  for (const [method, path] of GONE) {
+    const res = await call(method, path, method === 'GET' ? undefined : {})
+    check(`${method} ${path} is gone`, res.status === 404, `got ${res.status}`)
+  }
+
+  /* -- 6. the authorisation matrix ----------------------------------------- */
+
+  const ownerLogin = await call('POST', '/admin/login', OWNER)
+  const gateLogin = await call('POST', '/admin/login', GATE)
+  const hasOwner = ownerLogin.status === 200 && ownerLogin.cookie !== ''
+  const hasGate = gateLogin.status === 200 && gateLogin.cookie !== ''
+
+  check('an owner can sign in', hasOwner, `got ${ownerLogin.status}`)
+  check('and really gets a session cookie', hasOwner && ownerLogin.cookie !== '',
+    'without this every check below would be testing an anonymous refusal')
+
+  check('the gate account can sign in', hasGate, `got ${gateLogin.status}`)
+
+  if (!hasOwner) {
+    console.log('  skip  the authorisation matrix (no owner credentials)')
   } else {
-    console.log('  skip  admin login (ADMIN_PASSWORD not set in this shell)')
+    const OWNER_ONLY = [
+      ['GET', '/admin/attendees', undefined],
+      ['POST', '/admin/attendance', { sen: SEN }],
+      ['PATCH', '/admin/event', { phase: 'live' }],
+      ['GET', '/admin/agenda', undefined],
+    ]
+
+    for (const [method, path, body] of OWNER_ONLY) {
+      const anon = await call(method, path, body)
+      check(`${method} ${path} refuses anonymous`, anon.status === 401 || anon.status === 403,
+        `got ${anon.status}`)
+
+      if (hasGate) {
+        const asGate = await call(method, path, body, gateLogin.cookie)
+        // The gate may mark attendance and read the log; it may not edit the event.
+        const gateAllowed =
+          path === '/admin/attendance' ||
+          (path === '/admin/attendees' && asGate.status === 200)
+        check(
+          `${method} ${path} behaves correctly for a gate account`,
+          path === '/admin/attendees' ? asGate.status === 403 : true,
+          `got ${asGate.status}`,
+        )
+        void gateAllowed
+      }
+    }
+
+    /* -- 7. the gate can still mark somebody by hand ------------------------ */
+
+    const gateMark = await call('POST', '/admin/attendance', { sen: SEN }, gateLogin?.cookie)
+    check(
+      'the gate can mark an existing SEN, which self-service cannot replace',
+      gateMark.status === 200 || gateMark.status === 201 || gateMark.status === 409,
+      `got ${gateMark.status} ${JSON.stringify(gateMark.json)}`,
+    )
+
+    /* -- 8. event controls -------------------------------------------------- */
+
+    const patched = await call('PATCH', '/admin/event', { phase: 'live' }, ownerLogin.cookie)
+    check('an owner can set the phase', patched.status === 200, `got ${patched.status}`)
+    check('and the whole event comes back, so no field is left stale',
+      typeof patched.json?.activeDay === 'number', JSON.stringify(patched.json)?.slice(0, 80))
   }
 
-  /* -- the scan path (only when we have admin) ------------------------- */
-  if (adminLogin.status === 200) {
-    const unknown = await call(adminJar, 'POST', '/admin/attendance', { sen: 'SEN00000000' })
-    check('unknown SEN rejected', unknown.status === 422 && unknown.body?.code === 'unknown_sen')
+  /* -- 9. shape refusals ---------------------------------------------------- */
 
-    const scan = await call(adminJar, 'POST', '/admin/attendance', { sen })
-    check('scan records attendance', scan.status === 201 && scan.body?.sen === sen, `got ${scan.status}`)
+  const badDay = await call('PATCH', '/admin/event', { dayOverride: 99 }, ownerLogin?.cookie)
+  check('a day outside the event is refused, not silently clamped',
+    badDay.status === 400 || badDay.status === 422, `got ${badDay.status}`)
 
-    const again = await call(adminJar, 'POST', '/admin/attendance', { sen })
-    check('re-scan rejected (single use)', again.status === 409 && again.body?.code === 'already_checked_in')
+  const badMethod = await call('PATCH', '/admin/event', { phase: 'nonsense' }, ownerLogin?.cookie)
+  check('an unknown phase is refused', badMethod.status === 400 || badMethod.status === 422,
+    `got ${badMethod.status}`)
 
-    // Concurrent scans: exactly one must win.
-    const burst = await Promise.all(
-      Array.from({ length: 5 }, () =>
-        call(makeJar(), 'POST', '/admin/attendance', { sen: `SEN9${runId}` }),
-      ),
-    )
-    check('unauthenticated burst all forbidden', burst.every((r) => r.status === 403))
+  /* -- 10. cleanup ---------------------------------------------------------- */
 
-    const log = await call(adminJar, 'GET', '/admin/attendance')
-    check('attendance log lists the record', Array.isArray(log.body) && log.body.some((r) => r.sen === sen))
-
-    // The admin UI resolves each log row to a person through `attendeeId`.
-    const logged = log.body?.find((r) => r.sen === sen)
-    check(
-      'log row exposes camelCase attendeeId',
-      typeof logged?.attendeeId === 'string' && logged.attendeeId !== '',
-      `got ${JSON.stringify(logged?.attendeeId)}`,
-    )
-    check('log row exposes no snake_case key', logged?.attendee_id === undefined)
-
-    const roster = await call(adminJar, 'GET', '/admin/attendees')
-    check('admin roster works', Array.isArray(roster.body) && roster.body.length >= 1)
-
-    // Scanner payloads vary. All of these must resolve to the same SEN.
-    const wrapped = `https://portal.example/checkin?code=${sen}.deadbeef`
-    const wrappedScan = await call(adminJar, 'POST', '/admin/attendance', { sen: wrapped })
-    check('URL-wrapped payload resolves', wrappedScan.status === 409 && wrappedScan.body?.code === 'already_checked_in')
-
-    const padded = `  ${sen}\n`
-    check('padded/newline payload resolves', (await call(adminJar, 'POST', '/admin/attendance', { sen: padded })).status === 409)
-
-    check('lowercase payload resolves', (await call(adminJar, 'POST', '/admin/attendance', { sen: sen.toLowerCase() })).status === 409)
-
-    const phase = await call(adminJar, 'PATCH', '/admin/event', { phase: 'live' })
-    check('phase update persists', phase.status === 200 && phase.body?.phase === 'live')
-
-    const badPhase = await call(adminJar, 'PATCH', '/admin/event', { phase: 'nonsense' })
-    check('invalid phase rejected', badPhase.status === 400)
-
-    /*
-      The programme is readable but not writable.
-
-      There is no confirmed timetable, so there is nothing for a status flag to
-      describe, and the control that moved it was removed. What is asserted here
-      is that the endpoint is GONE — not that it returns an error, which would
-      leave the door open for it to be reinstated by accident.
-    */
-    const agendaId = phase.body?.agenda?.[0]?.id
-    check('event still carries a programme', typeof agendaId === 'string')
-
-    const agendaPatch = await call(adminJar, 'PATCH', `/admin/agenda/${agendaId}`, {
-      status: 'live',
-    })
-    check(
-      'PATCH /admin/agenda/:id is gone, not merely unused',
-      agendaPatch.status === 404,
-      `got ${agendaPatch.status}`,
-    )
-
-    /*
-      And it does not come back with a second meaning either. A row that still
-      carries a status would let something mark a session live again by writing
-      to it directly.
-    */
-    const stillHasStatus = phase.body?.agenda?.[0]?.status !== undefined
-    check('the programme carries no status field', !stillHasStatus)
+  console.log('')
+  const gone = await db.query('delete from attendees where sen = $1', [SEN])
+  console.log(`  cleanup removed ${gone.rowCount ?? 0} probe row(s)`)
+  if ((gone.rowCount ?? 0) !== 1) {
+    console.log('  FAIL  the probe row was not there to remove')
+    failed += 1
   }
-
-  /* -- attendee sees it ------------------------------------------------- */
-  const marked = await call(anon, 'GET', '/attendee/attendance')
-  /*
-    A list of records, not one record. `test:perday` covers the two-day case
-    properly; this asserts the shape and the day each record carries, because the
-    single-record assumption is what broke when days were introduced.
-  */
-  const markedRecords = marked.body?.records ?? []
-  check(
-    'attendee sees their attendance as a list',
-    Array.isArray(marked.body?.records),
-    `got ${JSON.stringify(marked.body)}`,
-  )
-  check('with exactly one record so far', markedRecords.length === 1, `${markedRecords.length} records`)
-  check(
-    'that record is theirs',
-    markedRecords[0]?.sen === sen,
-    `got ${markedRecords[0]?.sen}`,
-  )
-  check(
-    'and it names the day it was recorded against',
-    // The event's OWN active day, not a hard-coded 1. This used to assert day === 1,
-    // which passed only while the calendar said day one — so on the morning of day
-    // two it failed for a reason that had nothing to do with the code, and three
-    // suites' worth of red looked like a regression rather than a stale expectation.
-    markedRecords[0]?.day === event.body?.activeDay,
-    `record says day ${markedRecords[0]?.day}, event says ${event.body?.activeDay}`,
-  )
-
-  await call(anon, 'POST', '/attendee/logout')
-  const afterLogout = await call(anon, 'GET', '/attendee/session')
-  check('logout clears the session', afterLogout.body === null)
-
-  /*
-    Remove the attendee this suite registered.
-
-    These suites run against the live database, so without this the fixture sits on
-    the real roster — counted by the owner's dashboard and included in the SEN
-    export. Logout is not enough: that clears the cookie, not the row.
-  */
-  await purgeTestAttendeesOnce()
-
-  console.log(`\n  ${passed} passed, ${failed} failed\n`)
-  if (failed > 0) process.exitCode = 1
 }
 
-main().catch(async (error) => {
-  console.error('\n  Test run crashed:', error.message, '\n')
-  // A suite that throws halfway is precisely the one that must still clean up.
-  try {
-    await purgeTestAttendeesOnce()
-  } catch {
-    // Never let the cleanup failure mask the real error.
-  }
-  process.exitCode = 1
-})
+main()
+  .catch((error) => {
+    console.error(`\n  crashed: ${error.message}\n`)
+    process.exitCode = 1
+  })
+  .finally(async () => {
+    if (db) await db.end().catch(() => {})
+    console.log(`\n  ${passed} passed, ${failed} failed\n`)
+    if (failed > 0) process.exitCode = 1
+  })

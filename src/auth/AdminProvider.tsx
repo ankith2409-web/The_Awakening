@@ -5,7 +5,6 @@ import type {
   Attendee,
   CheckIn,
   EventInfo,
-  RegistrationMode,
 } from '@/domain/types'
 import { AdminContext, type AdminContextValue } from './contexts'
 import { LIVE_POLL_MS, eventChanged } from './liveEvent'
@@ -272,38 +271,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  /**
-   * Sets an attendee's password, on behalf of the attendee.
-   *
-   * This replaces an unauthenticated self-service reset that was the most
-   * serious weakness the portal had: knowing a phone number was enough to take
-   * over that account and present its pass. Requiring an admin session is the
-   * whole fix, so this deliberately has no rate limiter — an attacker who
-   * cannot authenticate cannot reach the route, and a counter in front of an
-   * authenticated door would only slow down legitimate desk staff.
-   *
-   * Resolves to the attendee, or `null` on failure. `null` is what the panel
-   * keys off to keep the form open; the reason itself goes to the banner.
-   */
-  const setAttendeePassword = useCallback(
-    async (sen: string, password: string) => {
-      setError(null)
-      writeSeq.current += 1
-      try {
-        const result = await portalApi.adminSetAttendeePassword({ sen, password })
-        return { name: result.attendee.name, sen: result.attendee.sen }
-      } catch (cause) {
-        setError(
-          cause instanceof PortalError
-            ? { code: cause.code, message: cause.message }
-            : { code: 'unknown', message: PORTAL_ERROR_MESSAGES.unknown },
-        )
-        return null
-      }
-    },
-    [],
-  )
-
   /*
     Programme edits do not surface a banner.
 
@@ -344,21 +311,6 @@ export function AdminProvider({ children }: { children: ReactNode }) {
     [toError],
   )
 
-  const setRegistrationMode = useCallback(
-    async (mode: RegistrationMode) => {
-      setError(null)
-      writeSeq.current += 1
-      try {
-        // Whole `EventInfo` back, so the switch, the guest list panel and the
-        // registration form all reflect the change from one response.
-        setEvent(await portalApi.setRegistrationMode(mode))
-      } catch (cause) {
-        toError(cause)
-      }
-    },
-    [toError],
-  )
-
   const setLockedDays = useCallback(
     async (days: readonly number[]) => {
       setError(null)
@@ -392,11 +344,9 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       logout,
       refresh,
       scanAttendance,
-      setAttendeePassword,
       setEventPhase,
       updateEventDay,
       setLockedDays,
-      setRegistrationMode,
       clearError,
       clearLastScan,
     }),
@@ -414,11 +364,9 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       logout,
       refresh,
       scanAttendance,
-      setAttendeePassword,
       setEventPhase,
       updateEventDay,
       setLockedDays,
-      setRegistrationMode,
       clearError,
       clearLastScan,
     ],

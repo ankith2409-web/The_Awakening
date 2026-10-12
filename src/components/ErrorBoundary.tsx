@@ -100,22 +100,20 @@ export class ErrorBoundary extends Component<Props, State> {
             </button>
 
             {/*
-              Two exits, because there are two separate doors in this app and a
-              failure in one must not lock somebody out of the other. Someone whose
-              attendee pass failed to render still has to be able to reach the
-              registration desk.
+              TWO exits, because there are still two doors and a failure in one
+              must not lock somebody out of the other.
+
+              One used to be "Attendee log in", pointing at `/login`. There is no
+              sign-in any more — the attendee page needs no session — so that link
+              was the first thing a person clicked when handed the wrong URL and it
+              took them to a dead end to find that out. The two doors are now the
+              check-in and the staff login, which is what the two doors are.
             */}
             <Link
               to="/"
               className="inline-flex h-14 items-center border-2 border-swiss-ink bg-swiss-paper px-6 text-xs font-bold uppercase tracking-[0.2em] text-swiss-ink transition-colors duration-150 ease-linear hover:bg-swiss-ink hover:text-swiss-paper focus:outline-2 focus:outline-offset-2 focus:outline-swiss-accent-text"
             >
-              Home
-            </Link>
-            <Link
-              to="/login"
-              className="inline-flex h-14 items-center border-2 border-swiss-ink bg-swiss-paper px-6 text-xs font-bold uppercase tracking-[0.2em] text-swiss-ink transition-colors duration-150 ease-linear hover:bg-swiss-ink hover:text-swiss-paper focus:outline-2 focus:outline-offset-2 focus:outline-swiss-accent-text"
-            >
-              Attendee log in
+              Check in
             </Link>
             <Link
               to="/admin"

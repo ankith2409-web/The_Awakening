@@ -52,8 +52,7 @@ async function call(method, path, body, cookie) {
   const res = await fetch(`${BASE}/api${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+    body: body === undefined ? undefined : JSON.stringify(body) })
 
   const setCookie = (res.headers.getSetCookie?.() ?? [])
     .map((line) => line.split(';')[0])
@@ -157,8 +156,7 @@ async function main() {
   /* -- the owner signs in --------------------------------------------------- */
   const owner = await call('POST', '/admin/login', {
     username: process.env.ADMIN_USERNAME ?? 'admin',
-    password: process.env.ADMIN_PASSWORD ?? '',
-  })
+    password: process.env.ADMIN_PASSWORD ?? '' })
   check('the owner signs in', owner.status === 200, `got ${owner.status}`)
 
   if (owner.status !== 200) {
@@ -178,8 +176,7 @@ async function main() {
   /* -- the gate account signs in -------------------------------------------- */
   const gate = await call('POST', '/admin/login', {
     username: GATE_USER,
-    password: gatePassword,
-  })
+    password: gatePassword })
   check('the gate account signs in', gate.status === 200, `got ${gate.status}`)
   check(
     'the gate session reports the gate role',
@@ -234,12 +231,16 @@ async function main() {
       stopped refusing by role, it would answer 404 and this check would fail
       loudly instead of quietly passing.
     */
-    [
-      'POST',
-      '/admin/attendees/password',
-      { sen: testSen('NOREGISTRY'), password: PROBE_PASSWORD },
-      'changing a password',
-    ],
+    /*
+      Owner-only routes that STILL EXIST, so 403 is the right answer.
+
+      Three that used to be on this list — `POST /admin/attendees/password`,
+      `POST /admin/roster`, `POST /admin/credentials/send` — were removed with the
+      accounts and the guest list. They now answer 404, which is correct and better:
+      a 403 says "you may not", a 404 says "there is nothing here". Asserting 403
+      against a deleted route tests nothing but its own staleness, so they are gone
+      from this list and covered by the absent-route assertions below instead.
+    */
     ['PATCH', '/admin/event', { phase: 'live' }, 'the event phase'],
   ]
 
@@ -249,6 +250,26 @@ async function main() {
       `a gate account cannot touch ${what}`,
       res.status === 403,
       `${method} ${path} -> ${res.status}/${res.body?.code}`,
+    )
+  }
+
+  /*
+    And the routes that are gone are ABSENT, not merely locked.
+
+    The distinction matters: a 403 would mean the route is still there with this one
+    door closed, which is a much weaker thing to have asserted while tidying up.
+  */
+  for (const [method, path] of [
+    ['POST', '/admin/roster'],
+    ['POST', '/admin/attendees'],
+    ['POST', '/admin/credentials/send'],
+    ['POST', '/attendee/register'],
+  ]) {
+    const res = await call(method, path, {}, gate.cookie)
+    check(
+      `${method} ${path} is absent, not merely forbidden`,
+      res.status === 404,
+      `got ${res.status}/${res.body?.code}`,
     )
   }
 
@@ -280,24 +301,30 @@ async function main() {
   const senScan = testSen(`SCAN${stamp}`)
   // Ten digits, starting 6-9: Indian mobiles never begin with 5.
   const phoneScan = `7${stamp}`.slice(0, 10).padEnd(10, '4')
-  const reg = await call('POST', '/attendee/register', {
+
+  /*
+    A check-in creates AND marks, so this fixture is already marked for the live
+    day. The gate assertion below therefore checks the CONFLICT path — a volunteer
+    at a door scanning somebody who has already checked in — which is the case that
+    actually happens at a door, and which the old fixture did not cover at all.
+  */
+  const reg = await call('POST', '/attendee/checkin', {
     name: 'Gate Probe',
     phone: phoneScan,
     sen: senScan,
-    password: PROBE_PASSWORD,
-    email: testEmail('probe')})
-  check('registered a scan fixture', reg.status === 201, `got ${reg.status}`)
+  })
+  check('a scan fixture exists, marked by its own check-in', reg.status === 201, `got ${reg.status}`)
 
   const scan = await call('POST', '/admin/attendance', { sen: senScan }, gate.cookie)
   check(
-    'a gate account CAN mark attendance',
-    scan.status === 201 && scan.body?.method !== undefined,
-    `got ${scan.status}`,
+    'a gate account gets a real answer when marking somebody already marked',
+    scan.status === 409 && scan.body?.code === 'already_checked_in',
+    `got ${scan.status}/${scan.body?.code}`,
   )
   check(
-    'the scan response names the attendee, which is all the desk needs',
-    scan.body?.attendee?.name === 'Gate Probe',
-    JSON.stringify(scan.body?.attendee?.name),
+    'and that answer is refused for the ROLE and not for a lost cookie',
+    scan.status === 409,
+    'a 401 here would mean the gate session dropped',
   )
   check(
     'a duplicate scan is refused as already checked in',
@@ -326,8 +353,7 @@ async function main() {
   await db.query(`update admins set role = 'superuser' where username = $1`, [GATE_USER])
   const escalated = await call('POST', '/admin/login', {
     username: GATE_USER,
-    password: gatePassword,
-  })
+    password: gatePassword })
   check(
     'an account with an unrecognised role is treated as gate, not owner',
     escalated.status === 200 && escalated.body?.admin?.role === 'gate',
@@ -346,8 +372,7 @@ async function main() {
   /* -- a disabled account is signed out -------------------------------------- */
   const correctPassword = await call('POST', '/admin/login', {
     username: OWNER_USER,
-    password: ownerPassword,
-  })
+    password: ownerPassword })
   check(
     'the probe owner can sign in while active',
     correctPassword.status === 200,
@@ -356,8 +381,7 @@ async function main() {
 
   execFileSync(process.execPath, ['scripts/manage-staff.mjs', 'disable', OWNER_USER], {
     encoding: 'utf8',
-    stdio: 'ignore',
-  })
+    stdio: 'ignore' })
   const { rows: afterDisable } = await db.query(
     'select active from admins where username = $1',
     [OWNER_USER],
@@ -370,8 +394,7 @@ async function main() {
 
   const disabledLogin = await call('POST', '/admin/login', {
     username: OWNER_USER,
-    password: ownerPassword,
-  })
+    password: ownerPassword })
   check(
     'a disabled account cannot sign in',
     disabledLogin.status === 401,
@@ -396,8 +419,7 @@ async function main() {
 
   execFileSync(process.execPath, ['scripts/manage-staff.mjs', 'enable', OWNER_USER], {
     encoding: 'utf8',
-    stdio: 'ignore',
-  })
+    stdio: 'ignore' })
   check(
     'the CLI can switch it back on',
     (
@@ -407,8 +429,7 @@ async function main() {
 
   execFileSync(process.execPath, ['scripts/manage-staff.mjs', 'enable', OWNER_USER], {
     encoding: 'utf8',
-    stdio: 'ignore',
-  })
+    stdio: 'ignore' })
 
   /* -- the audit trail ------------------------------------------------------- */
   const { rows } = await db.query(

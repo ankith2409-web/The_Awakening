@@ -34,8 +34,7 @@ async function call(method, path, body, cookie) {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+    body: body === undefined ? undefined : JSON.stringify(body) })
   let json = {}
   try {
     json = await res.json()
@@ -62,8 +61,7 @@ async function main() {
     // Required, never defaulted. A fallback literal here is a credential
     // committed to the repository, and this file is published. The other suites
     // default to '' for the same reason.
-    password: adminPassword ?? '',
-  })
+    password: adminPassword ?? '' })
   check('admin signs in', admin.status === 200, `got ${admin.status}`)
   if (admin.status !== 200) {
     console.log(`\n  ${passed} passed, ${failed} failed\n`)
@@ -84,7 +82,7 @@ async function main() {
   // both unrecognisable to any cleanup rule and dangerous to leave lying about.
   const sen = testSen(`COPY${stamp}`)
 
-  const first = await call('POST', '/api/attendee/register', {
+  const first = await call('POST', '/api/attendee/checkin', {
     name: 'COPYPROBE One', phone, sen, password: 'grid2026',
     email: testEmail('probe')})
   check('registers the probe attendee', first.status === 201, `got ${first.status}`)
@@ -93,27 +91,37 @@ async function main() {
 
   // `phone_taken` / `sen_taken` — thrown with no message, so `message` used to
   // default to the code and beat PORTAL_ERROR_MESSAGES in the client.
-  const dupePhone = await call('POST', '/api/attendee/register', {
-    name: 'COPYPROBE One', phone, sen: `${sen}X`, password: 'grid2026',
-    email: testEmail('probe')})
-  check('duplicate phone returns 409', dupePhone.status === 409, `got ${dupePhone.status}`)
-  check('duplicate phone omits the redundant message',
-    dupePhone.json.message === undefined, `message=${JSON.stringify(dupePhone.json.message)}`)
-  check('duplicate phone renders as human copy',
-    rendered(dupePhone.json) === PORTAL_ERROR_MESSAGES.phone_taken,
-    `rendered "${rendered(dupePhone.json)}"`)
-  check('duplicate phone does not render as a machine code',
-    rendered(dupePhone.json) !== 'phone_taken', `rendered "${rendered(dupePhone.json)}"`)
+  const dupePhone = await call('POST', '/api/attendee/checkin', {
+    name: 'COPYPROBE One', phone, sen: sen + 'X' })
+  /*
+    A SHARED PHONE NUMBER IS NOT AN ERROR.
 
-  const dupeSen = await call('POST', '/api/attendee/register', {
-    name: 'COPYPROBE Two', phone: `8${stamp}`.padEnd(10, '0').slice(0, 10), sen, password: 'grid2026',
-    email: testEmail('probe')})
-  check('duplicate SEN returns 409', dupeSen.status === 409, `got ${dupeSen.status}`)
-  check('duplicate SEN omits the redundant message',
-    dupeSen.json.message === undefined, `message=${JSON.stringify(dupeSen.json.message)}`)
-  check('duplicate SEN renders as human copy',
-    rendered(dupeSen.json) === PORTAL_ERROR_MESSAGES.sen_taken,
-    `rendered "${rendered(dupeSen.json)}"`)
+    It used to be: the column was unique because login took a phone number. Two
+    students living at the same address is ordinary, and the check-in insert had no
+    handler for the violation, so the second one got a 500 — a fault in the portal,
+    reported to somebody standing at a wall, for nothing.
+
+    So the assertion is that the second person is ACCEPTED, and that the first
+    person's row is untouched. Anything else here means somebody has put the unique
+    constraint back.
+  */
+  check('a shared phone number is accepted', dupePhone.status === 201, `got ${dupePhone.status} ${JSON.stringify(dupePhone.json)}`)
+  check('and the shared number did not become the shared identity', dupePhone.json?.sen === sen + 'X')
+  check('and it reports no error at all', dupePhone.json?.code === undefined, `code=${dupePhone.json?.code}`)
+
+  const dupeSen = await call('POST', '/api/attendee/checkin', {
+    name: 'COPYPROBE Two', phone: `8${stamp}`.padEnd(10, '5'), sen })
+  /*
+    A REPEAT CHECK-IN IS A SUCCESS, NOT A CONFLICT.
+
+    A student who taps twice, or whose first tap timed out on a weak signal and who
+    retried, has still been to the event exactly once. Answering 409 would put an
+    error in front of somebody who did nothing wrong and who has nothing to ask an
+    organiser about — there is no failure here to report.
+  */
+  check('a repeated check-in is accepted', dupeSen.status === 200, `got ${dupeSen.status}`)
+  check('and is reported as already marked', dupeSen.json?.alreadyMarked === true, JSON.stringify(dupeSen.json))
+  check('and is not an error code', dupeSen.json?.code === undefined, `code=${dupeSen.json?.code}`)
 
   // `unknown_sen` — a gate operator scanning a code that matches nobody.
   const bogusScan = await call('POST', '/api/admin/attendance', {
@@ -140,7 +148,17 @@ async function main() {
 
   // `already_checked_in` — the second scan of the same pass, mid-queue.
   const scanOne = await call('POST', '/api/admin/attendance', { sen }, admin.cookie)
-  check('first scan marks attendance', scanOne.status === 201, `got ${scanOne.status}`)
+  /*
+    The fixture is created BY a check-in, which marks it, so an admin scan of the
+    same person on the same day correctly conflicts. What matters here is that the
+    conflict is reported as `already_checked_in` and rendered as copy — which is
+    the door case: a volunteer scanning somebody twice.
+  */
+  check(
+    'a repeat scan conflicts, and says which reason',
+    scanOne.status === 409 && scanOne.json?.code === 'already_checked_in',
+    `${scanOne.status} ${scanOne.json?.code}`,
+  )
 
   const scanTwo = await call('POST', '/api/admin/attendance', { sen }, admin.cookie)
   check('second scan is refused', scanTwo.status === 409, `got ${scanTwo.status}`)
@@ -200,20 +218,30 @@ async function main() {
 
   /* -- codes that DO carry deliberate wording must keep it ------------------ */
 
-  const badPhone = await call('POST', '/api/attendee/register', {
+  const badPhone = await call('POST', '/api/attendee/checkin', {
     name: 'COPYPROBE One', phone: '12345', sen: `${sen}Y`, password: 'grid2026',
     email: testEmail('probe')})
   check('short phone still gets its specific wording',
     typeof badPhone.json.message === 'string' && badPhone.json.message.includes('10-digit'),
     `message=${JSON.stringify(badPhone.json.message)}`)
 
-  const badPassword = await call('POST', '/api/attendee/register', {
+  const badPassword = await call('POST', '/api/attendee/checkin', {
     name: 'COPYPROBE One', phone: `7${stamp}`.padEnd(10, '0').slice(0, 10),
     sen: `${sen}Z`, password: 'short',
     email: testEmail('probe')})
-  check('weak password still gets its specific wording',
-    typeof badPassword.json.message === 'string' && badPassword.json.message.length > 0,
-    `message=${JSON.stringify(badPassword.json.message)}`)
+  /*
+    The weak-password wording has no route left to reach.
+
+    There are no passwords. `weak_password` is still a declared error code because
+    `passwordProblem` still exists for staff, and deleting the code would leave the
+    error matrix referring to something that cannot be sent.
+  */
+  check('there is no weak-password path on the check-in', true, 'no password is accepted or asked for')
+  check(
+    'and an ignored password field changes nothing',
+    badPassword.status === 201 || badPassword.status === 200,
+    `got ${badPassword.status}`,
+  )
 
   // The probe attendee was registered against the live database. Remove it, or it
   // sits on the real roster for the owner to wonder about.

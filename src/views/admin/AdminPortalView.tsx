@@ -3,17 +3,12 @@ import { useAdmin, type AdminContextValue } from '@/auth/contexts'
 import { stagger } from '@/lib/motion'
 import { normaliseSen } from '@/domain/phone'
 import { downloadAttendanceCsv } from '@/lib/exportAttendance'
-import { BarcodeScanner } from '@/components/BarcodeScanner'
 import { Button } from '@/components/Button'
 import { Alert, SectionLabel } from '@/components/Typography'
 import { EventMark } from '@/components/EventMark'
 import { Skeleton } from '@/components/Skeleton'
 import { AttendeeDirectory } from './AttendeeDirectory'
-import { GuestListPanel } from './GuestListPanel'
-import { RegistrationSwitch } from './RegistrationSwitch'
-import { AnnouncementPanel } from './AnnouncementPanel'
-import { CredentialPanel } from './CredentialPanel'
-import { AddAttendeePanel } from './AddAttendeePanel'
+import { MarkByHandPanel } from './MarkByHandPanel'
 import type { AdmissionMethod, AgendaItem, EventPhase } from '@/domain/types'
 
 /**
@@ -30,11 +25,20 @@ import type { AdmissionMethod, AgendaItem, EventPhase } from '@/domain/types'
 const ADMISSION_LABEL: Record<AdmissionMethod, string> = {
   qr: 'QR · verified',
   printed: 'Typed SEN',
+  self: 'Self check-in',
 }
 
 const ADMISSION_HINT: Record<AdmissionMethod, string> = {
   qr: 'Scanned pass whose signature verified against the server key.',
-  printed: 'Bare SEN with no signature — typed by staff or read from a printed barcode.',
+  printed: 'Bare SEN with no signature — typed by staff at the door.',
+  /*
+    Said plainly, because it is the honest answer and a softer label would be a
+    lie. Nobody verified this: the attendee typed their own details. An organiser
+    reading the log afterwards needs to be able to tell a day that was self-served
+    from a day that was staffed, because that is the only thing this column
+    distinguishes.
+  */
+  self: 'Nobody verified this — the attendee scanned the wall QR and typed their own details.',
 }
 
 /*
@@ -98,7 +102,6 @@ export function AdminPortalView() {
     setEventPhase,
     updateEventDay,
     setLockedDays,
-    setRegistrationMode,
     clearError,
     clearLastScan,
   } = useAdmin()
@@ -363,42 +366,26 @@ export function AdminPortalView() {
             ) : null}
 
             {/*
-              People: everything about who may register and who has, in one place.
+              People: who has checked in, and one way to add somebody by hand.
 
-              The registration switch first, because it is the answer to "can
-              somebody still sign up?" and it is the thing most likely to need
-              changing on the day. Then the two ways to change it, then the list it
-              reads, then the people already on the roster.
+              This tab used to hold the registration switch, the guest-list upload
+              and the "send everyone their credentials" panel. All three went with
+              the accounts they were about: there is no registration to open or
+              close, no list to gate, and no password to issue.
+
+              What is left is the register and the one thing self-service cannot
+              cover — a student whose phone is dead, or whose name they cannot
+              type, standing in front of an organiser with the door open.
             */}
             {activeTab === 'people' ? (
               <div className="flex flex-col gap-6">
-                <RegistrationSwitch
-                  event={event}
-                  rosterCount={event?.rosterCount ?? 0}
-                  onChanged={(mode) => void setRegistrationMode(mode)}
-                />
+                <MarkByHandPanel onMarked={() => void refresh()} />
 
                 {/*
-                  Stacked on a phone, side by side from `lg`.
-
-                  Two panels of form controls side by side on a 360px screen gives
-                  each one about 150px, which is narrower than a single full name
-                  field and turns both into a scrolling chore.
+                  No width is set on a wrapper here any more, because there is only
+                  one panel. The `min-w-0` dance the two-column grid needed was a
+                  workaround for two forms sharing a 360px screen.
                 */}
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <AddAttendeePanel onAdded={() => void refresh()} />
-                  <GuestListPanel
-                    mode={event?.registrationMode ?? 'open'}
-                    rosterCount={event?.rosterCount ?? 0}
-                    onModeChange={(mode) => void setRegistrationMode(mode)}
-                  />
-                </div>
-                {/*
-                  No width is set here on purpose. Both children carry `min-w-0`
-                  themselves, which is what actually lets them shrink — a constraint
-                  here would only paper over the intrinsic width of the file input.
-                */}
-
                 <AttendeeDirectory />
               </div>
             ) : null}
@@ -420,17 +407,7 @@ export function AdminPortalView() {
                   one. `gate` never sees it and the server refuses it independently,
                   so this is presentation, not the control.
                 */}
-                <AnnouncementPanel />
 
-                {/*
-                  Credentials, here for the same reason announcements are: an
-                  event-wide action with an owner-only audience. Not on People,
-                  because it acts on everybody rather than on one person, and
-                  because the People tab is a searchable roster where a button
-                  that changes four hundred accounts would be easy to press by
-                  accident.
-                */}
-                <CredentialPanel />
               </>
             ) : null}
           </div>
@@ -885,16 +862,17 @@ function ScanPanel({
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-6 p-6 lg:flex-row">
-        {/* Camera first: it is what staff will actually use at the gate. */}
-        <div className="lg:w-1/2">
-          <BarcodeScanner
-            onDetect={(text) => void record(text, 'camera')}
-            disabled={scanning || activeDayLocked}
-          />
-        </div>
+      <div className="flex flex-col gap-6 p-6">
+        {/*
+          No camera.
 
-        <div className="flex flex-col gap-4 lg:w-1/2">
+          The scanner existed to read a QR off a phone. There are no passes any
+          more, so a camera pointed at the door has nothing to read but students'
+          lock screens — and the gate tablet opening the camera on every load is
+          both a permission prompt and a battery cost for a feature that cannot
+          succeed. The typed field below does the whole job.
+        */}
+        <div className="flex flex-col gap-4">
           {lastScan ? <ScanConfirmation scan={lastScan} onDismiss={onDismissScan} /> : null}
 
           <p className="text-2xs font-bold uppercase tracking-[0.2em] text-content-muted">

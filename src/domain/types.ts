@@ -323,7 +323,21 @@ export interface TeamMember {
  * correcting a mistake is done by a fresh scan after voiding out of band.
  */
 /** How a scan at the gate was authenticated. */
-export type AdmissionMethod = 'qr' | 'printed'
+/**
+ * How somebody was marked in.
+ *
+ *   'qr'      — a scanned pass whose signature verified. No pass is issued any
+ *               more, so this is historical.
+ *   'printed' — a bare SEN typed by a volunteer at the door.
+ *   'self'    — the attendee scanned the wall QR and typed their own details.
+ *
+ * 'self' is its own value rather than being filed under 'printed' because the two
+ * mean opposite things about trust: 'printed' is somebody ELSE vouching for the
+ * SEN, and 'self' is nobody vouching for anybody. Filing them together would make
+ * a day taken entirely by self check-in indistinguishable from one a volunteer
+ * staffed, which is the only distinction an organiser reviewing the log has.
+ */
+export type AdmissionMethod = 'qr' | 'printed' | 'self'
 
 export interface CheckIn {
   readonly id: string
@@ -385,6 +399,33 @@ export interface RosterState {
   readonly count: number
   readonly uploadedAt: string | null
   readonly sample: readonly { sen: string; name: string }[]
+}
+
+/**
+ * What one check-in did.
+ *
+ * `alreadyMarked` is a success with an explanation, not a failure, and the UI is
+ * built around that: somebody who tapped twice, or whose first tap timed out on a
+ * bad connection and who retried, has still been to the event exactly once.
+ *
+ * `name` is the name ON FILE, which is not always the name just typed. A returning
+ * student whose spelling changed keeps the name they first registered under, and
+ * the box says "we have you as ..." rather than silently keeping a typo or letting
+ * anyone rewrite anyone's name knowing a SEN.
+ */
+export interface CheckInOutcome {
+  readonly ok: true
+  readonly alreadyMarked: boolean
+  readonly firstTime: boolean
+  readonly name: string
+  readonly sen: string
+  readonly day: number
+  readonly at: string | null
+  readonly dayState: {
+    readonly activeDay: number
+    readonly totalDays: number
+    readonly overridden: boolean
+  }
 }
 
 /** What an upload did, including what it refused and why. */

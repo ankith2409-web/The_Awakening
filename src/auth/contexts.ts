@@ -3,77 +3,36 @@ import type {
   AdmissionMethod,
   AdminUser,
   Attendee,
-  AttendeeRegistration,
   CheckIn,
   EventInfo,
-  MyAttendance,
   PortalErrorCode,
-  RegistrationMode,
-  Ticket,
 } from '@/domain/types'
+
 export type SessionStatus = 'initialising' | 'active' | 'anonymous'
+
 export interface ErrorState {
   readonly code: PortalErrorCode
   readonly message: string
 }
-export interface AttendeeContextValue {
-  readonly status: SessionStatus
-  readonly attendee: Attendee | null
-  readonly event: EventInfo | null
-  /**
-   * The attendee's own attendance, one record per day they were marked.
-   *
-   * Null when not signed in, or before the first load. An attendee with no records
-   * still gets an object — with an empty `records` array and `totalDays` — so the
-   * dashboard can render "not marked yet" per day rather than treating "no
-   * record" and "no day count" as the same thing.
-   */
-  readonly attendance: MyAttendance | null
-  readonly ticket: Ticket | null
-  readonly loadingData: boolean
-  readonly error: ErrorState | null
-  login: (name: string, phone: string, password: string, remember: boolean) => Promise<void>
-  /**
-   * Creates the account and returns the password the portal generated.
-   *
-   * No password argument: the attendee does not choose one. See
-   * `AttendeeRegistration` for why it comes back rather than being kept here.
-   *
-   * `email` IS an argument, because the portal shows that password exactly once,
-   * on screen. Without an address there is no second copy, so somebody who closes
-   * the tab has no way back to their own registration short of the desk.
-   */
-  register: (
-    name: string,
-    phone: string,
-    sen: string,
-    email: string,
-  ) => Promise<AttendeeRegistration>
-  /**
-   * Ends the read-back step and sends the attendee to their pass.
-   *
-   * The view calls this once the generated password has been confirmed, or once the
-   * attendee has declined to change it. Deliberately separate from `register` so a
-   * route guard cannot redirect to the dashboard before the password has been read
-   * back — that would show it exactly never.
-   */
-  completeRegistration: () => void
-  logout: () => Promise<void>
-  clearError: () => void
-}
-export const AttendeeContext = createContext<AttendeeContextValue | null>(null)
-export function useAttendee(): AttendeeContextValue {
-  const context = useContext(AttendeeContext)
-  if (context === null) {
-    throw new Error('useAttendee must be used inside <AttendeeProvider>.')
-  }
-  return context
-}
+
+/*
+  There is no attendee context any more.
+
+  It held a session, an account, a ticket and that person's attendance — every one
+  of which required an account, and there are none. The check-in page talks to
+  `portalApi` directly, because there is no session to inherit and nothing to keep
+  in sync.
+
+  Deleting it rather than emptying it is the point: an empty attendee context would
+  be a context whose values are always null, which is a thing to read past rather
+  than a thing that tells you the feature is gone.
+*/
+
 export interface AdminContextValue {
   readonly status: SessionStatus
   readonly admin: AdminUser | null
   /**
-   * The attendee roster. EMPTY for a `gate` account.
+   * Everyone who has checked in. EMPTY for a `gate` account.
    *
    * Not hidden — never fetched. `GET /admin/attendees` returns every name, phone
    * and SEN, so the provider does not call it unless the signed-in admin is an
@@ -92,11 +51,11 @@ export interface AdminContextValue {
    *
    * A record rather than a formatted string: the panel shows the name, the SEN
    * and the admission method as separate fields, because a gate operator reads
-   * the name back to the attendee and the method is the audit answer to "was
-   * this a verified pass or a number someone typed".
+   * the name back to the attendee and the method is the audit answer to "was this
+   * a verified pass or a number someone typed".
    *
-   * Cleared when the next scan begins, so a stale name is never on screen
-   * beside the person now standing there.
+   * Cleared when the next scan begins, so a stale name is never on screen beside
+   * the person now standing there.
    */
   readonly lastScan: {
     readonly name: string
@@ -118,9 +77,10 @@ export interface AdminContextValue {
   logout: () => Promise<void>
   refresh: () => Promise<void>
   /**
-   * Records attendance from a scanned SEN. Resolves to the created record, or
-   * `null` if the code was rejected — it does not throw, because this runs on
-   * every scan and the gate must stay usable.
+   * Records attendance from a scanned SEN at the door.
+   *
+   * Resolves to the created record, or `null` if it was rejected — it does not
+   * throw, because this runs on every scan and the gate must stay usable.
    */
   scanAttendance: (
     sen: string,
@@ -132,44 +92,23 @@ export interface AdminContextValue {
     day: number
     totalDays: number
   } | null>
-  /**
-   * Sets an attendee's password. The only password-change path in the portal.
-   *
-   * Resolves to the attendee it acted on, or `null` if the change was refused
-   * (unregistered SEN, weak password, lost admin session). It does not throw,
-   * matching `scanAttendance` — the desk panel wants to stay usable and render
-   * the outcome inline rather than unmount.
-   *
-   * Takes the SEN, not a phone number or a name. The SEN is printed on the
-   * badge, it is already the gate's identifier, and unlike a name it is not
-   * shared between two people on the roster.
-   */
-  setAttendeePassword: (
-    sen: string,
-    password: string,
-  ) => Promise<{ name: string; sen: string } | null>
   setEventPhase: (phase: EventInfo['phase']) => Promise<void>
-  /**
-   * Opens, restricts or closes registration.
-   *
-   * Lives beside the other event-level switches rather than inside whichever panel
-   * draws them, so the People tab and the Event tab cannot disagree about whether
-   * registration is open.
-   */
-  setRegistrationMode: (mode: RegistrationMode) => Promise<void>
   /**
    * Pins the day attendance is recorded against, or clears the pin.
    *
-   * `null` returns to following the calendar, which is the state this belongs in
-   * between events. A number is for exercising the day-two path before it
-   * arrives, or for a schedule that has slipped.
+   * This is the control that decides what a self check-in marks. `null` returns
+   * to following the calendar, which is the state this belongs in between events.
+   * A number is for opening day two on the morning, or for a schedule that has
+   * slipped.
    */
   updateEventDay: (day: number | null) => Promise<void>
   /**
    * Replaces the set of days attendance is closed for.
    *
-   * Takes the final set, not a toggle, so a retry cannot unlock a day the operator
-   * meant to keep closed.
+   * Takes the final set, not a toggle, so a retry cannot reopen a day the
+   * operator meant to keep shut. A closed day refuses new check-ins before
+   * anything is written, so this takes effect immediately rather than from the
+   * next request onwards.
    */
   setLockedDays: (days: readonly number[]) => Promise<void>
   /** Clears the current error banner. */
@@ -183,7 +122,9 @@ export interface AdminContextValue {
    */
   clearLastScan: () => void
 }
+
 export const AdminContext = createContext<AdminContextValue | null>(null)
+
 export function useAdmin(): AdminContextValue {
   const context = useContext(AdminContext)
   if (context === null) {

@@ -3,29 +3,13 @@ import {
   type AdminLoginInput,
   type AdminSession,
   type Attendee,
-  type AttendeeLoginInput,
-  type AttendeeRegisterInput,
-  type AttendeeRegistration,
-  type AttendeeSession,
-  type BroadcastResult,
-  type CredentialSendResult,
   type CheckIn,
+  type CheckInOutcome,
   type DayState,
   type EventInfo,
-  type MyAttendance,
   type PortalErrorCode,
-  type PushState,
-  type PushSubscriptionPayload,
-  type Ticket,
 } from '@/domain/types'
 import type { PortalApi } from '@/domain/portal-api'
-import type {
-  RegistrationMode,
-  RosterRows,
-  RosterState,
-  RosterUploadResult,
-} from '@/domain/types'
-
 /**
  * Real HTTP implementation.
  *
@@ -65,55 +49,6 @@ export class HttpPortalApi implements PortalApi {
   static readonly #PROBE_TIMEOUT_MS = 8_000
   static readonly #REQUEST_TIMEOUT_MS = 20_000
 
-  /* ------------------------------------------------------------ attendee */
-
-  async getAttendeeSession(): Promise<AttendeeSession | null> {
-    return this.#request<AttendeeSession | null>(
-      'GET',
-      '/attendee/session',
-      undefined,
-      HttpPortalApi.#PROBE_TIMEOUT_MS,
-    )
-  }
-
-  attendeeLogin(input: AttendeeLoginInput): Promise<AttendeeSession> {
-    return this.#request('POST', '/attendee/login', {
-      name: input.name,
-      phone: input.phone,
-      password: input.password,
-      remember: input.remember,
-    })
-  }
-
-  attendeeRegister(input: AttendeeRegisterInput): Promise<AttendeeRegistration> {
-    // No password field. The portal generates one and returns it once.
-    return this.#request('POST', '/attendee/register', {
-      name: input.name,
-      phone: input.phone,
-      // Required. Attendance is keyed on SEN, so omitting it fails the request
-      // outright — and the in-memory mock tolerated the omission, so this only
-      // surfaced against the real database.
-      sen: input.sen,
-      // Required. It is how the credentials are delivered — the portal shows the
-      // password once, on screen, and cannot show it again.
-      email: input.email,
-    })
-  }
-
-  async verifyAttendeePassword(password: string): Promise<{ matches: boolean }> {
-    return this.#request('POST', '/attendee/verify-password', { password })
-  }
-
-  async changeOwnPassword(input: {
-    currentPassword: string
-    newPassword: string
-  }): Promise<{ ok: true }> {
-    return this.#request('POST', '/attendee/change-password', input)
-  }
-
-  attendeeLogout(): Promise<void> {
-    return this.#request('POST', '/attendee/logout')
-  }
 
   /* --------------------------------------------------------------- admin */
 
@@ -134,25 +69,41 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('POST', '/admin/logout')
   }
 
-  adminSetAttendeePassword(input: { sen: string; password: string }) {
-    return this.#request<{
-      attendee: { id: string; name: string; sen: string }
-      sessionsRevoked: boolean
-    }>('POST', '/admin/attendees/password', input)
-  }
-
   /* ---------------------------------------------------------- programme */
 
   getEvent(): Promise<EventInfo> {
     return this.#request('GET', '/event')
   }
 
-  getTicket(): Promise<Ticket> {
-    return this.#request('GET', '/attendee/ticket')
+  /*
+    Check in. No cookie is sent and none is expected back.
+
+    The page this is called from has never had a session and never will, so a
+    request that quietly carried one would be relying on a credential that does
+    not exist to work. It is the plainest POST in the client, which is the right
+    shape for the plainest action in the product.
+
+    No day is sent, and that is not an omission. The server resolves which day is
+    live, because a `day` in the body would let a stale page file a whole queue
+    under a heading of its own choosing.
+  */
+  checkIn(input: { name: string; phone: string; sen: string }): Promise<CheckInOutcome> {
+    return this.#request('POST', '/attendee/checkin', input)
   }
 
-  getMyAttendance(): Promise<MyAttendance | null> {
-    return this.#request('GET', '/attendee/attendance')
+  getAttendanceForSen(sen: string): Promise<readonly CheckIn[]> {
+    /*
+      The SEN goes in the query string, not the body.
+
+      A GET is the right verb for a read, and a GET has no body by specification —
+      putting it in one works on this server and works nowhere else. Encoded
+      rather than interpolated raw, because a SEN from the URL is untrusted input
+      and `&` in it would otherwise read as another parameter.
+    */
+    return this.#request<{ records: CheckIn[] }>(
+      'GET',
+      '/attendee/attendance?sen=' + encodeURIComponent(sen),
+    ).then((body) => body.records)
   }
 
   /**
@@ -179,31 +130,6 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('GET', '/admin/attendance')
   }
 
-  /* --------------------------------------------------------------- push */
-
-  getPushKey(): Promise<{ configured: boolean; publicKey: string | null }> {
-    return this.#request('GET', '/push/key')
-  }
-
-  async subscribeToPush(subscription: PushSubscriptionPayload): Promise<void> {
-    await this.#request('POST', '/attendee/push', subscription)
-  }
-
-  async unsubscribeFromPush(endpoint: string): Promise<void> {
-    await this.#request('POST', '/attendee/push/unsubscribe', { endpoint })
-  }
-
-  getPushState(): Promise<PushState> {
-    return this.#request('GET', '/admin/push')
-  }
-
-  adminBroadcast(input: { title: string; body: string }): Promise<BroadcastResult> {
-    return this.#request('POST', '/admin/push/send', input)
-  }
-
-  sendCredentials(): Promise<CredentialSendResult> {
-    return this.#request('POST', '/admin/credentials/send', {})
-  }
 
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
     return this.#request('PATCH', '/admin/event', { phase })
@@ -217,28 +143,6 @@ export class HttpPortalApi implements PortalApi {
     return this.#request('PATCH', '/admin/event', { lockedDays })
   }
 
-  async setRegistrationMode(mode: RegistrationMode): Promise<EventInfo> {
-    return this.#request('PATCH', '/admin/event', { registrationMode: mode })
-  }
-
-  async createAttendee(input: {
-    name: string
-    phone: string
-    sen: string
-    password: string
-  }): Promise<Attendee> {
-    const body = await this.#request<{ attendee: Attendee }>('POST', '/admin/attendees', input)
-    return body.attendee
-  }
-
-  async getRoster(): Promise<RosterState> {
-    return this.#request('GET', '/admin/roster')
-  }
-
-  listRosterRows(): Promise<RosterRows> {
-    return this.#request('GET', '/admin/roster/rows')
-  }
-
   /*
     The rows are POSTed as structured JSON rather than the file being uploaded.
 
@@ -246,17 +150,6 @@ export class HttpPortalApi implements PortalApi {
     has to understand CSV or xlsx — which is the whole reason there is no spreadsheet
     library on the server. And the server then validates every row with the same
     functions registration uses, so a client that skipped the checks gains nothing.
-  */
-  async uploadRoster(
-    rows: readonly { name: string; sen: string; email?: string | null }[],
-    mode: RegistrationMode,
-  ): Promise<RosterUploadResult> {
-    return this.#request('POST', '/admin/roster', { rows, registrationMode: mode })
-  }
-
-  async clearRoster(): Promise<RosterState> {
-    return this.#request('DELETE', '/admin/roster')
-  }
 
   /* --------------------------------------------------------- transport */
 

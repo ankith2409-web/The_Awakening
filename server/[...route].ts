@@ -253,6 +253,18 @@ async function route(
           On a phone collision the SEN wins. Two students sharing a household number
           is a real thing, and refusing the second would be a rule about a field
           nothing downstream depends on: the door and the export both read the SEN.
+
+          AND THAT IS WHY THE PHONE IS NOT UNIQUE ANY MORE.
+
+          It used to be, because login took a phone number. Two students sharing a
+          household number is a real thing, and the old constraint refused the second
+          of them — over a column that indexed an identifier nothing reads now.
+
+          Left in place it was worse than useless. The check-in insert has no handler
+          for the violation, so a shared number produced a 500: a fault in the portal,
+          reported to a student standing at a wall, for something entirely ordinary.
+          Two students living together is not an attack, and refusing the second one
+          would lock out a real person over a field nothing depends on.
         */
         const existing = await db().query<{ id: string; name: string }>(
           'select id, name from attendees where sen = $1',
@@ -264,7 +276,10 @@ async function route(
 
         if (attendeeId === undefined) {
           const created = await db().query<{ id: string }>(
-            "insert into attendees (name, phone, sen, email, password_hash) values ($1, $2, $3, null, null) on conflict (sen) do update set name = excluded.name returning id",
+            `insert into attendees (name, phone, sen, email, password_hash)
+             values ($1, $2, $3, null, null)
+             on conflict (sen) do update set name = excluded.name
+             returning id`,
             [name, phone, sen],
           )
           attendeeId = created.rows[0].id
