@@ -4,21 +4,16 @@ import {
   createSession,
   currentSession,
   destroySession,
-  hashPassword,
   purgeExpiredSessions,
-  revokeOtherSessions,
   verifyPassword,
 } from './_lib/auth.ts'
 import {
   ApiError,
   badRequest,
   conflict,
-  field,
   forbidden,
-  isTrue,
   json,
   notFound,
-  optionalString,
   readJson,
   requireString,
   unauthorized,
@@ -26,40 +21,26 @@ import {
 } from './_lib/http.ts'
 import {
   isValidSen,
-  nameKey,
   nameProblem,
   normalisePhone,
   normaliseSen,
-  passwordProblem,
   phoneProblem,
 } from './_lib/identifiers.ts'
-import { emailProblem, isValidEmail, normaliseEmail } from './_lib/email.ts'
-import { mailConfigured, sendMail } from './_lib/mail.ts'
-import { credentialsHtml, credentialsSubject, credentialsText } from './_lib/credentialsEmail.ts'
-import { readTicket, signSen } from './_lib/ticket.ts'
-import { generatePassword } from './_lib/password.ts'
 import { resolveEventDay, isDayLocked } from './_lib/eventDay.ts'
+/*
+  Still needed, and only for the gate.
+
+  No pass is issued any more — there are no accounts — so `readTicket` will never
+  see a signature again and always takes its bare-SEN fallback. That is exactly
+  what the admin attendance route needs: a volunteer at the door typing a SEN
+  somebody cannot scan for, which is the whole reason that route still exists.
+*/
+import { readTicket } from './_lib/ticket.ts'
 // Only the reset-attempt ledger purge survives; the limiter itself went with the
 // endpoint it protected. See `_lib/reset.ts`.
 import { purgeOldResetAttempts } from './_lib/reset.ts'
-import {
-  broadcast,
-  latestAnnouncement,
-  pushConfigured,
-  recordAnnouncement,
-  removeSubscription,
-  saveSubscription,
-  subscriptionCount,
-  vapidPublicKey,
-} from './_lib/push.ts'
+import { latestAnnouncement, pushConfigured, vapidPublicKey } from './_lib/push.ts'
 
-/**
- * The whole API as one serverless function.
- *
- * A single function rather than fifteen: fewer cold starts, and the whole
- * request surface stays readable in one place. Vercel routes `/api/*` here via
- * the `[...route]` catch-all.
- */
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse,
@@ -108,16 +89,6 @@ export default async function handler(
 
 /* ------------------------------------------------------------------ router */
 
-/**
- * Derives the route from the raw request URL.
- *
- * Deliberately does not rely on `req.query`. The `@vercel/node` types and the
- * legacy `api/` directory populate it, but a Build Output API function is
- * handed a plain Node request with no `query` at all — depending on it fails
- * at runtime with "Cannot read properties of undefined" on every endpoint.
- * The URL is the one source that is always present, and it also survives
- * percent-encoding intact via `decodeURIComponent`.
- */
 function routeSegments(req: VercelRequest): string[] {
   const raw = req.url ?? ''
   // `url` may be absolute (proxy-style) or path-only; both are handled by
@@ -158,123 +129,11 @@ const publicAttendee = (row: AttendeeRow) => ({
   createdAt: row.created_at,
 })
 
-/**
- * Everything the credentials email needs, read once per send.
- *
- * A function rather than constants because the values come from the database and
- * a hard-coded portal URL would send 480 people to the wrong host the moment a
- * preview deployment ran this.
- */
-async function credentialContext(): Promise<{
-  portalUrl: string
-  supportEmail: string
-  eventName: string
-  eventDates: string
-  venue: string
-}> {
-  const configured = process.env.PORTAL_URL?.trim() || 'https://the-awakening-portal.vercel.app'
-  const { rows } = await db().query(
-    `select name, date::text as starts, end_date::text as ends, venue, city
-       from events order by date desc limit 1`,
-  )
-  const event = rows[0] as
-    | { name: string; starts: string; ends: string; venue: string; city: string }
-    | undefined
-
-  const start = event?.starts ?? ''
-  const end = event?.ends ?? ''
-
-  return {
-    portalUrl: configured,
-    supportEmail: process.env.CONTACT_EMAIL?.trim() || 'gdgtechnicalteam@gmail.com',
-    eventName: event?.name ?? 'THE AWAKENING',
-    eventDates:
-      start && end
-        ? `${formatDay(start)}–${formatDay(end)} ${start.slice(0, 4)}`
-        : start
-          ? formatDay(start)
-          : '',
-    // The venue alone. The email says where to go, not where the city is.
-    venue: event?.venue ?? '',
-  }
-}
-
-const MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
-
-/** `2026-10-13` -> `13 October`. No Date object: that would shift by timezone. */
-function formatDay(iso: string): string {
-  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
-  if (!parts) return iso
-  const month = MONTHS[Number(parts[2]) - 1]
-  return month ? `${Number(parts[3])} ${month}` : iso
-}
-
 export type EmailOutcome = 'sent' | 'not_set' | 'failed' | 'no_address'
 
-/**
- * Sends one attendee their own credentials.
- *
- * Returns an OUTCOME rather than throwing, and never takes a password as part of
- * an error message. A registration must not fail because an inbox rejected a
- * message, and a failed send must not print the credential that failed to send.
- */
-async function deliverCredentials(input: {
-  to: string | null
-  name: string
-  phone: string
-  sen: string
-  password: string
-}): Promise<EmailOutcome> {
-  if (input.to === null || input.to.trim() === '') return 'no_address'
-  if (!mailConfigured()) return 'not_set'
-
-  const context = await credentialContext()
-  const result = await sendMail({
-    to: input.to,
-    subject: credentialsSubject(input.name),
-    text: credentialsText({ ...input, ...context }),
-    html: credentialsHtml({ ...input, ...context }),
-    replyTo: context.supportEmail,
-  })
-
-  if (!result.ok) return 'failed'
-
-  await db().query('update attendees set credentials_sent_at = now() where email = $1 and sen = $2', [
-    input.to,
-    input.sen,
-  ])
-
-  return 'sent'
-}
-
-/**
- * Staff access levels.
- *
- * `owner` runs the event: the roster, credentials, the programme. `gate` is a
- * volunteer with a phone at the door: mark attendance, read the log.
- * Nothing in the codebase may widen a `gate` session.
- *
- * There is exactly one `gate` credential, shared by whoever is on the door. It is
- * provisioned by `scripts/manage-staff.mjs`, not through the API — there used to
- * be a Staff panel for this and it was removed, because managing one shared
- * account is not worth a settings screen, and every route it needed was attack
- * surface for no benefit.
- */
 const ADMIN_ROLES = ['owner', 'gate'] as const
 type AdminRole = (typeof ADMIN_ROLES)[number]
 
-/**
- * Coerces whatever came out of the database into a known role.
- *
- * The column has a CHECK constraint, so the database cannot store a third value.
- * This exists because the default arm is not paranoia about the CHECK — it is
- * that an unrecognised role must fail CLOSED. A new value silently treated as
- * `owner` would be a privilege escalation, and this function is what decides
- * that, so it defaults to the narrower door.
- */
 function adminRole(value: unknown): AdminRole {
   return value === 'gate' ? 'gate' : ADMIN_ROLES.includes(value as AdminRole) ? 'owner' : 'gate'
 }
@@ -331,433 +190,149 @@ async function route(
 
   /* -- attendee --------------------------------------------------------- */
   if (group === 'attendee') {
-    const session = await currentSession(req, 'attendee')
-    const requireSession = () => {
-      if (!session) throw unauthorized('Please sign in again.')
-      return session.subject_id
-    }
+    /*
+      No session, and none is needed.
 
+      There is nothing to hold a session FOR. An account needs one to prove whose
+      attendance it is asking about; a check-in has nothing to prove, and the answer
+      comes back in the body.
+
+      The old code ran 'currentSession' on every request in this group whether or not
+      a route used it, and every route that did use it is gone.
+    */
     switch (key) {
-      case 'GET /attendee/session': {
-        if (!session) return json(res, 200, null)
-        const { rows } = await db().query<AttendeeRow>(
-          'select id, name, phone, sen, password_hash, created_at from attendees where id = $1',
-          [session.subject_id],
-        )
-        const row = rows[0]
-        if (!row) return json(res, 200, null)
-        return json(res, 200, { attendee: publicAttendee(row) })
-      }
+      /*
+        CHECK IN. This is the whole attendee side.
 
-      case 'POST /attendee/login': {
+        A name, a phone and a SEN, and the day is recorded. No account, no password,
+        no session, no pass.
+
+        THE DAY IS RESOLVED SERVER-SIDE, NEVER FROM THE BODY. A 'day' field would let
+        a stale page file a whole queue under any heading it liked, and the export
+        would be the only place that ever showed it.
+
+        A LOCKED DAY REFUSES BEFORE ANY WRITE, so closing attendance is instant and
+        total rather than "from the next request onwards". Checked before the lookup
+        because when an organiser closes a day they mean it — including for somebody
+        already at the box with the form open, whose only correct answer is "it is
+        closed" rather than a database error about a SEN that is not on file.
+      */
+      case 'POST /attendee/checkin': {
         const body = await readJson<Record<string, unknown>>(req)
-        const name = requireString(body, 'name').trim()
-        const phone = normalisePhone(requireString(body, 'phone'))
-        const password = requireString(body, 'password')
 
-        const { rows } = await db().query<AttendeeRow>(
-          'select id, name, phone, sen, password_hash, created_at from attendees where phone = $1',
-          [phone],
-        )
-        const row = rows[0]
-
-        // One message for every failure, so the endpoint cannot be used to
-        // discover which phone numbers are registered.
-        //
-        // Compared on `nameKey`, not raw. Case and spacing are typing habits, not
-        // identity: somebody who registered as "Mary  Ann" and then typed "Mary Ann"
-        // was locked out of their own pass with no way back but emailing the
-        // organiser. A different name, a different spelling, or an added middle
-        // initial still fails, so the name remains a real second factor.
-        const nameMatches = row !== undefined && nameKey(row.name) === nameKey(name)
-
-        if (!nameMatches || !(await verifyPassword(password, row.password_hash))) {
-          throw unauthorized('Those credentials do not match our records.')
-        }
-
-        await createSession(res, 'attendee', row.id, isTrue(body.remember))
-        return json(res, 200, { attendee: publicAttendee(row) })
-      }
-
-      case 'POST /attendee/register': {
-        const body = await readJson<Record<string, unknown>>(req)
         const name = requireString(body, 'name').trim()
         const phone = normalisePhone(requireString(body, 'phone'))
         const sen = normaliseSen(requireString(body, 'sen'))
 
-        /*
-          Email, required from here on.
-
-          New registrations need one because it is now how the credentials are
-          delivered — the portal shows the password once, on screen, and cannot
-          show it again. Without an address, somebody who closes the tab has no
-          way back to their own registration.
-
-          The thirteen people registered before this column existed keep a null,
-          and are reported as "no email on file" by the owner's resend button
-          rather than being given a placeholder that would look deliverable and
-          silently bounce.
-        */
-        const email = normaliseEmail(requireString(body, 'email'))
-
-        /*
-          The password is the PORTAL'S to choose.
-
-          Registration used to ask the attendee for one and then make them type it
-          again, on a phone, at a desk, in a queue — where a single mistyped character
-          locked them out of their own pass with no way back but finding an organiser.
-          The generated one is handed over on screen and read back, which takes the
-          typing error off the critical path entirely. The attendee can replace it
-          immediately afterwards if they would rather have their own.
-
-          `password` is still accepted, and validated identically when present. That
-          is not a hole: a supplied password must still pass `passwordProblem` exactly
-          as a generated one does. It keeps the API usable by the test suites, which
-          have to register a known password in order to log back in with it. The
-          browser form never sends the field.
-        */
-        const supplied = optionalString(body, 'password')
-        const password = supplied ?? generatePassword()
-
         const phoneProblemMessage = phoneProblem(phone)
-        if (phoneProblemMessage !== null) {
-          throw unprocessable('unknown', phoneProblemMessage)
-        }
+        if (phoneProblemMessage !== null) throw unprocessable('unknown', phoneProblemMessage)
 
-        /*
-          The name was previously only checked for being a non-empty string, which
-          made the browser form the sole enforcement of a rule that the API is
-          supposed to own. Emoji, digits and a 200-character name all wrote straight
-          through.
-        */
         const nameProblemMessage = nameProblem(name)
-        if (nameProblemMessage !== null) {
-          throw unprocessable('unknown', nameProblemMessage)
-        }
-        const emailProblemMessage = emailProblem(email)
-        if (emailProblemMessage !== null) {
-          throw unprocessable('unknown', emailProblemMessage)
-        }
+        if (nameProblemMessage !== null) throw unprocessable('unknown', nameProblemMessage)
+
         if (!isValidSen(sen)) {
           throw unprocessable('unknown', 'Enter a valid SEN, e.g. A866175000012.')
         }
-        const problem = passwordProblem(password)
-        if (problem) throw unprocessable('weak_password', problem)
+
+        const dayState = await resolveEventDay()
+        const day = dayState.activeDay
+
+        if (isDayLocked(dayState, day)) {
+          throw conflict(
+            'day_locked',
+            'Attendance for day ' + day + ' is closed. Ask an organiser to reopen it.',
+          )
+        }
 
         /*
-          Who may register, and who may not.
+          One row per person, created on the first check-in.
 
-          Three modes rather than a boolean, because a boolean could only narrow.
-          `open` lets anyone through, `restricted` admits only SENs on the guest
-          list, and `closed` stops everyone — the state a portal is in once capacity
-          is reached, and the one an organiser most needs on the morning of the day.
+          The SEN is the only identifier here — there is no password to check against
+          — so it is the natural key and it carries the unique constraint.
 
-          Checked against the roster by SEN only. Matching on the uploaded NAME as
-          well would lock out real students over a spelling difference — and the
-          name on a college list is exactly the field that gets transcribed wrong.
-
-          Checked BEFORE the uniqueness probes, so somebody refused is told that
-          rather than being walked through "that phone number is already registered"
-          for a stranger's number.
-
-          The refusal says nothing about how long the list is or who is on it.
-          Anything more turns registration into an oracle for who is attending.
+          On a phone collision the SEN wins. Two students sharing a household number
+          is a real thing, and refusing the second would be a rule about a field
+          nothing downstream depends on: the door and the export both read the SEN.
         */
-        const { rows: gate } = await db().query<{
-          on_list: boolean
-          mode: 'open' | 'restricted' | 'closed'
-        }>(
-          `select exists (select 1 from event_roster where sen = $1) as on_list,
-                  coalesce(
-                    (select registration_mode from events order by date desc limit 1),
-                    'open'
-                  ) as mode`,
+        const existing = await db().query<{ id: string; name: string }>(
+          'select id, name from attendees where sen = $1',
           [sen],
         )
 
-        const mode = gate[0]?.mode ?? 'open'
-        if (mode === 'closed') throw unprocessable('registration_closed')
-        if (mode === 'restricted' && gate[0]?.on_list !== true) {
-          throw unprocessable('not_on_list')
+        let attendeeId = existing.rows[0]?.id
+        const recordedName = existing.rows[0]?.name ?? name
+
+        if (attendeeId === undefined) {
+          const created = await db().query<{ id: string }>(
+            "insert into attendees (name, phone, sen, email, password_hash) values ($1, $2, $3, null, null) on conflict (sen) do update set name = excluded.name returning id",
+            [name, phone, sen],
+          )
+          attendeeId = created.rows[0].id
         }
 
-        // Unique constraints on phone and sen are the real guard; this check
-        // only exists to return a specific error instead of a 500.
-        const clash = await db().query(
-          'select (select 1 from attendees where phone = $1) as phone_taken,' +
-            '       (select 1 from attendees where upper(sen) = $2) as sen_taken',
-          [phone, sen],
-        )
-        const taken = clash.rows[0] as { phone_taken: number | null; sen_taken: number | null }
-        if (taken.phone_taken) throw conflict('phone_taken')
-        if (taken.sen_taken) throw conflict('sen_taken')
-
-        const { rows } = await db().query<AttendeeRow>(
-          `insert into attendees (name, phone, sen, email, password_hash)
-           values ($1, $2, $3, $4, $5)
-           returning id, name, phone, sen, email, password_hash, created_at`,
-          [name, phone, sen, email, await hashPassword(password)],
-        )
-        const created = rows[0]
-        if (!created) throw unprocessable('unknown', 'Could not create the account.')
-
-        // Registration always keeps the attendee signed in, regardless of the
-        // "remember me" checkbox: they have just proved who they are and will
-        // need their QR pass again on the day, which may be weeks away. Signing
-        // them out when the browser closes would lose the pass.
-        await createSession(res, 'attendee', created.id, true)
+        if (attendeeId === undefined) {
+          throw unprocessable('unknown', 'Could not record that check-in. Try again.')
+        }
 
         /*
-          Send the credentials, then answer regardless of how it went.
+          The mark itself, on the same unique index the gate uses.
 
-          The ordering matters and is the point of the whole feature: the session is
-          created FIRST, so a mail service that is down cannot cost somebody their
-          registration. A person who registered and lost the response would have to
-          queue again, and on the day the queue is the problem.
+          'do nothing' returning nothing means "already marked for THIS day", and the
+          response says so rather than pretending a second mark landed. Somebody who
+          taps twice, or whose first tap timed out on a weak signal and who retried,
+          gets the same answer either way — which is right, because both times they
+          did attend.
 
-          The result is reported, never thrown. `emailed` is a tri-state so the
-          attendee can be told the truth:
-            'sent'      it went
-            'not_set'   this deployment has no mail service configured
-            'failed'    it was attempted and did not go — the screen still has it
-
-          The password is passed to the mailer and nowhere else. It is not logged,
-          not echoed in an error, and not stored in readable form; the database has
-          the bcrypt hash and nothing else.
+          'method' is 'self' rather than 'qr', so a day taken entirely by self
+          check-in is visibly a different kind of day from one the gate scanned.
         */
-        const emailed = await deliverCredentials({
-          to: created.email,
-          name: created.name,
-          phone: created.phone,
-          sen: created.sen,
-          password,
-        })
+        const marked = await db().query<{ id: string; at: string }>(
+          "insert into attendance (sen, attendee_id, method, day) values ($1, $2, 'self', $3) on conflict (attendee_id, day) do nothing returning id, at",
+          [sen, attendeeId, day],
+        )
 
-        /*
-          The generated password comes back ONCE, in this response, and is never
-          stored in a readable form — only the bcrypt hash exists. There is no
-          attendee-facing "resend my password" route, deliberately: it would turn the
-          portal into a credential oracle for anyone who knows a name and a phone
-          number. If the attendee loses it, the desk sets a new one.
-        */
-        return json(res, 201, {
-          attendee: publicAttendee(created),
-          emailed,
-          ...(supplied === null ? { generatedPassword: password } : {}),
+        const alreadyMarked = marked.rows.length === 0
+
+        return json(res, alreadyMarked ? 200 : 201, {
+          ok: true,
+          alreadyMarked,
+          firstTime: existing.rows.length === 0,
+          name: recordedName,
+          sen,
+          day,
+          at: marked.rows[0]?.at ?? null,
+          dayState: {
+            activeDay: dayState.activeDay,
+            totalDays: dayState.totalDays,
+            overridden: dayState.overridden,
+          },
         })
       }
 
       /*
-        Read-back: did the attendee transcribe their new password correctly?
+        Which days is this SEN marked for.
 
-        The form requires both boxes to match each other, which catches a typo in one
-        of them. It cannot catch a typo in BOTH — somebody who misread the generated
-        password and then faithfully typed the same wrong thing twice passes the client
-        check and cannot log in tomorrow. This compares against the stored hash, so
-        that case is caught here instead, while the password is still on their screen.
+        No session, so the caller names the SEN. That is a lookup rather than a
+        disclosure: a student already knows their own SEN, and a SEN that has never
+        been marked returns nothing at all, so the route cannot be used to find out
+        who is coming.
 
-        Answers `{ matches: false }` rather than erroring. A mismatch is the expected
-        outcome of a read-back, not a fault, and reusing `invalid_credentials` would
-        give it copy about "records" that is wrong in this context.
+        This exists for the awkward case. Somebody who tapped once on a bad connection
+        has no way to tell whether it landed, and with no account there is nowhere
+        else for them to look.
       */
-      case 'POST /attendee/verify-password': {
-        const id = requireSession()
-        const body = await readJson<Record<string, unknown>>(req)
-        const attempt = requireString(body, 'password')
-
-        const { rows } = await db().query<{ password_hash: string }>(
-          'select password_hash from attendees where id = $1',
-          [id],
-        )
-        const row = rows[0]
-        if (!row) throw notFound()
-
-        return json(res, 200, { matches: await verifyPassword(attempt, row.password_hash) })
-      }
-
-      /*
-        Change one's own password, immediately after registering.
-
-        Distinct from the admin-mediated reset on purpose. An attendee who has just
-        been handed a generated password is being offered a replacement on the same
-        screen, with the old one already in their hands — that is not the situation the
-        admin route exists for, which is somebody locked out entirely.
-
-        The current password is still required. The read-back above establishes that
-        they can reproduce it, but that check is one HTTP call and an attacker holding a
-        stolen session could skip straight to this one.
-
-        Other sessions are revoked, this one is NOT. Deleting them all would sign the
-        attendee out of the tab they are standing in, at the moment they have just
-        proved they know their password — which looks exactly like the portal logging
-        people out on their own.
-      */
-      case 'POST /attendee/change-password': {
-        const id = requireSession()
-        const body = await readJson<Record<string, unknown>>(req)
-        const current = requireString(body, 'currentPassword')
-        const next = requireString(body, 'newPassword')
-
-        const { rows } = await db().query<{ password_hash: string }>(
-          'select password_hash from attendees where id = $1',
-          [id],
-        )
-        const row = rows[0]
-        if (!row) throw notFound()
-
-        if (!(await verifyPassword(current, row.password_hash))) {
-          throw unauthorized('That is not your current password.')
-        }
-
-        // The same rule the registration form applies. A generated password already
-        // satisfies it; a hand-chosen replacement must earn it.
-        const problem = passwordProblem(next)
-        if (problem) throw unprocessable('weak_password', problem)
-
-        const client = await db().connect()
-        try {
-          await client.query('begin')
-          await client.query('update attendees set password_hash = $2 where id = $1', [
-            id,
-            await hashPassword(next),
-          ])
-          await revokeOtherSessions(req, 'attendee', id)
-          await client.query('commit')
-        } catch (cause) {
-          await client.query('rollback').catch(() => {})
-          throw cause
-        } finally {
-          client.release()
-        }
-
-        return json(res, 200, { ok: true })
-      }
-
-      case 'POST /attendee/logout': {
-        await destroySession(req, res, 'attendee')
-        return json(res, 200, { ok: true })
-      }
-
-      /*
-        Push.
-
-        One route and nothing more. There is deliberately no "send me a test
-        notification" and no per-device list: the only thing an attendee does with
-        this is turn it on, and every extra route is another thing that can be wrong
-        on the day.
-      */
-
-      case 'POST /attendee/push': {
-        // A session is required even though nothing personal is stored. Who may
-        // subscribe is a real question: this portal is for registered attendees, and
-        // an open endpoint would let anyone put the event's push channel on their
-        // own device without ever registering.
-        requireSession()
-
-        const body = await readJson<Record<string, unknown>>(req)
-        const endpoint = requireString(body, 'endpoint')
-        const keys = (body.keys ?? {}) as Record<string, unknown>
-        const p256dh = requireString(keys, 'p256dh')
-        const auth = requireString(keys, 'auth')
-
-        /*
-          Bounded hard.
-
-          These go into the database and are never rendered back to a human, so
-          nothing else would stop a very large body being written and then sent to
-          the push service on every broadcast. 512 bytes is generous for a real
-          subscription and small enough that abuse is pointless.
-        */
-        if (endpoint.length > 512 || p256dh.length > 256 || auth.length > 128) {
-          throw badRequest('invalid_subscription')
-        }
-
-        await saveSubscription({
-          endpoint,
-          keys: { p256dh, auth },
-          userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
-        })
-
-        return json(res, 200, { ok: true })
-      }
-
-      case 'POST /attendee/push/unsubscribe': {
-        requireSession()
-        const body = await readJson<Record<string, unknown>>(req)
-        const endpoint = requireString(body, 'endpoint')
-        const removed = await removeSubscription(endpoint)
-        // 200 either way. Whether we still had it is not something the browser can
-        // act on, and a 404 here would only ever be logged and ignored.
-        return json(res, 200, { ok: true, removed })
-      }
-
-      case 'GET /attendee/ticket': {
-        const id = requireSession()
-        const { rows } = await db().query<{ sen: string }>(
-          'select sen from attendees where id = $1',
-          [id],
-        )
-        const row = rows[0]
-        if (!row) throw notFound()
-        const code = signSen(row.sen)
-        return json(res, 200, { code, encoded: code })
-      }
-
       case 'GET /attendee/attendance': {
-        // Null rather than 401: the dashboard renders "not marked yet", and a
-        // session that expired mid-view should not turn into an error.
-        if (!session) return json(res, 200, null)
+        const requested = new URL(req.url ?? '', 'http://localhost').searchParams.get('sen')
+        const sen = requested === null ? '' : normaliseSen(requested)
+        if (!isValidSen(sen)) return json(res, 200, { records: [] })
 
         const { rows } = await db().query(
-          // Aliased to camelCase to match the `CheckIn` contract. The admin
-          // log resolves each row to a person via `attendeeId`, so leaving it
-          // snake_case renders every row without a name.
-          `select id, sen, attendee_id as "attendeeId", at, method, day
-             from attendance where attendee_id = $1 order by day`,
-          [session.subject_id],
+          'select id, sen, attendee_id as "attendeeId", at, method, day from attendance where upper(sen) = upper($1) order by day',
+          [sen],
         )
 
-        /*
-          Every record, not just the first.
-
-          This used to return a single row or null, which was correct while
-          attendance was once-in-a-lifetime. With a record per day, "the first one"
-          is a coin toss: somebody who came on day two would see day one's time,
-          and somebody who came on day one only would be told they are marked for
-          an event they have not attended yet.
-
-          RECORDS ONLY.
-
-          `activeDay`, `totalDays`, `overridden` and `lockedDays` used to ride along
-          here as well as on `GET /event`, and having them in both places is what made
-          the dashboard go stale. The attendance poll stops once this attendee is
-          marked for the day being scanned into — correctly, because a record is
-          append-only and immutable, so there is genuinely nothing further for it to
-          learn. But that same stop froze the duplicated day state too: an organiser
-          reopened Day 2, and every attendee who had already been marked on Day 1 kept
-          reading "Closed" on Day 2 until they reloaded by hand.
-
-          Day state now comes from `GET /event` and only from there. It is the same
-          public payload every visitor already loads, it is what the poll for it
-          always keeps current, and it is not sensitive: `lockedDays` is a set of day
-          numbers the public event payload already carries.
-        */
         return json(res, 200, { records: rows })
       }
-
-      /*
-        There is deliberately no self-service password reset.
-
-        One existed and was UNVERIFIED — no OTP, no email, no security question,
-        so knowing a phone number was enough to take over that account and
-        present its pass. It was the single most serious weakness in the portal,
-        and rate limiting was the only thing between it and a script walking the
-        roster. It was also under active probing in production.
-
-        Recovery is now admin-mediated: an attendee asks an organiser at the desk,
-        and `POST /admin/attendees/password` below sets a new one. That removes
-        the unauthenticated path entirely rather than tightening it.
-      */
     }
   }
 
@@ -947,103 +522,7 @@ async function route(
         at all. `total` is the true count and `truncated` says whether the cap was
         hit, so the panel can state it.
       */
-      case 'GET /admin/roster/rows': {
-        requireOwner()
 
-        /*
-          Email comes back too, and only to the owner.
-
-          The organiser needs to see whether the addresses actually landed. A sheet
-          whose third column was `Department` parses, uploads, reports no problem and
-          leaves thirteen people unreachable — reading it back is the only way to
-          notice, so the column is returned rather than trusted.
-        */
-        const { rows } = await db().query<{ sen: string; name: string; email: string | null }>(
-          'select sen, name, email from event_roster order by sen',
-        )
-
-        const shown = rows.slice(0, ROSTER_ROWS_CAP)
-
-        return json(res, 200, {
-          total: rows.length,
-          truncated: rows.length > shown.length,
-          rows: shown,
-        })
-      }
-
-      case 'POST /admin/attendees': {
-        const adminId = requireOwner()
-        const body = await readJson<Record<string, unknown>>(req)
-
-        const name = requireString(body, 'name').trim()
-        const phone = normalisePhone(requireString(body, 'phone'))
-        const password = requireString(body, 'password')
-        const sen = normaliseSen(requireString(body, 'sen'))
-
-        /*
-          Optional here, required at registration.
-
-          An organiser adding somebody at the desk often does not have their email —
-          the person is standing in front of them. Refusing the account over it would
-          be worse than the gap it closes, since the desk can hand over a password
-          directly and the owner can send credentials later once the address is known.
-        */
-        const email = optionalString(body, 'email') === null ? null : normaliseEmail(requireString(body, 'email'))
-        if (email !== null) {
-          const emailProblemMessage = emailProblem(email)
-          if (emailProblemMessage !== null) throw unprocessable('unknown', emailProblemMessage)
-        }
-
-        // The same rules the registration form applies, so a person added by hand is
-        // held to exactly the same standard as one who signed up. A weaker path here
-        // would be a way around every rule added since.
-        const nameProblemMessage = nameProblem(name)
-        if (nameProblemMessage !== null) throw unprocessable('unknown', nameProblemMessage)
-
-        const phoneProblemMessage = phoneProblem(phone)
-        if (phoneProblemMessage !== null) {
-          throw unprocessable('unknown', phoneProblemMessage)
-        }
-
-        if (!isValidSen(sen)) {
-          throw unprocessable('unknown', 'Enter a valid SEN, e.g. A866175000012.')
-        }
-        const problem = passwordProblem(password)
-        if (problem) throw unprocessable('weak_password', problem)
-
-        // Uniqueness is still enforced. An organiser adding somebody by hand is not
-        // a request to create a second account for them, and the alternative is a
-        // duplicate that quietly doubles a name on the roster.
-        const clash = await db().query(
-          'select (select 1 from attendees where phone = $1) as phone_taken,' +
-            '       (select 1 from attendees where upper(sen) = $2) as sen_taken',
-          [phone, sen],
-        )
-        const taken = clash.rows[0] as { phone_taken: number | null; sen_taken: number | null }
-        if (taken.phone_taken) throw conflict('phone_taken')
-        if (taken.sen_taken) throw conflict('sen_taken')
-
-        const { rows } = await db().query<AttendeeRow>(
-          `insert into attendees (name, phone, sen, email, password_hash)
-           values ($1, $2, $3, $4, $5)
-           returning id, name, phone, sen, email, password_hash, created_at`,
-          [name, phone, sen, email, await hashPassword(password)],
-        )
-        const created = rows[0]
-        if (!created) throw unprocessable('unknown', 'Could not create the account.')
-
-        await recordPasswordChange(adminId, created.id)
-
-        /*
-          No session is issued.
-
-          The person is not at this computer, and handing them a cookie would mean
-          they were silently signed in on a device they may never see again — and
-          signed in without typing the password the organiser just read to them,
-          which defeats the point of setting one.
-        */
-        return json(res, 201, { attendee: publicAttendee(created) })
-      }
 
       /*
         The guest list: who is allowed to register.
@@ -1054,38 +533,6 @@ async function route(
         owner who needs to see the lot can download the sheet they uploaded. There
         is no route that returns all of it.
       */
-      case 'GET /admin/roster': {
-        requireOwner()
-
-        /*
-          The list and its size, and nothing about who may register.
-
-          `registration_mode` is deliberately NOT repeated here. The client already
-          holds it on `EventInfo`, and returning it a second time would create two
-          copies of one fact in two places that could be loaded at different moments
-          — which is how a panel ends up showing "restricted" beside a count of zero
-          and neither one being wrong.
-        */
-        const { rows: counts } = await db().query<{
-          n: string
-          uploaded_at: Date | null
-        }>(
-          `select (select count(*) from event_roster)::text as n,
-                  roster_uploaded_at
-             from events order by date desc limit 1`,
-        )
-        const state = counts[0]
-
-        const { rows: sample } = await db().query<{ sen: string; name: string }>(
-          'select sen, name from event_roster order by sen limit 8',
-        )
-
-        return json(res, 200, {
-          count: Number(state?.n ?? 0),
-          uploadedAt: state?.uploaded_at ? state.uploaded_at.toISOString() : null,
-          sample,
-        })
-      }
 
       /*
         Replace the guest list.
@@ -1102,208 +549,6 @@ async function route(
         list impossible to shrink, which is the correction an organiser most often
         needs to make.
       */
-      case 'POST /admin/roster': {
-        requireOwner()
-        const body = await readJson<Record<string, unknown>>(req)
-
-        const rawRows = body.rows
-        if (!Array.isArray(rawRows)) {
-          throw badRequest('unknown', 'No rows found in the upload.')
-        }
-
-        /*
-          A hard ceiling, well above this event's ~500 students.
-
-          The endpoint buffers the request body, so an unbounded array is an
-          unbounded allocation. Refusing early is better than accepting 200 000 rows
-          and failing later in a way that leaves nothing written and no clue why.
-        */
-        if (rawRows.length > 5000) {
-          throw badRequest('unknown', 'That file has more rows than this portal can hold.')
-        }
-
-        const problems: string[] = []
-        const accepted: { sen: string; name: string; email: string | null }[] = []
-        const seen = new Map<string, number>()
-
-        /*
-          Counted, not derived from `problems.length`.
-
-          `skipped` answers "how many students did NOT make it onto the list", and
-          `problems` is also where a WARNING goes. When one row had a bad email
-          address but was still imported, `problems.length` reported it as skipped —
-          so an organiser uploading 500 students saw "500 on the list · 1 skipped" and
-          had no way to tell that all 500 had landed.
-
-          A number that counts the wrong thing is worse than no number, because it is
-          believed. Counted at the point of rejection instead.
-        */
-        let skipped = 0
-
-        for (let i = 0; i < rawRows.length; i += 1) {
-          const row = rawRows[i] as Record<string, unknown>
-          const lineNumber = i + 2 // +2: one-based, and row 1 is the header
-
-          const sen = normaliseSen(field(row.sen))
-          // `name` here is the ORGANISER's data, not something a student typed, so it
-          // is not held to the registration name rule. It is trimmed and capped so
-          // the column cannot hold unbounded text, and stripped of control
-          // characters so a spreadsheet cell cannot inject line breaks into the
-          // admin roster display.
-          const name = field(row.name)
-            .replace(/[\u0000-\u001F\u007F]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 80)
-
-          if (!isValidSen(sen)) {
-            problems.push(`row ${lineNumber}: "${field(row.sen).slice(0, 24)}" is not a valid SEN`)
-            skipped += 1
-            continue
-          }
-          if (name === '') {
-            problems.push(`row ${lineNumber}: missing a name`)
-            skipped += 1
-            continue
-          }
-
-          const firstSeen = seen.get(sen)
-          if (firstSeen !== undefined) {
-            /*
-              A duplicate is a warning, not a rejection.
-
-              The same student twice in one sheet is a spreadsheet slip, and the
-              outcome they want is one row — not a failed upload over something the
-              organiser cannot see. It is still surfaced, because a sheet with 400
-              rows where half are duplicates usually means the wrong range was
-              exported.
-            */
-            problems.push(`row ${lineNumber}: duplicate of row ${firstSeen} (${sen}) — kept the first`)
-            skipped += 1
-            continue
-          }
-
-          seen.set(sen, lineNumber)
-
-          /*
-            The address is OPTIONAL and never a reason to reject the row.
-
-            This sheet decides who may register. A typo in a column the portal did
-            not previously have must not lock out a real student — so an address the
-            rules refuse becomes null, is reported, and the student stays on the
-            list. The same rule as the parser, asserted by the same tests, because
-            the client is not the only thing that can be wrong.
-          */
-          const rawEmail = optionalString(row, 'email')
-          const email = rawEmail === null || rawEmail.trim() === '' ? null : normaliseEmail(rawEmail)
-          if (email !== null && !isValidEmail(email)) {
-            problems.push(
-              `row ${lineNumber}: "${String(rawEmail).slice(0, 48)}" is not a usable email address — the student is still on the list`,
-            )
-            accepted.push({ sen, name, email: null })
-            continue
-          }
-
-          accepted.push({ sen, name, email })
-        }
-
-        /*
-          Every row bad means nothing is written, and the reason is returned in full.
-
-          The common cause is a header the parser did not recognise, which produces
-          one "not a valid SEN" per row — so the first few problems plus the count
-          is far more use than a generic rejection.
-        */
-        if (accepted.length === 0) {
-          throw unprocessable('unknown', `No usable rows. First problem: ${problems[0] ?? 'the file is empty'}`)
-        }
-
-        /*
-          The mode travels with the upload.
-
-          Defaulting to `open` when the caller does not say: an upload that silently
-          changed who may register would be the worst possible surprise, and `open`
-          is the state that admits nobody by omission. The panel always sends it
-          explicitly, because it is showing a preview of the consequence anyway.
-        */
-        const registrationMode = readRegistrationMode(body.registrationMode) ?? 'open'
-
-        let backfillCount = 0
-        const client = await db().connect()
-        try {
-          await client.query('begin')
-          await client.query('delete from event_roster')
-          await client.query(
-            `insert into event_roster (sen, name, email)
-             select * from unnest($1::text[], $2::text[], $3::text[])`,
-            [
-              accepted.map((r) => r.sen),
-              accepted.map((r) => r.name),
-              accepted.map((r) => r.email),
-            ],
-          )
-
-          /*
-            Copy addresses onto the people who already registered.
-
-            This is the whole point of reading email off the guest list. The thirteen
-            who signed up before the form collected an address cannot be emailed at
-            all, and the organiser already holds this spreadsheet — so matching on SEN
-            is what makes them reachable without chasing anybody down.
-
-            ONLY WHERE THE ATTENDEE HAS NO ADDRESS.
-
-            An address a person typed on the registration form is theirs, and is more
-            likely to be right than a spreadsheet cell that may have been edited since.
-            Overwriting it would silently destroy the better of the two. A blank cell
-            does not clear an existing address either: the roster is who MAY register,
-            and most of it has never registered, so absence here means nothing at all.
-          */
-          backfillCount = (
-            await client.query(
-              `update attendees a
-                  set email = r.email
-                 from event_roster r
-                where r.sen = a.sen
-                  and r.email is not null
-                  and a.email is null
-               returning a.sen`,
-            )
-          ).rowCount ?? 0
-          /*
-            The registration MODE is settable here, so uploading a list and choosing
-            what it means is one action rather than two. Left alone when absent, so
-            an upload never silently changes who may register — the panel always
-            sends it explicitly.
-          */
-          await client.query(
-            `update events set registration_mode = $1, roster_uploaded_at = now()
-              where id = 'evt_awakening_2026'`,
-            [registrationMode],
-          )
-          await client.query('commit')
-        } catch (error) {
-          await client.query('rollback').catch(() => {})
-          throw error
-        } finally {
-          client.release()
-        }
-
-        return json(res, 200, {
-          imported: accepted.length,
-          skipped,
-          problems: problems.slice(0, 10),
-          mode: registrationMode,
-          /*
-            How many of the people who had already registered just became
-            emailable. Reported because the organiser needs to know whether the
-            "email everyone their credentials" button will now reach the thirteen
-            from before the form collected an address, or only the new ones.
-          */
-          addressesApplied: backfillCount,
-          addressesOnSheet: accepted.filter((r) => r.email !== null).length,
-        })
-      }
 
       /*
         Clear the list.
@@ -1317,24 +562,6 @@ async function route(
         side effect of clearing a spreadsheet would be a nasty surprise. The mode is
         changed deliberately, from the switch that says what it does.
       */
-      case 'DELETE /admin/roster': {
-        requireOwner()
-        const client = await db().connect()
-        try {
-          await client.query('begin')
-          await client.query('delete from event_roster')
-          await client.query(
-            `update events set roster_uploaded_at = null where id = 'evt_awakening_2026'`,
-          )
-          await client.query('commit')
-        } catch (error) {
-          await client.query('rollback').catch(() => {})
-          throw error
-        } finally {
-          client.release()
-        }
-        return json(res, 200, { count: 0, uploadedAt: null, sample: [] })
-      }
 
       /*
         Set an attendee's password. The ONLY password-change path in the portal.
@@ -1354,68 +581,6 @@ async function route(
 
         So either all three happen or none do.
       */
-      case 'POST /admin/attendees/password': {
-        const adminId = requireOwner()
-        const body = await readJson<Record<string, unknown>>(req)
-        const sen = normaliseSen(requireString(body, 'sen'))
-        const password = requireString(body, 'password')
-
-        if (!isValidSen(sen)) {
-          throw unprocessable('unknown_sen', 'That does not look like a SEN.')
-        }
-
-        // Same rule as registration, so an admin cannot set a password weaker
-        // than a self-registering attendee could choose.
-        const problem = passwordProblem(password)
-        if (problem) throw unprocessable('weak_password', problem)
-
-        const { rows: found } = await db().query<{ id: string; name: string; sen: string }>(
-          'select id, name, sen from attendees where upper(sen) = $1',
-          [sen],
-        )
-        const attendee = found[0]
-
-        // The admin already knows the roster, so this does not need to be an
-        // enumeration oracle the way the old public endpoint's 404 was.
-        if (!attendee) {
-          throw unprocessable('unknown_sen', 'No registered attendee matches that SEN.')
-        }
-
-        const client = await db().connect()
-        try {
-          await client.query('begin')
-
-          await client.query('update attendees set password_hash = $2 where id = $1', [
-            attendee.id,
-            await hashPassword(password),
-          ])
-
-          // Revoke every existing session. A password change that leaves old
-          // sessions alive has not actually locked anyone out, which defeats
-          // the point of changing a password at all. It also makes a takeover
-          // visible: the previous holder is logged out and notices.
-          await client.query(`delete from sessions where kind = 'attendee' and subject_id = $1`, [
-            attendee.id,
-          ])
-
-          await client.query(
-            'insert into password_changes (attendee_id, admin_id) values ($1, $2)',
-            [attendee.id, adminId],
-          )
-
-          await client.query('commit')
-        } catch (cause) {
-          await client.query('rollback')
-          throw cause
-        } finally {
-          client.release()
-        }
-
-        return json(res, 200, {
-          attendee: { id: attendee.id, name: attendee.name, sen: attendee.sen },
-          sessionsRevoked: true,
-        })
-      }
 
       /*
         The attendance log. Available to every staff account, `gate` included —
@@ -1679,59 +844,7 @@ async function route(
         that distinction is the whole feature — "12 of 300 failed" is a warning worth
         acting on, and "sent" would have hidden it.
       */
-      case 'POST /admin/push/send': {
-        requireOwner()
 
-        const body = await readJson<Record<string, unknown>>(req)
-
-        if (!pushConfigured()) {
-          throw unprocessable('push_not_configured')
-        }
-
-        const rawTitle = requireString(body, 'title')
-        const rawMessage = requireString(body, 'body')
-
-        /*
-          Trimmed before it is measured.
-
-          `requireString` rejects a blank value but returns the original untrimmed
-          string, so `'   Lunch   '` would pass a length check as eleven characters
-          and then be sent with the padding still in it — and a title that is over
-          the limit only because somebody typed a trailing space would be refused
-          for the wrong reason. What is validated has to be what is stored.
-        */
-        const title = rawTitle.trim()
-        const message = rawMessage.trim()
-
-        /*
-          Bounded.
-
-          This is a push payload, and a push payload above 4KB is refused by every
-          browser. Accepting more here would mean accepting something that can only
-          fail at the far end, where the owner is not watching. The UI counts against
-          the same numbers, so a message that fits on screen always fits on the wire.
-        */
-        if (title.length > 80 || message.length > 240) throw unprocessable('push_too_long')
-
-        const recorded = await recordAnnouncement({
-          title,
-          body: message,
-          sentBy: requireAdmin(),
-        })
-
-        const result = await broadcast({ title, body: message, url: '/dashboard' })
-
-        return json(res, 200, { ...result, announcement: recorded })
-      }
-
-      case 'GET /admin/push': {
-        requireAdmin()
-        return json(res, 200, {
-          configured: pushConfigured(),
-          subscribers: await subscriptionCount(),
-          latest: await latestAnnouncement(),
-        })
-      }
 
       case 'GET /admin/agenda': {
         requireAdmin()
@@ -1765,106 +878,6 @@ async function route(
         file, so the owner knows precisely who to chase rather than discovering it
         from a person who could not log in.
       */
-      case 'POST /admin/credentials/send': {
-        requireOwner()
-
-        const context = await credentialContext()
-        const configured = mailConfigured()
-
-        const { rows } = await db().query<{
-          id: string
-          name: string
-          phone: string
-          sen: string
-          email: string | null
-          password_hash: string
-        }>(
-          `select id, name, phone, sen, email, password_hash
-             from attendees order by created_at`,
-        )
-
-        if (!configured) {
-          return json(res, 200, {
-            configured: false,
-            total: rows.length,
-            sent: 0,
-            failed: 0,
-            skipped: rows.filter((r) => !r.email).map((r) => r.sen),
-            failures: [],
-            message: 'No email service is configured on this deployment.',
-          })
-        }
-
-        const sent: string[] = []
-        const failed: { sen: string; reason: string }[] = []
-        const skipped: string[] = []
-
-        for (const person of rows) {
-          if (person.email === null || person.email.trim() === '') {
-            skipped.push(person.sen)
-            continue
-          }
-
-          const password = generatePassword()
-          const nextHash = await hashPassword(password)
-
-          const stored = await db().query<{ password_hash: string }>(
-            'update attendees set password_hash = $2 where id = $1 returning password_hash',
-            [person.id, nextHash],
-          )
-
-          const result = await sendMail({
-            to: person.email,
-            subject: credentialsSubject(person.name),
-            text: credentialsText({
-              name: person.name,
-              phone: person.phone,
-              sen: person.sen,
-              password,
-              ...context,
-            }),
-            html: credentialsHtml({
-              name: person.name,
-              phone: person.phone,
-              sen: person.sen,
-              password,
-              ...context,
-            }),
-            replyTo: context.supportEmail,
-          })
-
-          if (result.ok) {
-            await db().query(
-              'update attendees set credentials_sent_at = now() where id = $1',
-              [person.id],
-            )
-            sent.push(person.sen)
-            continue
-          }
-
-          // Put their previous password back. See the note above.
-          if (stored.rows[0] !== undefined) {
-            await db().query('update attendees set password_hash = $2 where id = $1', [
-              person.id,
-              person.password_hash,
-            ])
-          }
-          failed.push({ sen: person.sen, reason: result.error ?? 'Unknown error' })
-        }
-
-        return json(res, 200, {
-          configured: true,
-          total: rows.length,
-          sent: sent.length,
-          failed: failed.length,
-          skipped,
-          failures: failed,
-          message:
-            failed.length > 0
-              ? `${sent.length} sent, ${failed.length} failed and rolled back, ${skipped.length} had no email on file.`
-              : `${sent.length} sent. ${skipped.length} had no email on file.`,
-        })
-      }
     }
 
     /*
@@ -1880,29 +893,10 @@ async function route(
 
   throw notFound('No such endpoint.')
 }
-
-/**
- * How many roster rows one request may return.
- *
- * Generous enough for a college cohort — five thousand students is beyond any single
- * Amity programme — while still being a number rather than "all of them". The panel
- * reports truncation rather than hiding it, so this is a bound on one response and
- * never a silent cut.
- */
-const ROSTER_ROWS_CAP = 5_000
-
 /** The three things "who may register" can mean. */
 const REGISTRATION_MODES = ['open', 'restricted', 'closed'] as const
 type RegistrationMode = (typeof REGISTRATION_MODES)[number]
 
-/**
- * Reads a requested registration mode, or returns null when the field is absent.
- *
- * Rejects an unrecognised value rather than coercing it. This string decides who
- * may register for the event; silently storing something that matches none of the
- * three checks at the door would leave a portal where nobody can register and
- * nothing says why.
- */
 function readRegistrationMode(value: unknown): RegistrationMode | null {
   if (value === undefined || value === null) return null
   if (typeof value === 'string' && (REGISTRATION_MODES as readonly string[]).includes(value)) {
@@ -1914,32 +908,6 @@ function readRegistrationMode(value: unknown): RegistrationMode | null {
   )
 }
 
-/* ----------------------------------------------------------------- helpers */
-
-/**
- * Notes that an admin set somebody's password.
- *
- * Shared by the desk password change and by creating an attendee by hand, because
- * both are the same privileged act — somebody else's credential, chosen by an
- * operator, on their behalf. An account created out of band is the more sensitive of
- * the two, so it must not be the one without a trail.
- */
-async function recordPasswordChange(adminId: string, attendeeId: string): Promise<void> {
-  await db().query(
-    'insert into password_changes (attendee_id, admin_id) values ($1, $2)',
-    [attendeeId, adminId],
-  )
-}
-
-/**
- * How many days the event spans, straight from the row.
- *
- * Computed in SQL rather than in JS, because this is the check that decides whether
- * a requested day is real. Deriving it in JavaScript means a second implementation
- * of the same rule — and the two already disagree once, in `eventDay.ts`, where
- * node-pg's DATE conversion made `totalDaysFor` silently answer 1 for a two-day
- * event. There is one place that turns a range into a number, and this is it.
- */
 async function eventTotalDays(): Promise<number> {
   const { rows } = await db().query<{ n: number }>(
     `select greatest((coalesce(end_date, date) - date) + 1, 1)::int as n

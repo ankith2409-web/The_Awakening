@@ -15,15 +15,45 @@ create extension if not exists pgcrypto;
 -- code. That is deliberate: both are the identity used at the gate, and a
 -- duplicate would make two people indistinguishable when scanned.
 -- -----------------------------------------------------------------------------
+/*
+  The check-in register.
+
+  There are no accounts. A student scans the QR on the wall, types a name, a
+  phone and a SEN, and that is the whole interaction — so there is no password to
+  store, no session to issue and no ticket to sign.
+
+  `sen` is the identity. It is unique, and it is what the door reads and what the
+  export lists. `phone` is unique too, but only as a first line of defence: two
+  students sharing a household number is a real thing, and refusing the second
+  because of it would be a rule about a field nothing downstream depends on.
+
+  `password_hash` is kept, nullable, rather than dropped.
+
+  Dropping a column is not free: it breaks every insert that still names it, in
+  code that is mid-rewrite, and a NOT NULL column cannot simply be removed while
+  rows exist. Nulling it costs one word and leaves a migration available for the
+  day somebody wants the column gone for real. It is written null by the check-in
+  route and nothing reads it.
+*/
 create table if not exists attendees (
   id            uuid primary key default gen_random_uuid(),
   name          text        not null,
   phone         text        not null unique,
   sen           text        not null unique,
-  password_hash text        not null,
+  password_hash text,
   created_at    timestamptz not null default now(),
   constraint attendees_phone_digits check (phone ~ '^[6-9][0-9]{9}$')
 );
+
+/*
+  The same relaxation for a table created before the accounts were removed.
+
+  `if exists` in its own statement rather than folded into the block above,
+  because on an existing database the block is a no-op — `create table if not
+  exists` does not re-read the definition — so the two have to be said separately
+  for the migration to actually happen.
+*/
+alter table attendees alter column password_hash drop not null;
 
 /*
   Email.
@@ -225,11 +255,20 @@ create table if not exists attendance (
   --               server key, proving the pass was issued by us
   --   'printed' — a bare SEN typed by staff or read from a printed barcode,
   --               where no signature is available
+  --   'self'    — the attendee scanned the wall QR and typed their own details.
+  --               Nobody verified anything; this is the method that says so.
+  --
+  -- 'self' is most of what is recorded now, and that is exactly why it has to be
+  -- its own value rather than being filed under 'printed'. Filing it there would
+  -- make a day taken entirely by self check-in indistinguishable from a day a
+  -- volunteer stood at the door typing names in — which is the one distinction an
+  -- organiser reviewing the log actually needs, and the only one this column
+  -- exists to draw.
   --
   -- Persisted rather than merely logged, because "who was admitted on a
   -- hand-typed number" is exactly the question an audit needs to answer.
   method      text        not null default 'qr',
-  constraint attendance_method check (method in ('qr', 'printed')),
+  constraint attendance_method check (method in ('qr', 'printed', 'self')),
   constraint attendance_day check (day >= 1)
 );
 
@@ -261,7 +300,7 @@ alter table attendance drop column if exists gate;
 alter table attendance add column if not exists method text not null default 'qr';
 alter table attendance drop constraint if exists attendance_method;
 alter table attendance
-  add constraint attendance_method check (method in ('qr', 'printed'));
+  add constraint attendance_method check (method in ('qr', 'printed', 'self'));
 
 alter table attendance add column if not exists day smallint not null default 1;
 alter table attendance drop constraint if exists attendance_day;
