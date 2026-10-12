@@ -22,6 +22,8 @@
  *   node scripts/load-test.mjs --phases spike --users 350 --concurrency 350
  *   node scripts/load-test.mjs --url http://localhost:3000
  */
+import { testEmail } from './_fixtures.mjs'
+
 
 const args = new Map()
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -206,7 +208,7 @@ async function phaseRegister(limit) {
       phone: phoneFor(i),
       sen: senFor(i),
       password: 'grid2026',
-    })
+      email: testEmail('probe')})
     return { ...res, cookie: res.cookie }
   })
 
@@ -292,7 +294,7 @@ async function phaseSpike() {
         phone: `97${String(i).padStart(8, '0')}`,
         sen: `${PREFIX}S${String(i).padStart(4, '0')}`,
         password: 'grid2026',
-      })
+        email: testEmail('probe')})
       return res
     },
   )

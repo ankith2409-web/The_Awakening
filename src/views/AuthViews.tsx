@@ -10,6 +10,7 @@ import { PasswordHelp } from '@/components/PasswordHelp'
 import { NotificationToggle } from '@/components/NotificationToggle'
 import { EventMark } from '@/components/EventMark'
 import { isMockApi, portalApi } from '@/api'
+import type { EmailOutcome } from '@/domain/types'
 
 /** Sign-in identifies an existing attendee by name + phone + password. */
 type LoginFields = 'name' | 'phone' | 'password'
@@ -293,12 +294,13 @@ export function LoginView() {
 type RegisterStep = 'details' | 'password' | 'done'
 
 /** Registration collects the identity fields, and nothing else. */
-type RegisterFields = 'name' | 'phone' | 'sen'
+type RegisterFields = 'name' | 'phone' | 'sen' | 'email'
 
 const REGISTER_INITIAL: Record<RegisterFields, string> = {
   name: '',
   phone: '',
   sen: '',
+  email: '',
 }
 
 /**
@@ -348,6 +350,8 @@ export function RegisterView() {
   /* -- the issued password, and the optional replacement ------------------ */
 
   const [issued, setIssued] = useState<string | null>(null)
+  /** Whether the credentials email actually went, and how to phrase it. */
+  const [emailed, setEmailed] = useState<EmailOutcome | null>(null)
   /** Whether they have chosen to type their own, on this same screen. */
   const [useOwn, setUseOwn] = useState(false)
   const [own, setOwn] = useState({ first: '', second: '' })
@@ -370,6 +374,7 @@ export function RegisterView() {
       name: VALIDATORS.name,
       phone: VALIDATORS.phone,
       sen: VALIDATORS.sen,
+      email: VALIDATORS.email,
     })
     setErrors(found)
     return found
@@ -389,7 +394,10 @@ export function RegisterView() {
     "this thing is broken" feeling the closed panel exists to avoid.
   */
   const hasTypedSomething =
-    values.name !== '' || values.phone !== '' || values.sen !== ''
+    values.name !== '' ||
+    values.phone !== '' ||
+    values.sen !== '' ||
+    values.email !== ''
   const registrationClosed = mode === 'closed' && step === 'details'
   const closedButInProgress =
     mode === 'closed' && step === 'details' && hasTypedSomething
@@ -404,7 +412,7 @@ export function RegisterView() {
     if (submitting) return
 
     const found = runValidation()
-    setTouched({ name: true, phone: true, sen: true })
+    setTouched({ name: true, phone: true, sen: true, email: true })
 
     if (hasErrors(found)) {
       document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
@@ -413,8 +421,9 @@ export function RegisterView() {
 
     setSubmitting(true)
     try {
-      const result = await register(values.name, values.phone, values.sen)
+      const result = await register(values.name, values.phone, values.sen, values.email)
       setIssued(result.generatedPassword)
+      setEmailed(result.emailed)
       setStep('password')
     } catch {
       // Rendered through the provider's error state.
@@ -552,13 +561,46 @@ export function RegisterView() {
           }}
         />
 
+        {/*
+          Email.
+
+          Asked for, not volunteered: the portal shows the password exactly once,
+          on the next screen, and a second copy is what makes losing the tab
+          survivable. The hint says exactly that, because an unexplained email
+          field on a college event form reads as data harvesting, and somebody
+          who thinks that will type something they do not want to give.
+
+          `type="email"` gives the on-screen keyboard the right layout, but NOT
+          the native validation bubble: it fires before our own copy can name the
+          actual fault, and `noValidate` on the form turns it off everywhere.
+        */}
+        <Field
+          label="Email address"
+          name="email"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          hint="We send your login details here, so you still have them if you lose this screen."
+          value={values.email}
+          error={touched.email ? errors.email : undefined}
+          onChange={(event) => setValue('email', event.target.value)}
+          onBlur={() => {
+            setTouched((current) => ({ ...current, email: true }))
+            runValidation()
+          }}
+        />
+
         <Button type="submit" variant="primary" size="lg" block loading={submitting}>
           {submitting ? 'Creating your pass' : 'Get my pass'}
         </Button>
 
         <p className="text-2xs font-medium leading-relaxed text-content-muted">
-          We will give you a password on the next screen. You will need it to log in
-          on the day — and you can change it there if you would rather.
+          We will give you a password on the next screen, and email it to you. You
+          will need it to log in on the day — and you can change it there if you
+          would rather.
         </p>
       </form>
     </>
@@ -585,8 +627,34 @@ export function RegisterView() {
         </p>
 
         <p className="mt-4 text-2xs font-medium leading-relaxed text-content-muted">
-          This is the only time it will be shown. Write it down or take a screenshot —
-          if you lose it, an organiser at the desk has to set you a new one.
+          {/*
+            The wording changes with what actually happened.
+
+            "This is the only time it will be shown" is true, and on its own it is
+            alarming enough that somebody photographs the screen and moves on
+            without reading the rest. When the email went, that sentence is followed
+            by the one that matters: there is a copy, and it is in their inbox.
+
+            When it did NOT go — no mail service, or a refusal — the copy has to
+            change rather than quietly omit a reassurance that is not true.
+          */}
+          {emailed === 'sent' ? (
+            <>
+              It is on the next screen and in your inbox. Take a screenshot either way —
+              email is not somewhere you will look at 8am on the day.
+            </>
+          ) : emailed === 'not_set' || emailed === 'no_address' ? (
+            <>
+              This is the only time it will be shown. Screenshot it now — if you lose
+              this screen, an organiser at the desk has to set you a new one.
+            </>
+          ) : (
+            <>
+              This is the only time it will be shown, and the email did not go.
+              Screenshot it now — if you lose this screen, an organiser at the desk
+              has to set you a new one.
+            </>
+          )}
         </p>
       </div>
 
@@ -666,8 +734,17 @@ export function RegisterView() {
     details: {
       eyebrow: '02. Register',
       title: 'Register',
+      /*
+        "Four fields", not "three".
+
+        The count is a claim a reader checks against what is on the screen, so it
+        is the kind of thing that has to be kept true. The email is the fourth
+        because it is where the credentials go — without it the password shown on
+        the next screen has no second copy, and somebody who closes the tab has no
+        way back to their own registration short of the desk.
+      */
       description:
-        'Three fields and you are in. Your name and mobile number identify you at the door — the QR pass is generated instantly.',
+        'Four fields and you are in. Your name and mobile number identify you at the door — the QR pass is generated instantly, and your login details are emailed to you.',
     },
     password: {
       eyebrow: '02. Your password',
@@ -686,7 +763,7 @@ export function RegisterView() {
     When registration closes while this screen is up, the description is replaced too.
 
     The poll can close registration underneath somebody who has the form open, and
-    "Three fields and you are in" above a panel that says registration is closed is a
+    "Four fields and you are in" above a panel that says registration is closed is a
     small lie that makes the whole page read as broken rather than as deliberately
     shut. `registrationClosed` only ever turns this on for the details step, so the
     password screen is never affected — by then the account exists and closing

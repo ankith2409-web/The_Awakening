@@ -25,6 +25,15 @@ export interface Attendee {
    */
   readonly sen: string
   readonly createdAt: string
+  /**
+   * Where the credentials were sent, or null for somebody registered before
+   * emails were collected.
+   *
+   * Held in the mock store and on the owner's roster, and deliberately NOT in
+   * `publicAttendee` — it never travels to an attendee's own browser, because an
+   * endpoint that returns it is one more place an address leaks from.
+   */
+  readonly email: string | null
 }
 
 export interface AttendeeWithSecret extends Attendee {
@@ -81,18 +90,51 @@ export interface AttendeeRegisterInput {
   readonly name: string
   readonly phone: string
   readonly sen: string
+  readonly email: string
 }
+
+/**
+ * Whether the credentials email actually went.
+ *
+ * A tri-state and not a boolean, because "this deployment has no mail service"
+ * and "the mail service refused it" call for different words on the screen. The
+ * attendee already has the password either way; what changes is how urgent it is
+ * that they keep this page.
+ */
+export type EmailOutcome = 'sent' | 'not_set' | 'failed' | 'no_address'
 
 /**
  * What registration returns.
  * `generatedPassword` is present exactly once, in this response. Only a bcrypt hash is
- * stored, and there is deliberately no route that can return it again — a "resend my
+ * stored, and there is deliberately no route that can return it again - a "resend my
  * password" endpoint would make the portal a credential oracle for anyone who knows a
- * name and a phone number. An attendee who loses it asks at the desk.
+ * name and a phone number. An attendee who loses it asks at the desk, or the owner
+ * sends fresh credentials from the admin portal.
  */
 export interface AttendeeRegistration {
   readonly attendee: Attendee
   readonly generatedPassword: string
+  readonly emailed: EmailOutcome
+}
+
+/**
+ * The outcome of the owner's "send credentials" run.
+ *
+ * The two lists are the whole point. "Sent 480" is a claim about the world; who
+ * was skipped and who bounced are the facts an owner needs to act on, and the one
+ * they cannot infer from a success message.
+ */
+export interface CredentialSendResult {
+  /** Whether a mail service is configured at all. False means nothing was changed. */
+  readonly configured: boolean
+  readonly total: number
+  readonly sent: number
+  readonly failed: number
+  /** SENs with no address on file. Their passwords were not touched. */
+  readonly skipped: readonly string[]
+  /** SENs whose send failed. Their passwords were rolled back. */
+  readonly failures: readonly { readonly sen: string; readonly reason: string }[]
+  readonly message: string
 }
 
 export interface AdminLoginInput {

@@ -56,6 +56,28 @@ export function testSen(tag) {
 }
 
 /**
+ * A fixture email address.
+ *
+ * Registration now REQUIRES one, because the portal shows the generated password
+ * exactly once, on screen, and this address is the second copy. That makes every
+ * suite which registers a fixture into an email sender — and on a deployment with
+ * a mail service configured, 40 suites would send real messages to example.com.
+ *
+ * Two properties matter:
+ *
+ *   - `example.com` is reserved by RFC 2606 precisely so it can never be a real
+ *     inbox, so even a misconfigured deployment delivers nowhere.
+ *   - `invalid` is reserved in the SAME way (RFC 2606), so it cannot resolve even
+ *     if the provider is permissive about syntax.
+ *
+ * The `.invalid` TLD also means `test:credentials` can assert the address was
+ * stored, without anything being deliverable.
+ */
+export function testEmail(tag) {
+  return `ztest-${String(tag).toLowerCase()}@example.invalid`
+}
+
+/**
  * Deletes every attendee created by a test suite, by prefix.
  *
  * Scoped by PREFIX rather than by this run's SEN, deliberately. Deleting only what

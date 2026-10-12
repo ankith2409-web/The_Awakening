@@ -215,6 +215,12 @@ async function main() {
         name: NAMES[i % NAMES.length],
         phone: phoneFor(i),
         sen: senFor(i),
+        /*
+          Required now. Pointed at `.invalid`, which RFC 2606 reserves precisely
+          so it can never resolve — so a load run cannot deliver a real message
+          even against a deployment that has mail configured.
+        */
+        email: `load-${i}@example.invalid`,
       }
 
       const at = Date.now()

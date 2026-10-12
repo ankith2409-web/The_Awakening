@@ -20,7 +20,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { testSen, purgeTestAttendees, testEmail } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -184,7 +184,7 @@ async function main() {
       phone: `9${Math.floor(Math.random() * 1e8)}`.padEnd(10, '4'),
       sen,
       password: PASSWORD,
-    })
+      email: testEmail('probe')})
     check(`registered ${name}`, reg.status === 201, `got ${reg.status}`)
   }
 

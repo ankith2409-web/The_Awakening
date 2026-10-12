@@ -33,6 +33,9 @@ import {
   passwordProblem,
   phoneProblem,
 } from './_lib/identifiers.ts'
+import { emailProblem, normaliseEmail } from './_lib/email.ts'
+import { mailConfigured, sendMail } from './_lib/mail.ts'
+import { credentialsHtml, credentialsSubject, credentialsText } from './_lib/credentialsEmail.ts'
 import { readTicket, signSen } from './_lib/ticket.ts'
 import { generatePassword } from './_lib/password.ts'
 import { resolveEventDay, isDayLocked } from './_lib/eventDay.ts'
@@ -142,6 +145,7 @@ type AttendeeRow = {
   name: string
   phone: string
   sen: string
+  email: string | null
   password_hash: string
   created_at: string
 }
@@ -153,6 +157,97 @@ const publicAttendee = (row: AttendeeRow) => ({
   sen: row.sen,
   createdAt: row.created_at,
 })
+
+/**
+ * Everything the credentials email needs, read once per send.
+ *
+ * A function rather than constants because the values come from the database and
+ * a hard-coded portal URL would send 480 people to the wrong host the moment a
+ * preview deployment ran this.
+ */
+async function credentialContext(): Promise<{
+  portalUrl: string
+  supportEmail: string
+  eventName: string
+  eventDates: string
+  venue: string
+}> {
+  const configured = process.env.PORTAL_URL?.trim() || 'https://the-awakening-portal.vercel.app'
+  const { rows } = await db().query(
+    `select name, date::text as starts, end_date::text as ends, venue, city
+       from events order by date desc limit 1`,
+  )
+  const event = rows[0] as
+    | { name: string; starts: string; ends: string; venue: string; city: string }
+    | undefined
+
+  const start = event?.starts ?? ''
+  const end = event?.ends ?? ''
+
+  return {
+    portalUrl: configured,
+    supportEmail: process.env.CONTACT_EMAIL?.trim() || 'gdgtechnicalteam@gmail.com',
+    eventName: event?.name ?? 'THE AWAKENING',
+    eventDates:
+      start && end
+        ? `${formatDay(start)}–${formatDay(end)} ${start.slice(0, 4)}`
+        : start
+          ? formatDay(start)
+          : '',
+    venue: event ? `${event.venue}, ${event.city}` : '',
+  }
+}
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+/** `2026-10-13` -> `13 October`. No Date object: that would shift by timezone. */
+function formatDay(iso: string): string {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
+  if (!parts) return iso
+  const month = MONTHS[Number(parts[2]) - 1]
+  return month ? `${Number(parts[3])} ${month}` : iso
+}
+
+export type EmailOutcome = 'sent' | 'not_set' | 'failed' | 'no_address'
+
+/**
+ * Sends one attendee their own credentials.
+ *
+ * Returns an OUTCOME rather than throwing, and never takes a password as part of
+ * an error message. A registration must not fail because an inbox rejected a
+ * message, and a failed send must not print the credential that failed to send.
+ */
+async function deliverCredentials(input: {
+  to: string | null
+  name: string
+  phone: string
+  sen: string
+  password: string
+}): Promise<EmailOutcome> {
+  if (input.to === null || input.to.trim() === '') return 'no_address'
+  if (!mailConfigured()) return 'not_set'
+
+  const context = await credentialContext()
+  const result = await sendMail({
+    to: input.to,
+    subject: credentialsSubject(input.name),
+    text: credentialsText({ ...input, ...context }),
+    html: credentialsHtml({ ...input, ...context }),
+    replyTo: context.supportEmail,
+  })
+
+  if (!result.ok) return 'failed'
+
+  await db().query('update attendees set credentials_sent_at = now() where email = $1 and sen = $2', [
+    input.to,
+    input.sen,
+  ])
+
+  return 'sent'
+}
 
 /**
  * Staff access levels.
@@ -290,6 +385,21 @@ async function route(
         const sen = normaliseSen(requireString(body, 'sen'))
 
         /*
+          Email, required from here on.
+
+          New registrations need one because it is now how the credentials are
+          delivered — the portal shows the password once, on screen, and cannot
+          show it again. Without an address, somebody who closes the tab has no
+          way back to their own registration.
+
+          The thirteen people registered before this column existed keep a null,
+          and are reported as "no email on file" by the owner's resend button
+          rather than being given a placeholder that would look deliverable and
+          silently bounce.
+        */
+        const email = normaliseEmail(requireString(body, 'email'))
+
+        /*
           The password is the PORTAL'S to choose.
 
           Registration used to ask the attendee for one and then make them type it
@@ -322,6 +432,10 @@ async function route(
         const nameProblemMessage = nameProblem(name)
         if (nameProblemMessage !== null) {
           throw unprocessable('unknown', nameProblemMessage)
+        }
+        const emailProblemMessage = emailProblem(email)
+        if (emailProblemMessage !== null) {
+          throw unprocessable('unknown', emailProblemMessage)
         }
         if (!isValidSen(sen)) {
           throw unprocessable('unknown', 'Enter a valid SEN, e.g. A866175000012.')
@@ -378,10 +492,10 @@ async function route(
         if (taken.sen_taken) throw conflict('sen_taken')
 
         const { rows } = await db().query<AttendeeRow>(
-          `insert into attendees (name, phone, sen, password_hash)
-           values ($1, $2, $3, $4)
-           returning id, name, phone, sen, password_hash, created_at`,
-          [name, phone, sen, await hashPassword(password)],
+          `insert into attendees (name, phone, sen, email, password_hash)
+           values ($1, $2, $3, $4, $5)
+           returning id, name, phone, sen, email, password_hash, created_at`,
+          [name, phone, sen, email, await hashPassword(password)],
         )
         const created = rows[0]
         if (!created) throw unprocessable('unknown', 'Could not create the account.')
@@ -393,14 +507,41 @@ async function route(
         await createSession(res, 'attendee', created.id, true)
 
         /*
+          Send the credentials, then answer regardless of how it went.
+
+          The ordering matters and is the point of the whole feature: the session is
+          created FIRST, so a mail service that is down cannot cost somebody their
+          registration. A person who registered and lost the response would have to
+          queue again, and on the day the queue is the problem.
+
+          The result is reported, never thrown. `emailed` is a tri-state so the
+          attendee can be told the truth:
+            'sent'      it went
+            'not_set'   this deployment has no mail service configured
+            'failed'    it was attempted and did not go — the screen still has it
+
+          The password is passed to the mailer and nowhere else. It is not logged,
+          not echoed in an error, and not stored in readable form; the database has
+          the bcrypt hash and nothing else.
+        */
+        const emailed = await deliverCredentials({
+          to: created.email,
+          name: created.name,
+          phone: created.phone,
+          sen: created.sen,
+          password,
+        })
+
+        /*
           The generated password comes back ONCE, in this response, and is never
           stored in a readable form — only the bcrypt hash exists. There is no
-          "resend my password" route, deliberately: it would turn the portal into a
-          credential oracle for anyone who knows a name and a phone number. If the
-          attendee loses it, the desk sets a new one.
+          attendee-facing "resend my password" route, deliberately: it would turn the
+          portal into a credential oracle for anyone who knows a name and a phone
+          number. If the attendee loses it, the desk sets a new one.
         */
         return json(res, 201, {
           attendee: publicAttendee(created),
+          emailed,
           ...(supplied === null ? { generatedPassword: password } : {}),
         })
       }
@@ -830,6 +971,20 @@ async function route(
         const password = requireString(body, 'password')
         const sen = normaliseSen(requireString(body, 'sen'))
 
+        /*
+          Optional here, required at registration.
+
+          An organiser adding somebody at the desk often does not have their email —
+          the person is standing in front of them. Refusing the account over it would
+          be worse than the gap it closes, since the desk can hand over a password
+          directly and the owner can send credentials later once the address is known.
+        */
+        const email = optionalString(body, 'email') === null ? null : normaliseEmail(requireString(body, 'email'))
+        if (email !== null) {
+          const emailProblemMessage = emailProblem(email)
+          if (emailProblemMessage !== null) throw unprocessable('unknown', emailProblemMessage)
+        }
+
         // The same rules the registration form applies, so a person added by hand is
         // held to exactly the same standard as one who signed up. A weaker path here
         // would be a way around every rule added since.
@@ -860,10 +1015,10 @@ async function route(
         if (taken.sen_taken) throw conflict('sen_taken')
 
         const { rows } = await db().query<AttendeeRow>(
-          `insert into attendees (name, phone, sen, password_hash)
-           values ($1, $2, $3, $4)
-           returning id, name, phone, sen, password_hash, created_at`,
-          [name, phone, sen, await hashPassword(password)],
+          `insert into attendees (name, phone, sen, email, password_hash)
+           values ($1, $2, $3, $4, $5)
+           returning id, name, phone, sen, email, password_hash, created_at`,
+          [name, phone, sen, email, await hashPassword(password)],
         )
         const created = rows[0]
         if (!created) throw unprocessable('unknown', 'Could not create the account.')
@@ -1494,6 +1649,134 @@ async function route(
       case 'GET /admin/agenda': {
         requireAdmin()
         return sendEvent(res)
+      }
+
+      /*
+        Send everybody their credentials, one email each.
+
+        OWNER ONLY, and the asymmetry with `gate` matters: a broadcast reaches every
+        attendee on their own phone, and so does this. `gate` marks people present
+        at a door; handing over credentials is not a door-side job.
+
+        It generates a NEW password rather than resending the old one, because the
+        old one cannot be resent — only a bcrypt hash is stored, and that is not
+        reversible. So this is a rotation, and it is honest about being one: every
+        password it issues invalidates the previous one.
+
+        THE ROLLBACK IS THE WHOLE POINT. For each person in turn: generate, store,
+        send. If the send fails, the previous hash is written back and they keep the
+        password they had. Without that, one bounced mailbox would leave somebody
+        locked out of their own pass with a password nobody knows — which during a
+        live event is the difference between a person walking in and a person being
+        turned away at the door.
+
+        Sequential, not parallel. This is an owner clicking a button a few times a
+        day, not a registration path, and a burst of 480 simultaneous requests to a
+        mail provider is how an account gets rate-limited at exactly the wrong moment.
+
+        The report is the deliverable. `skipped` carries the SENs with no address on
+        file, so the owner knows precisely who to chase rather than discovering it
+        from a person who could not log in.
+      */
+      case 'POST /admin/credentials/send': {
+        requireOwner()
+
+        const context = await credentialContext()
+        const configured = mailConfigured()
+
+        const { rows } = await db().query<{
+          id: string
+          name: string
+          phone: string
+          sen: string
+          email: string | null
+          password_hash: string
+        }>(
+          `select id, name, phone, sen, email, password_hash
+             from attendees order by created_at`,
+        )
+
+        if (!configured) {
+          return json(res, 200, {
+            configured: false,
+            total: rows.length,
+            sent: 0,
+            failed: 0,
+            skipped: rows.filter((r) => !r.email).map((r) => r.sen),
+            failures: [],
+            message: 'No email service is configured on this deployment.',
+          })
+        }
+
+        const sent: string[] = []
+        const failed: { sen: string; reason: string }[] = []
+        const skipped: string[] = []
+
+        for (const person of rows) {
+          if (person.email === null || person.email.trim() === '') {
+            skipped.push(person.sen)
+            continue
+          }
+
+          const password = generatePassword()
+          const nextHash = await hashPassword(password)
+
+          const stored = await db().query<{ password_hash: string }>(
+            'update attendees set password_hash = $2 where id = $1 returning password_hash',
+            [person.id, nextHash],
+          )
+
+          const result = await sendMail({
+            to: person.email,
+            subject: credentialsSubject(person.name),
+            text: credentialsText({
+              name: person.name,
+              phone: person.phone,
+              sen: person.sen,
+              password,
+              ...context,
+            }),
+            html: credentialsHtml({
+              name: person.name,
+              phone: person.phone,
+              sen: person.sen,
+              password,
+              ...context,
+            }),
+            replyTo: context.supportEmail,
+          })
+
+          if (result.ok) {
+            await db().query(
+              'update attendees set credentials_sent_at = now() where id = $1',
+              [person.id],
+            )
+            sent.push(person.sen)
+            continue
+          }
+
+          // Put their previous password back. See the note above.
+          if (stored.rows[0] !== undefined) {
+            await db().query('update attendees set password_hash = $2 where id = $1', [
+              person.id,
+              person.password_hash,
+            ])
+          }
+          failed.push({ sen: person.sen, reason: result.error ?? 'Unknown error' })
+        }
+
+        return json(res, 200, {
+          configured: true,
+          total: rows.length,
+          sent: sent.length,
+          failed: failed.length,
+          skipped,
+          failures: failed,
+          message:
+            failed.length > 0
+              ? `${sent.length} sent, ${failed.length} failed and rolled back, ${skipped.length} had no email on file.`
+              : `${sent.length} sent. ${skipped.length} had no email on file.`,
+        })
       }
     }
 

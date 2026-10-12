@@ -12,6 +12,7 @@ import { AttendeeDirectory } from './AttendeeDirectory'
 import { GuestListPanel } from './GuestListPanel'
 import { RegistrationSwitch } from './RegistrationSwitch'
 import { AnnouncementPanel } from './AnnouncementPanel'
+import { CredentialPanel } from './CredentialPanel'
 import { AddAttendeePanel } from './AddAttendeePanel'
 import type { AdmissionMethod, AgendaItem, EventPhase } from '@/domain/types'
 
@@ -420,6 +421,16 @@ export function AdminPortalView() {
                   so this is presentation, not the control.
                 */}
                 <AnnouncementPanel />
+
+                {/*
+                  Credentials, here for the same reason announcements are: an
+                  event-wide action with an owner-only audience. Not on People,
+                  because it acts on everybody rather than on one person, and
+                  because the People tab is a searchable roster where a button
+                  that changes four hundred accounts would be easy to press by
+                  accident.
+                */}
+                <CredentialPanel />
               </>
             ) : null}
           </div>

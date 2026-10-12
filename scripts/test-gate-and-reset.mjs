@@ -12,7 +12,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendeesOnce } from './_fixtures.mjs'
+import { testSen, purgeTestAttendeesOnce, testEmail } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -113,12 +113,12 @@ async function main() {
   /* -- setup: two attendees, one ticket we can sign ------------------------ */
   const a = await call('POST', '/attendee/register', {
     name: 'Qr Tester', phone: phoneQr, sen: senQr, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('registered the QR-path attendee', a.status === 201, `got ${a.status}`)
 
   const b = await call('POST', '/attendee/register', {
     name: 'Bare Tester', phone: phoneBare, sen: senBare, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('registered the bare-SEN attendee', b.status === 201, `got ${b.status}`)
 
   const ticket = await call('GET', '/attendee/ticket', undefined, a.cookie)

@@ -11,7 +11,7 @@
  */
 
 import { PortalError, PORTAL_ERROR_MESSAGES } from '../src/domain/types.ts'
-import { testSen, purgeTestAttendeesOnce } from './_fixtures.mjs'
+import { testSen, purgeTestAttendeesOnce, testEmail } from './_fixtures.mjs'
 
 const BASE = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
 
@@ -86,7 +86,7 @@ async function main() {
 
   const first = await call('POST', '/api/attendee/register', {
     name: 'COPYPROBE One', phone, sen, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('registers the probe attendee', first.status === 201, `got ${first.status}`)
 
   /* -- the codes that previously leaked ------------------------------------ */
@@ -95,7 +95,7 @@ async function main() {
   // default to the code and beat PORTAL_ERROR_MESSAGES in the client.
   const dupePhone = await call('POST', '/api/attendee/register', {
     name: 'COPYPROBE One', phone, sen: `${sen}X`, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('duplicate phone returns 409', dupePhone.status === 409, `got ${dupePhone.status}`)
   check('duplicate phone omits the redundant message',
     dupePhone.json.message === undefined, `message=${JSON.stringify(dupePhone.json.message)}`)
@@ -107,7 +107,7 @@ async function main() {
 
   const dupeSen = await call('POST', '/api/attendee/register', {
     name: 'COPYPROBE Two', phone: `8${stamp}`.padEnd(10, '0').slice(0, 10), sen, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('duplicate SEN returns 409', dupeSen.status === 409, `got ${dupeSen.status}`)
   check('duplicate SEN omits the redundant message',
     dupeSen.json.message === undefined, `message=${JSON.stringify(dupeSen.json.message)}`)
@@ -202,7 +202,7 @@ async function main() {
 
   const badPhone = await call('POST', '/api/attendee/register', {
     name: 'COPYPROBE One', phone: '12345', sen: `${sen}Y`, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('short phone still gets its specific wording',
     typeof badPhone.json.message === 'string' && badPhone.json.message.includes('10-digit'),
     `message=${JSON.stringify(badPhone.json.message)}`)
@@ -210,7 +210,7 @@ async function main() {
   const badPassword = await call('POST', '/api/attendee/register', {
     name: 'COPYPROBE One', phone: `7${stamp}`.padEnd(10, '0').slice(0, 10),
     sen: `${sen}Z`, password: 'short',
-  })
+    email: testEmail('probe')})
   check('weak password still gets its specific wording',
     typeof badPassword.json.message === 'string' && badPassword.json.message.length > 0,
     `message=${JSON.stringify(badPassword.json.message)}`)

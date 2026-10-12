@@ -15,6 +15,7 @@ import {
   type AttendeeWithSecret,
   type Announcement,
   type BroadcastResult,
+  type CredentialSendResult,
   type CheckIn,
   type EventInfo,
   type MyAttendance,
@@ -163,6 +164,7 @@ export class MockPortalApi implements PortalApi {
       name,
       phone,
       sen: input.sen.toUpperCase(),
+      email: input.email.trim().toLowerCase(),
       createdAt: new Date().toISOString(),
       passwordHash: hash(password),
       ticketCode: randomTicketPayload(),
@@ -175,7 +177,15 @@ export class MockPortalApi implements PortalApi {
     this.#attendeeSessionId = attendee.id
     writeSession('attendee', attendee.id, true)
 
-    return { attendee: toPublic(attendee), generatedPassword: password }
+    /*
+      `not_set`, not `sent`.
+
+      The mock has no mail service, and claiming otherwise would make the demo
+      say "check your inbox" about an email that was never composed. This is the
+      exact value a real deployment reports before its API key is set, so the UI
+      being developed against here is the UI it will show in that state.
+    */
+    return { attendee: toPublic(attendee), generatedPassword: password, emailed: 'not_set' as const }
   }
 
   async verifyAttendeePassword(password: string): Promise<{ matches: boolean }> {
@@ -555,6 +565,33 @@ export class MockPortalApi implements PortalApi {
     return { sent: 0, pruned: 0, failed: 0, total: 0, announcement }
   }
 
+  /**
+   * Reports "not configured", exactly as the real API does before a key is set.
+   *
+   * Not a simulated success. The mock has no mail service, and a demo that said
+   * "sent 3" would be teaching the owner a shape they would then misread on the
+   * day. `skipped` carries the SENs with no address, which is the list they would
+   * actually have to chase.
+   */
+  async sendCredentials(): Promise<CredentialSendResult> {
+    this.#requireOwner()
+    await delay(LATENCY_MS / 2)
+
+    const withoutEmail = this.#store.attendees
+      .filter((a) => !a.email)
+      .map((a) => a.sen)
+
+    return {
+      configured: false,
+      total: this.#store.attendees.length,
+      sent: 0,
+      failed: 0,
+      skipped: withoutEmail,
+      failures: [],
+      message: 'No email service is configured on this deployment.',
+    }
+  }
+
   async updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {
     this.#requireOwner()
     await delay(LATENCY_MS / 2)
@@ -720,6 +757,9 @@ export class MockPortalApi implements PortalApi {
       name: input.name.trim(),
       phone,
       sen,
+      // The admin path has no email field, matching the API where it is optional
+      // for somebody added at the desk.
+      email: null,
       createdAt: new Date().toISOString(),
       passwordHash: hash(input.password),
       ticketCode: randomTicketPayload(),
@@ -756,8 +796,8 @@ export class MockPortalApi implements PortalApi {
 /* --------------------------------------------------------------- helpers */
 
 function toPublic(attendee: AttendeeWithSecret): Attendee {
-  const { id, name, phone, sen, createdAt } = attendee
-  return { id, name, phone, sen, createdAt }
+  const { id, name, phone, sen, email, createdAt } = attendee
+  return { id, name, phone, sen, email, createdAt }
 }
 
 function toPublicAdmin(admin: {
@@ -880,6 +920,7 @@ function loadOrSeed(): Store {
         name: SEED_ATTENDEE.name,
         phone: SEED_ATTENDEE.phone,
         sen: SEED_ATTENDEE.sen,
+        email: null,
         createdAt: '2026-02-11T10:00:00.000Z',
         passwordHash: hash(SEED_ATTENDEE.password),
         ticketCode: randomTicketPayload(),

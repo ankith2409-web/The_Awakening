@@ -38,11 +38,16 @@ export interface AttendeeContextValue {
    *
    * No password argument: the attendee does not choose one. See
    * `AttendeeRegistration` for why it comes back rather than being kept here.
+   *
+   * `email` IS an argument, because the portal shows that password exactly once,
+   * on screen. Without an address there is no second copy, so somebody who closes
+   * the tab has no way back to their own registration short of the desk.
    */
   register: (
     name: string,
     phone: string,
     sen: string,
+    email: string,
   ) => Promise<AttendeeRegistration>
   /**
    * Ends the read-back step and sends the attendee to their pass.

@@ -8,7 +8,7 @@
  */
 
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendeesOnce } from './_fixtures.mjs'
+import { testSen, purgeTestAttendeesOnce, testEmail } from './_fixtures.mjs'
 
 // Read `.env` so the cleanup at the end can reach the database this suite just
 // wrote to. Harmless in production, where Vercel injects the real environment.
@@ -152,22 +152,22 @@ async function main() {
   /* -- registration ---------------------------------------------------- */
   const weak = await call(anon, 'POST', '/attendee/register', {
     name: 'Weak Pass', phone, sen, password: 'abc',
-  })
+    email: testEmail('probe')})
   check('weak password is rejected', weak.status === 422 && weak.body?.code === 'weak_password')
 
   const badPhone = await call(anon, 'POST', '/attendee/register', {
     name: 'Bad Phone', phone: '123', sen, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('invalid phone is rejected', badPhone.status === 422)
 
   const badSen = await call(anon, 'POST', '/attendee/register', {
     name: 'Bad Sen', phone, sen: 'nonsense', password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('invalid SEN is rejected', badSen.status === 422)
 
   const reg = await call(anon, 'POST', '/attendee/register', {
     name: 'Test Attendee', phone, sen, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('registration succeeds', reg.status === 201 && reg.body?.attendee?.sen === sen, `got ${reg.status}`)
   check('registration sets a session cookie', anon.header() !== '')
 
@@ -267,12 +267,12 @@ async function main() {
   /* -- duplicates ------------------------------------------------------ */
   const dupPhone = await call(makeJar(), 'POST', '/attendee/register', {
     name: 'Other Person', phone, sen: `SEN9${runId}`, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('duplicate phone rejected', dupPhone.status === 409 && dupPhone.body?.code === 'phone_taken')
 
   const dupSen = await call(makeJar(), 'POST', '/attendee/register', {
     name: 'Other Person', phone: `8${runId}54321`.slice(0, 10), sen, password: 'grid2026',
-  })
+    email: testEmail('probe')})
   check('duplicate SEN rejected', dupSen.status === 409 && dupSen.body?.code === 'sen_taken')
 
   /* -- login ----------------------------------------------------------- */
@@ -311,7 +311,7 @@ async function main() {
   const spacedSen = testSen(`SPACE${runId}`)
   await call(makeJar(), 'POST', '/attendee/register', {
     name: spacedName, phone: spacedPhone, sen: spacedSen, password: 'grid2026',
-  })
+    email: testEmail('probe')})
 
   const singleSpaced = await call(makeJar(), 'POST', '/attendee/login', {
     name: 'Mary Ann', phone: spacedPhone, password: 'grid2026',

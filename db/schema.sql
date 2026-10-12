@@ -25,6 +25,34 @@ create table if not exists attendees (
   constraint attendees_phone_digits check (phone ~ '^[6-9][0-9]{9}$')
 );
 
+/*
+  Email.
+
+  Nullable, because the thirteen people registered before this column existed have
+  no address and there is nothing to recover one from. They are not backfilled
+  with a placeholder: a fake address is worse than a null, because it looks
+  deliverable to the owner's "resend credentials" button and silently fails.
+
+  New registrations require one, enforced in the API rather than here, so that
+  the refusal carries copy that names the actual problem.
+
+  NOT UNIQUE, deliberately. Two students can genuinely share a household
+  address, and refusing the second registration over it would lock out a real
+  person to protect against a case that is not a case — each person still
+  receives their OWN credentials, because the mail carries their own row's
+  details. Uniqueness would also be the wrong tool for the risk that actually
+  exists, which is a typo'd address belonging to a stranger; that is handled by
+  the "did not register" line in the email itself and by the owner seeing a
+  bounce.
+
+  Stored lower-cased so "Ana@X.com" and "ana@x.com" cannot both appear and split
+  a search in half.
+*/
+alter table attendees add column if not exists email text;
+alter table attendees add column if not exists credentials_sent_at timestamptz;
+
+create index if not exists attendees_email_idx on attendees (email) where email is not null;
+
 -- Relaxes the SEN format check.
 --
 -- The first draft demanded a 2-4 letter prefix followed by digits, which

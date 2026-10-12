@@ -1,5 +1,6 @@
 import { isValidSen, normalisePhone, phoneProblem } from '@/domain/phone'
 import { nameProblem } from '@/domain/name'
+import { emailProblem } from '@/domain/email'
 
 /**
  * Client-side validation.
@@ -42,6 +43,18 @@ export const VALIDATORS = {
     if (value.trim() === '') return 'SEN is required.'
     if (!isValidSen(value)) return 'Enter a valid SEN, e.g. A866175000012.'
     return null
+  },
+
+  /**
+   * Email, mirroring `server/_lib/email.ts`.
+   *
+   * Required at registration because the generated password is shown exactly
+   * once, on screen. `test:errors` asserts this and the server's copy agree on
+   * accept, normalisation and the wording of every refusal, over the same
+   * inputs — a client that disagrees here shows a green field and a red API.
+   */
+  email(value: string): string | null {
+    return emailProblem(value)
   },
 
   username(value: string): string | null {

@@ -8,6 +8,7 @@ import {
   type AttendeeRegistration,
   type AttendeeSession,
   type BroadcastResult,
+  type CredentialSendResult,
   type CheckIn,
   type DayState,
   type EventInfo,
@@ -93,6 +94,9 @@ export class HttpPortalApi implements PortalApi {
       // outright — and the in-memory mock tolerated the omission, so this only
       // surfaced against the real database.
       sen: input.sen,
+      // Required. It is how the credentials are delivered — the portal shows the
+      // password once, on screen, and cannot show it again.
+      email: input.email,
     })
   }
 
@@ -195,6 +199,10 @@ export class HttpPortalApi implements PortalApi {
 
   adminBroadcast(input: { title: string; body: string }): Promise<BroadcastResult> {
     return this.#request('POST', '/admin/push/send', input)
+  }
+
+  sendCredentials(): Promise<CredentialSendResult> {
+    return this.#request('POST', '/admin/credentials/send', {})
   }
 
   updateEventPhase(phase: EventInfo['phase']): Promise<EventInfo> {

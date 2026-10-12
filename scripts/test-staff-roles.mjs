@@ -20,7 +20,7 @@
 import { execFileSync } from 'node:child_process'
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { testSen, purgeTestAttendees, testEmail } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -285,7 +285,7 @@ async function main() {
     phone: phoneScan,
     sen: senScan,
     password: PROBE_PASSWORD,
-  })
+    email: testEmail('probe')})
   check('registered a scan fixture', reg.status === 201, `got ${reg.status}`)
 
   const scan = await call('POST', '/admin/attendance', { sen: senScan }, gate.cookie)

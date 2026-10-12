@@ -9,6 +9,7 @@ import type {
   AttendeeRegistration,
   AttendeeSession,
   BroadcastResult,
+  CredentialSendResult,
   CheckIn,
   DayState,
   EventInfo,
@@ -142,6 +143,19 @@ export interface PortalApi {
     title: string
     body: string
   }): Promise<BroadcastResult>
+
+  /**
+   * Issues and emails a fresh set of credentials for every attendee.
+   *
+   * Owner-only, for the same reason as the broadcast: it reaches every registered
+   * attendee, and it changes their password while doing it.
+   *
+   * It is a ROTATION, not a resend. Only a bcrypt hash is stored, so the old
+   * password cannot be recovered — this generates a new one, and every password it
+   * issues replaces the one that attendee had. Any send that fails is rolled back,
+   * so a bounced mailbox leaves somebody able to log in exactly as before.
+   */
+  sendCredentials(): Promise<CredentialSendResult>
   /**
    * Sets an attendee's password. The only password-change path in the portal.
    *

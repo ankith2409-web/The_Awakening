@@ -20,7 +20,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { testSen, purgeTestAttendees, testEmail } from './_fixtures.mjs'
 
 loadEnv()
 
@@ -202,7 +202,7 @@ async function main() {
     phone: PHONE,
     sen: SEN,
     password: PASSWORD,
-  })
+    email: testEmail('probe')})
   check('registered a probe attendee', reg.status === 201, `got ${reg.status}`)
 
   const first = await call('POST', '/admin/attendance', { sen: SEN }, owner.cookie)
@@ -312,7 +312,7 @@ async function main() {
     phone: `8${stamp}`.slice(0, 10).padEnd(10, '5'),
     sen: oneDaySen,
     password: PASSWORD,
-  })
+    email: testEmail('probe')})
   await setOverride(1)
   await call('POST', '/admin/attendance', { sen: oneDaySen }, owner.cookie)
 

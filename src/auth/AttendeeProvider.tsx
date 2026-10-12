@@ -321,13 +321,14 @@ function sameRecords(
     the guard cannot redirect out from under the read-back step.
   */
   const register = useCallback(
-    async (name: string, phone: string, sen: string) => {
+    async (name: string, phone: string, sen: string, email: string) => {
       setError(null)
       try {
         const result = await portalApi.attendeeRegister({
           name,
           phone: normalisePhone(phone),
           sen: normaliseSen(sen),
+          email,
         })
         setAttendee(result.attendee)
         return result

@@ -30,7 +30,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { testSen, purgeTestAttendees, testEmail } from './_fixtures.mjs'
 import { RosterGuard } from './_roster-guard.mjs'
 
 loadEnv()
@@ -149,7 +149,7 @@ async function main() {
     name: NAME,
     phone: PHONE,
     sen: SEN,
-  })
+    email: testEmail('probe')})
 
   check('registration succeeds with no password in the body', registered.status === 201,
     `got ${registered.status}/${registered.body?.code}`)
@@ -193,7 +193,7 @@ async function main() {
     name: 'Second Generated',
     phone: phoneFor(2),
     sen: testSen(`GEN${stamp}B`),
-  })
+    email: testEmail('probe')})
   check(
     'two registrations get different passwords',
     second.status === 201 &&
@@ -335,7 +335,7 @@ async function main() {
     phone: phoneFor(3),
     sen: testSen(`SUP${stamp}`),
     password: 'fixture2026',
-  })
+    email: testEmail('probe')})
   check('an API caller may still supply one', supplied.status === 201,
     `got ${supplied.status}/${supplied.body?.code}`)
   check(
@@ -352,7 +352,7 @@ async function main() {
 
   const suppliedWeak = await call('POST', '/attendee/register', {
     name: 'Weak Supplied', phone: phoneFor(4), sen: testSen(`WEK${stamp}`), password: 'abc',
-  })
+    email: testEmail('probe')})
   check('a supplied password must still pass the strength rule', suppliedWeak.status === 422,
     `got ${suppliedWeak.status}`)
 

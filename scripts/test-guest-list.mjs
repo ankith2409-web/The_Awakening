@@ -31,7 +31,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
-import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { testSen, purgeTestAttendees, testEmail } from './_fixtures.mjs'
 import { RosterGuard } from './_roster-guard.mjs'
 
 loadEnv()
@@ -161,13 +161,13 @@ async function main() {
   await call(
     'POST',
     '/attendee/register',
-    { name: 'Allowed Student', phone: phoneFor(1), sen: ALLOWED_SEN, password: PASSWORD },
+    { name: 'Allowed Student', phone: phoneFor(1), sen: ALLOWED_SEN, password: PASSWORD , email: testEmail('probe')},
   )
 
   const beforeList = await call(
     'POST',
     '/attendee/register',
-    { name: 'Not Yet Listed', phone: phoneFor(2), sen: BLOCKED_SEN, password: PASSWORD },
+    { name: 'Not Yet Listed', phone: phoneFor(2), sen: BLOCKED_SEN, password: PASSWORD , email: testEmail('probe')},
   )
   check(
     'with no list, anyone can register',
@@ -213,7 +213,7 @@ async function main() {
       phone: phoneFor(3),
       sen: testSen(`OPEN${stamp}`),
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check(
     'an unenforced list lets anyone through',
@@ -298,7 +298,7 @@ async function main() {
       phone: phoneFor(4),
       sen: testSen(`NO${stamp}`),
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check('a student NOT on the list is refused', blocked.status === 422, `got ${blocked.status}`)
   check('the refusal names the list', blocked.body?.code === 'not_on_list', blocked.body?.code)
@@ -323,7 +323,7 @@ async function main() {
       phone: phoneFor(5),
       sen: testSen(`YES${stamp}`),
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check(
     'and a student NOT on the list stays refused even with a valid name',
@@ -340,7 +340,7 @@ async function main() {
       phone: phoneFor(6),
       sen: ALLOWED_SEN,
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check('the SEN on the list can still register', onList.status === 409 || onList.status === 201, `got ${onList.status}`)
 
@@ -366,7 +366,7 @@ async function main() {
       phone: phoneFor(7),
       sen: testSen(`SWITCH${stamp}`),
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check(
     'and opening it admits somebody not on the list again',
@@ -412,7 +412,7 @@ async function main() {
       phone: phoneFor(8),
       sen: ALLOWED_SEN,
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check(
     'a SEN that IS on the list is refused when registration is closed',
@@ -655,7 +655,7 @@ async function main() {
       phone: phoneFor(14),
       sen: testSen(`EMPTY${stamp}`),
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check(
     'an empty list under `restricted` refuses everybody',
@@ -683,7 +683,7 @@ async function main() {
       phone: phoneFor(15),
       sen: testSen(`AFTER${stamp}`),
       password: PASSWORD,
-    },
+      email: testEmail('probe')},
   )
   check(
     'registration works again once it is switched open',

@@ -28,6 +28,7 @@
  */
 
 import { Client } from 'pg'
+import { testEmail } from './_fixtures.mjs'
 import { loadEnv } from './_env.mjs'
 import { RosterGuard } from './_roster-guard.mjs'
 
@@ -191,8 +192,8 @@ async function main() {
 
   const big = 'x'.repeat(200_000)
   for (const [label, path, body] of [
-    ['a 200KB name', '/api/attendee/register', { name: big, phone: '9000000001', sen: 'Z1' }],
-    ['a 200KB SEN', '/api/attendee/register', { name: 'A B', phone: '9000000001', sen: big }],
+    ['a 200KB name', '/api/attendee/register', { name: big, phone: '9000000001', sen: 'Z1' , email: testEmail('probe')}],
+    ['a 200KB SEN', '/api/attendee/register', { name: 'A B', phone: '9000000001', sen: big , email: testEmail('probe')}],
     ['a 200KB broadcast subject', '/api/admin/push/send', { title: big, body: 'x' }],
   ]) {
     const r = await send(owner, 'POST', path, { json: body })
@@ -401,10 +402,10 @@ async function main() {
 
   const [a, b] = await Promise.all([
     send(anon, 'POST', '/api/attendee/register', {
-      json: { name: 'Race One', phone: '9000000071', sen },
+      json: { name: 'Race One', phone: '9000000071', sen, email: testEmail('probe') },
     }),
     send(anon, 'POST', '/api/attendee/register', {
-      json: { name: 'Race Two', phone: '9000000072', sen },
+      json: { name: 'Race Two', phone: '9000000072', sen, email: testEmail('probe') },
     }),
   ])
 
@@ -445,7 +446,7 @@ async function main() {
   await db.query('delete from attendees where upper(sen) = upper($1)', [probeSen])
 
   const created = await send(anon, 'POST', '/api/attendee/register', {
-    json: { name: 'Concurrency Probe', phone: '9000000079', sen: probeSen },
+    json: { name: 'Concurrency Probe', phone: '9000000079', sen: probeSen, email: testEmail('probe') },
   })
 
   if (created.status === 201) {

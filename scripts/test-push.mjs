@@ -38,7 +38,7 @@
 import { Client } from 'pg'
 import { readFileSync } from 'node:fs'
 import { loadEnv } from './_env.mjs'
-import { testSen } from './_fixtures.mjs'
+import { testSen, testEmail } from './_fixtures.mjs'
 import { decrypt, makeRecipient, verifyVapid } from './_lib/push-crypto.mjs'
 
 loadEnv()
@@ -140,7 +140,7 @@ async function registerAttendee(tag) {
     name: 'Push Test Suite',
     phone: nextPhone(),
     sen,
-  })
+    email: testEmail('probe')})
   // 201: the account is created, not merely accepted.
   if (res.status !== 201) throw new Error(`register failed: ${res.status} ${res.text}`)
   return {
