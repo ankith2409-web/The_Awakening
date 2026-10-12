@@ -1,0 +1,18 @@
+# Line endings, pinned per file type.
+#
+# `core.autocrlf=true` is set globally on this machine, which means a fresh
+# checkout rewrites LF files to CRLF on Windows. That is harmless for source code
+# and catastrophic for the generated print assets: `npm run test:qr` compares the
+# committed SVG against what the generator produces BYTE FOR BYTE, so a checkout
+# that helpfully converts the line endings fails a check on a file that is
+# actually correct. The failure would point at the QR rather than at the settings.
+#
+# Marking these `-text` says: do not touch the bytes. The generator writes LF and
+# means it.
+
+# The attendee-portal QR. XML is perfectly valid with either ending, so the only
+# reason to care is the byte-for-byte verification above.
+print/*.svg -text
+
+# The raster is already binary; make sure no tool tries to line-ending "fix" it.
+print/*.png binary
