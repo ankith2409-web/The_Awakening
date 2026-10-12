@@ -581,17 +581,56 @@ function AttendanceControls({
 /* ------------------------------------------------------------------- scan */
 
 /**
+ * Whether focusing the SEN field would put a keyboard over the camera.
+ *
+ * The only cost of returning focus after a scan is the on-screen keyboard, and
+ * only touch devices have one — focusing a text field on a desktop shows nothing
+ * at all. So the question is not "should focus return" but "would returning it
+ * cost anything", and that has a reliable answer.
+ *
+ * `pointer: fine` is the primary pointer being a mouse or trackpad. A coarse
+ * pointer (a finger) gets the keyboard and therefore keeps the old behaviour.
+ *
+ * Deliberately not `navigator.maxTouchPoints`, which is also true for a
+ * touchscreen laptop — that has a fine pointer AND a hardware keyboard, and
+ * would be misread as a phone for the whole event.
+ *
+ * `onLiveQuery` rather than a one-shot read, because a device can gain or lose a
+ * mouse at any moment, and a value latched at mount would be wrong for the rest
+ * of the session.
+ */
+function useVirtualKeyboard(): boolean {
+  const [touch, setTouch] = useState(() =>
+    typeof window === 'undefined' ? false : !window.matchMedia('(pointer: fine)').matches,
+  )
+
+  useEffect(() => {
+    const query = window.matchMedia('(pointer: fine)')
+    const update = () => setTouch(!query.matches)
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  return touch
+}
+
+/**
  * The gate scanner.
  *
  * Two input paths, one outcome. The camera is what staff will actually use; the
  * field exists for a printed barcode that will not scan, and for a USB gun,
  * which behaves exactly like fast typing followed by Enter.
  *
- * Focus is deliberately NOT returned to the SEN field after a camera scan.
- * Returning it there popped the on-screen keyboard over the camera preview on
- * a phone, so the gate operator lost the view they were scanning with and had
- * to dismiss the keyboard before the next badge. Focus returns only after a
- * typed entry, where it genuinely helps — the next code goes straight in.
+ * Focus returns to the SEN field after every scan EXCEPT a camera scan on a
+ * touch device. On a phone, focusing the field popped the on-screen keyboard over
+ * the camera preview, so the operator lost the view they were scanning with and
+ * had to dismiss the keyboard before the next badge.
+ *
+ * Everywhere else it returns, because everywhere else it is free. On a laptop
+ * focus is where a USB scanner needs to be to type into it at all, so returning
+ * it after every badge is the difference between a gate that runs itself and one
+ * where somebody clicks the box between every attendee. A typed entry returns it
+ * on every device, since the field is already the thing in use.
  *
  * There is no edit and no delete anywhere in this panel. A record is written
  * by a scan and that is the only thing that can create one.
@@ -662,6 +701,7 @@ function ScanPanel({
 }) {
   const [value, setValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const virtualKeyboard = useVirtualKeyboard()
 
   // Focus the field on mount so a USB gun or a typed entry needs no click.
   // Done in an effect rather than `autoFocus` so the browser can finish
@@ -673,10 +713,13 @@ function ScanPanel({
   /**
    * Records one scan and clears the field, whichever way it arrived.
    *
-   * `restoreFocus` is false for camera scans — see the note above the component.
+   * Takes the SOURCE, not a boolean, so the device rule lives in one place here
+   * instead of being something each caller has to remember. A caller passing
+   * `true`/`false` correctly is exactly the kind of thing that works until
+   * somebody adds a third entry point and gets it wrong.
    */
   const record = useCallback(
-    async (raw: string, restoreFocus: boolean) => {
+    async (raw: string, source: 'camera' | 'typed') => {
       const sen = raw.trim()
       if (sen === '' || scanning) return
       setValue('')
@@ -684,14 +727,23 @@ function ScanPanel({
       // Only on success. A rejected SEN records nothing, so there is no day to
       // follow and moving the view would be a lie.
       if (result !== null) onRecorded(result.day)
-      if (restoreFocus) inputRef.current?.focus()
+
+      /*
+        Focus returns for every scan except a camera scan on a touch device,
+        where it would raise the keyboard over the preview.
+
+        It returns on a REJECTED scan too. Nothing was written either way, and
+        the operator's next move is the same in both cases — enter the next
+        person — so asking them to click a box first would be pure friction.
+      */
+      if (source === 'typed' || !virtualKeyboard) inputRef.current?.focus()
     },
-    [onScan, onRecorded, scanning],
+    [onScan, onRecorded, scanning, virtualKeyboard],
   )
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await record(value, true)
+    await record(value, 'typed')
   }
 
   return (
@@ -826,7 +878,7 @@ function ScanPanel({
         {/* Camera first: it is what staff will actually use at the gate. */}
         <div className="lg:w-1/2">
           <BarcodeScanner
-            onDetect={(text) => void record(text, false)}
+            onDetect={(text) => void record(text, 'camera')}
             disabled={scanning || activeDayLocked}
           />
         </div>

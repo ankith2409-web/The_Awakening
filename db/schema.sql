@@ -210,7 +210,7 @@ create table if not exists attendance (
 
   It was `text not null` with a single possible value, 'Gate A', written literally
   by the scan endpoint and shown to attendees as though it were a real place. There
-  is one venue: Seminar Hall, Bengaluru. A column whose every value is a door that
+  is one venue: the Auditorium, Bengaluru. A column whose every value is a door that
   does not exist is not data, and it produced a visible "GATE A" on the attendee
   dashboard next to a real venue — which is the kind of thing that gets a bug
   report three weeks out.

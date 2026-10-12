@@ -17,7 +17,7 @@ export const SEED_EVENT: EventInfo = {
   organiserHost: 'Amity University Bengaluru',
   date: '2026-10-13',
   endDate: '2026-10-14',
-  venue: 'Seminar Hall',
+  venue: 'Auditorium',
   city: 'Bengaluru',
   phase: 'registration',
   capacity: 480,

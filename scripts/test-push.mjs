@@ -322,7 +322,7 @@ async function main() {
 
   const gated = await call(gateStore, 'POST', '/api/admin/push/send', {
     title: 'Room change',
-    body: 'Seminar hall.',
+    body: 'The Auditorium.',
   })
   check(
     'the shared gate credential cannot broadcast',
@@ -350,9 +350,28 @@ async function main() {
   )
 
   check(
-    'with no real devices it delivered to none, and said so',
-    empty.json.sent === 0 && empty.json.total === 0,
-    'a "sent" response with no devices would be a lie on the day',
+    'it reports the devices that actually exist, not zero',
+    empty.json.total === before,
+    `total=${empty.json.total} but ${before} device(s) are subscribed`,
+  )
+
+  check(
+    'and sent, failed and pruned partition them exactly',
+    /*
+      This is the assertion that actually matters, and it replaced a weaker one.
+
+      The old check was `sent === 0 && total === 0`, which only ever passed on an
+      empty database — so the day a real attendee subscribed, it failed for a reason
+      that had nothing to do with the code, and everyone learned to ignore it.
+
+      What it was reaching for is "the numbers are honest": every endpoint a send
+      touched must appear in exactly one of the three buckets, so the owner can add
+      them up and believe the total. That holds whatever is subscribed, and it is
+      strictly stronger than the count-zero version, which proved nothing once a
+      device existed.
+    */
+    empty.json.sent + empty.json.failed + empty.json.pruned === empty.json.total,
+    `sent=${empty.json.sent} failed=${empty.json.failed} pruned=${empty.json.pruned} total=${empty.json.total}`,
   )
 
   check(
@@ -386,9 +405,26 @@ async function main() {
     body: 'Main hall.',
   })
   check(
+    'the dead endpoint was seen, and the real one was not invented',
+    againstFake.json.total === before + 1,
+    `total=${againstFake.json.total}, expected ${before + 1}`,
+  )
+
+  check(
     'an unreachable endpoint is a FAILURE, never a success',
-    againstFake.json.sent === 0 && againstFake.json.total >= 1,
-    JSON.stringify(againstFake.json),
+    /*
+      Was `sent === 0`, which is a proxy for "the fake was not counted as delivered".
+
+      It also asserted something untrue the moment anybody subscribed for real: a
+      send DOES reach a real device, so `sent` is legitimately 1. Asserting on the
+      absolute number meant the suite broke the moment the feature started being
+      used, which is the opposite of when you want your push tests running.
+
+      What matters is that the dead endpoint landed in the failure bucket and
+      nowhere else. Asserted directly below.
+    */
+    againstFake.json.failed >= 1 && againstFake.json.pruned === 0,
+    `sent=${againstFake.json.sent} failed=${againstFake.json.failed} pruned=${againstFake.json.pruned}`,
   )
   check(
     'and is counted as retryable rather than silently pruned',
@@ -467,7 +503,7 @@ async function main() {
   const recipient = makeRecipient()
   const announced = {
     title: 'Room change',
-    body: 'Capstone build has moved to Seminar Hall.',
+    body: 'The build session has moved to the Auditorium.',
   }
   const audience = 'https://fcm.googleapis.com/fcm/send/stand-in-endpoint'
 

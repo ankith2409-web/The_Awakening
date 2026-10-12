@@ -5,7 +5,7 @@
 -- Replace these values with your real roster — this is data, not logic.
 -- =============================================================================
 
--- Runs 13–14 October 2026, two days, in the Seminar Hall on the Amity
+-- Runs 13-14 October 2026, two days, in the Auditorium on the Amity
 -- University Bengaluru campus.
 --
 -- `venue` and `city` were previously the wrong way round in this file: the
@@ -21,7 +21,7 @@ values (
   'Amity University Bengaluru',
   '2026-10-13',
   '2026-10-14',
-  'Seminar Hall',
+  'Auditorium',
   'Bengaluru',
   'registration',
   480

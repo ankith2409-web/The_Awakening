@@ -34,7 +34,7 @@ const L = {
   wipe: { x: 40, y: 469, w: 384, h: 4 },
   facts: [
     { x: 42, y: 507, w: 174, h: 84, term: 'WHEN', value: '13–14 October 2026' },
-    { x: 217, y: 507, w: 174, h: 84, term: 'WHERE', value: 'Seminar Hall, Bengaluru' },
+    { x: 217, y: 507, w: 174, h: 84, term: 'WHERE', value: 'Auditorium, Bengaluru' },
     { x: 393, y: 507, w: 174, h: 84, term: 'HOST', value: 'Amity University Bengaluru' },
   ],
   ctas: [

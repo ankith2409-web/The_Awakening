@@ -29,6 +29,7 @@
 
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
+import { RosterGuard } from './_roster-guard.mjs'
 
 loadEnv()
 
@@ -215,19 +216,25 @@ async function main() {
   ]
 
   /*
-    Snapshot the guest list, and put it back afterwards.
+    The guest list, guarded.
 
-    The obvious cleanup -- `delete from event_roster` -- is the same mistake as picking
-    a real attendee for the concurrency probe: this suite runs against the live database,
-    and the roster is every student's name and SEN that the organiser uploaded. Clearing
-    it would destroy real data in the name of testing it.
+    The obvious cleanup -- `delete from event_roster` -- is the same mistake as
+    picking a real attendee for the concurrency probe: this suite runs against the
+    live database, and the roster is every student's name and SEN that the
+    organiser uploaded. Clearing it would destroy real data in the name of testing
+    it.
 
-    So: read it, run the probes, and restore exactly what was there. If the list was
-    empty, restoring an empty list is a no-op and the owner never notices this suite
-    ran at all.
+    It did. An earlier version of this block read the list into a variable, cleared
+    it, and put it back with seven separate inserts and no transaction. A crash
+    partway through left a partial list and no error, and nothing on disk held a
+    copy. `RosterGuard` snapshots to disk first, refuses to clear a non-empty list
+    without an explicit override, restores in one transaction, and verifies the
+    result against the snapshot afterwards.
   */
-  const rosterSnapshot = await db.query('select sen, name from event_roster')
-  const beforeRoster = { rows: [{ n: rosterSnapshot.rows.length }] }
+  const rosterGuard = new RosterGuard(db, 'test:hardening')
+  await rosterGuard.arm()
+
+  const beforeRoster = { rows: [{ n: rosterGuard.rowCount }] }
 
   for (const payload of payloads) {
     const r = await send(owner, 'POST', '/api/admin/roster', {
@@ -247,12 +254,10 @@ async function main() {
     The roster IS allowed to hold odd text — it is organiser data, is displayed through
     React which escapes, and is never exported. What must hold is that it does not
     accumulate junk the owner would mistake for students, so it is restored here rather
-    than left behind by this suite.
+    than left behind by this suite. The guard verifies the restore rather than assuming
+    it, which is the part the old version got wrong.
   */
-  await db.query('delete from event_roster')
-  for (const row of rosterSnapshot.rows) {
-    await db.query('insert into event_roster (sen, name) values ($1, $2)', [row.sen, row.name])
-  }
+  await rosterGuard.restore()
 
   const afterRoster = await db.query('select sen, name from event_roster order by sen')
   check(

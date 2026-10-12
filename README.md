@@ -5,7 +5,7 @@ separate admin portal for scanning SEN barcodes at the door and resetting an
 attendee's password.
 
 **AI agents — built by you.** A Fetch AI event by Google Developer Groups, hosted
-by Amity University Bengaluru, Seminar Hall, 13–14 October 2026.
+by Amity University Bengaluru, Auditorium, 13-14 October 2026.
 
 **Live:** https://the-awakening-portal.vercel.app
 
@@ -301,7 +301,7 @@ people who never registered.
 **There is no `gate` column, and there never should have been.** It was
 `text not null` with exactly one possible value, `Gate A`, written literally by the
 scan route and shown to attendees as though it were a real place. There is one
-venue — Seminar Hall — and a column whose every value is a door that does not exist
+venue — the Auditorium — and a column whose every value is a door that does not exist
 is not data. It was displayed next to the real venue on the attendee dashboard, and
 in the admin log beside every row. If a second entrance is ever added, the column
 goes back then, with the value chosen per scan rather than hard-coded.
@@ -921,7 +921,7 @@ timetable, and the previous one had nine rows of 09:30 openings and a *Dr. Anjal
 speaking at all of them.
 
 A schedule that does not exist is worse than no schedule. Somebody plans their morning
-around "11:15 Agents That Plan, Act and Recover", walks into the Seminar Hall at 11:15, and
+around "11:15 Agents That Plan, Act and Recover", walks into the Auditorium at 11:15, and
 finds a room of people who were told the same invented thing. `starts_at` and `room` are
 nullable rather than deleted, so restoring a real timetable later is a data change and not
 a migration.
@@ -1700,6 +1700,7 @@ are zeroed explicitly.
 | `test:day`      | 21          | no       | Calendar resolution in IST, pinned to fixed dates including the midnight rollover |
 | `test:perday`   | 30 | yes      | One record per attendee per day; both days recorded; the lock on future days; refuses to adopt a pre-existing day pin |
 | `test:lock`     | 23          | yes      | Closing a day refuses new marks; existing records stay readable; a locked day one does not lock day two; `gate` cannot open a lock |
+| `test:roster`    | 25          | yes      | The guest list survives a test run: the guard refuses a non-empty list without an override, snapshots to disk before clearing, restores in one transaction, verifies the result, and still arms on an already-empty list. Plus that no script outside the guard can clear the roster |
 | `test:guestlist`| 62          | yes      | Open / restricted / closed, the switch and the list as separate decisions; `closed` stops listed SENs too; a refused upload changes nothing at all; clearing the list does not reopen registration; manual add, including uniqueness and the same validation as the form; `gate` can do none of it |
 | `test:registration` | 36    | yes      | The generated password's shape, the read-back endpoint caught by the server when **both** boxes are wrong, a self-service change that keeps the session alive, and the owner-only row reader |
 | `test:push`        | 64     | yes      | The public VAPID key and that it is public, subscribing needing a session, `gate` being unable to broadcast, an unreachable endpoint counted as a failure rather than a success, **a real push payload signed, decrypted and read back**, the service worker having no `fetch` handler at all, and the dashboard banner retiring rather than sitting there |
@@ -1738,6 +1739,63 @@ hands to whoever issues certificates, so junk in it is junk handed on.
 `test:perday` had fixed this for itself with a private `PDAY%` rule; doing it once
 per suite is how the same leak came back three times. The legacy prefix is still
 swept, so stragglers from older runs disappear on the next run.
+
+### The guest list is not a test fixture
+
+Everything above is about fixtures that should not outlive the run. The guest list is
+the opposite: **it is the organiser's data, and no test may remove it.**
+
+A real uploaded list was destroyed this way. `event_roster` was empty while
+`roster_uploaded_at` still held a timestamp three hours old — the only surviving
+evidence that a list had ever existed. There is no backup of the roster and no audit
+table, so the names and SENs were simply gone.
+
+Three suites did it, with the same save-and-restore shape, and each had a different way
+of losing the data:
+
+| | |
+| --- | --- |
+| A crash or Ctrl-C | No `finally`, no signal handler. The restore never ran, and the only copy died with the process. |
+| A restore that failed | Wrapped in `catch {}`, on the reasoning that cleanup must not mask a real error. So the suite reported **green** over an empty database. |
+| A partial restore | One suite restored with seven separate inserts and no transaction. Dying partway left half a list and no error. |
+
+**What replaced it** is `scripts/_roster-guard.mjs`. Every suite that needs an empty
+roster goes through `RosterGuard`:
+
+```js
+const guard = new RosterGuard(db, 'test:guestlist')
+await guard.arm()
+// ... assertions ...
+await guard.restore()
+```
+
+- **It writes the snapshot to disk** before touching anything, and prints the path. A
+  snapshot in a variable is a snapshot that dies with the process, which was one of the
+  four ways the list was lost.
+- **It refuses to start** when the roster is non-empty, unless `ALLOW_ROSTER_RESET=1`
+  is passed deliberately. The safe thing is the default; the override exists for a list
+  you know is a fixture.
+- **It restores in one transaction and then verifies**, comparing the rows against the
+  snapshot. A committed transaction is not a correct one, and this is the one place
+  where "it reported success" is not good enough.
+- **It hooks `exit`, `SIGINT`, `SIGTERM` and `uncaughtException`**, so an interrupted run
+  still puts the list back.
+- **It never swallows an error.** A failed restore fails the run and prints the
+  snapshot path, because silence is how the last one went unnoticed.
+
+If the guard is ever the thing that fails, `scripts/restore-roster.mjs` restores from a
+snapshot by hand:
+
+```bash
+node scripts/restore-roster.mjs --latest
+```
+
+`scripts/reset-event-state.mjs` no longer clears the roster, and no longer forces
+`registration_mode` back to `open` unless `--reset-mode` is passed. Both are the
+organiser's decisions, not a test's debris — and forcing `open` on a `restricted` event
+is the same failure as deleting the list: everybody the organiser meant to turn away
+walks in. `test:roster` asserts all of this against the live database, including that no
+script outside the guard can clear the roster.
 
 ### A test must never adopt state it did not create
 

@@ -96,38 +96,92 @@ check(
   /role="status"/.test(confirmation) && !/role="alert"/.test(confirmation),
 )
 
-/* -- 3. camera scans do not steal focus ------------------------------------- */
+/* -- 3. focus returns where it is free, and not where it costs --------------- */
 
 /*
-  The original defect: `record()` ended with an unconditional
-  `inputRef.current?.focus()`, so a camera scan focused the SEN field, which on
-  a phone raised the on-screen keyboard over the camera preview. The operator
-  lost the view they were scanning with and had to dismiss the keyboard before
-  the next badge.
+  This rule was written twice, and both versions are here.
+
+  First: `record()` ended with an unconditional `inputRef.current?.focus()`, so a
+  camera scan focused the SEN field, which on a phone raised the on-screen
+  keyboard over the camera preview. The operator lost the view they were scanning
+  with and had to dismiss the keyboard before the next badge.
+
+  Then, the opposite request: focus was never restored after a camera scan at
+  all, which is correct on a phone and wrong everywhere else. On a laptop focus is
+  where a USB scanner has to be to type into it, so "never" meant somebody
+  clicking the box between every attendee for two days.
+
+  Both are the same rule seen from one side: returning focus is free exactly when
+  no virtual keyboard is involved. So the decision is made from the pointer type,
+  not from which control the scan came from, and it is made in one place.
+
+  The source argument is now the SOURCE (`'camera' | 'typed'`) rather than a
+  boolean. A boolean was a trap for the next person adding an entry point: they
+  would have to know a rule that is not written down at the call site.
 */
 const record = viewCode.slice(viewCode.indexOf('const record = useCallback'))
-const recordBody = record.slice(0, record.indexOf('}, [onScan, scanning])'))
+const recordEnd = record.indexOf('async function handleSubmit')
+const recordBody = recordEnd === -1 ? record : record.slice(0, recordEnd)
 
 check(
-  'record() takes an explicit focus decision',
-  /async \(raw: string, restoreFocus: boolean\)/.test(viewCode),
-  'record() still restores focus unconditionally',
+  'record() takes the source of the scan, not a focus boolean',
+  /async \(raw: string, source: 'camera' \| 'typed'\)/.test(viewCode),
+  'a caller-passed boolean makes the device rule something each caller must remember',
 )
+
 check(
-  'focus is returned conditionally, not always',
-  /if \(restoreFocus\) inputRef\.current\?\.focus\(\)/.test(recordBody),
-  'focus is restored on every path',
+  'focus is returned for anything but a camera scan on a touch device',
+  /if \(source === 'typed' \|\| !virtualKeyboard\) inputRef\.current\?\.focus\(\)/.test(recordBody),
+  'the keyboard-over-camera case must stay excluded',
 )
+
 check(
-  'the camera path passes false',
-  /onDetect=\{\(text\) => void record\(text, false\)\}/.test(viewCode),
-  'the camera still grabs focus for the SEN field',
+  'the keyboard is detected from the pointer, not from touch support',
+  /matchMedia\('\(pointer: fine\)'\)/.test(viewCode),
+  'navigator.maxTouchPoints is also true for a touchscreen laptop, which has a hardware keyboard',
 )
+
 check(
-  'the typed path still returns focus',
-  /await record\(value, true\)/.test(viewCode),
+  'a touchscreen laptop is therefore treated as a desktop',
+  !/maxTouchPoints/.test(viewCode),
+  'a touchscreen laptop would be misread as a phone for the whole event',
+)
+
+check(
+  'the pointer type is watched rather than read once',
+  /addEventListener\('change'/.test(viewCode) && /removeEventListener\('change'/.test(viewCode),
+  'a device can gain or lose a mouse, and a value latched at mount is wrong after that',
+)
+
+check(
+  'the camera path declares itself as the camera',
+  /onDetect=\{\(text\) => void record\(text, 'camera'\)\}/.test(viewCode),
+  'the camera path must be identifiable as the one that can be suppressed',
+)
+
+check(
+  'the typed path still returns focus on every device',
+  /await record\(value, 'typed'\)/.test(viewCode),
   'typing lost its next-entry convenience',
 )
+
+/*
+  Focus must return whether or not the scan was accepted. Asserted by checking
+  that nothing between the success guard and the focus call can skip it — rather
+  than by a character window, which broke the moment a comment explaining the
+  rule was added above the call, which is exactly when the rule needs it most.
+*/
+const between = recordBody
+  .slice(recordBody.indexOf('onRecorded(result.day)'), recordBody.indexOf('inputRef.current?.focus()'))
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+
+check(
+  'focus returns after a REJECTED scan too',
+  /if \(source === 'typed' \|\| !virtualKeyboard\)/.test(recordBody) &&
+    !/return|\}/.test(between),
+  'nothing was written either way, so making the operator click a box first is pure friction',
+)
+
 check(
   'the camera scan handler does not focus directly',
   !/onDetect[\s\S]{0,160}inputRef\.current\?\.focus\(\)/.test(viewCode),

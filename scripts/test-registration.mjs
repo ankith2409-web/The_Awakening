@@ -31,6 +31,7 @@
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
 import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { RosterGuard } from './_roster-guard.mjs'
 
 loadEnv()
 
@@ -90,28 +91,17 @@ const stamp = Date.now().toString().slice(-9)
 const phoneFor = (n) => `9${stamp.slice(0, 7)}${String(n).padStart(2, '0')}`
 
 let db = null
-let originalRoster = []
-let originalMode = 'open'
+/*
+  Replaced by `RosterGuard` — see the note in scripts/_roster-guard.mjs.
 
-async function restore() {
-  if (!db) return
-  try {
-    await db.query('begin')
-    await db.query('delete from event_roster')
-    if (originalRoster.length > 0) {
-      await db.query(
-        `insert into event_roster (sen, name) select * from unnest($1::text[], $2::text[])`,
-        [originalRoster.map((r) => r.sen), originalRoster.map((r) => r.name)],
-      )
-    }
-    await db.query(
-      `update events set registration_mode = $1, roster_uploaded_at = $2 where id = 'evt_awakening_2026'`,
-      [originalMode, originalRoster.length > 0 ? new Date() : null],
-    )
-    await db.query('commit')
-  } catch {
-    await db.query('rollback').catch(() => {})
-  }
+  The old version read the list into a variable, deleted it, and restored it
+  inside `catch {}`. A crash, a Ctrl-C or a failed restore left the organiser's
+  uploaded guest list gone and the suite reporting green. That is how a real list
+  of students was destroyed.
+*/
+let guard = null
+const restore = async () => {
+  await guard?.restore()
 }
 
 async function main() {
@@ -123,17 +113,13 @@ async function main() {
   })
   await db.connect()
 
-  const { rows: before } = await db.query(
-    `select registration_mode from events where id = 'evt_awakening_2026'`,
-  )
-  originalMode = before[0]?.registration_mode ?? 'open'
-  const { rows: existing } = await db.query('select sen, name from event_roster')
-  originalRoster = existing
-
-  await db.query('delete from event_roster')
-  await db.query(
-    `update events set registration_mode = 'open', roster_uploaded_at = null where id = 'evt_awakening_2026'`,
-  )
+  /*
+    Arm the guard. This suite needs an empty roster to test what an upload does
+    to a list that already has rows, so the clear is real — it is just no longer
+    a delete with no way back.
+  */
+  guard = new RosterGuard(db, 'test:registration')
+  await guard.arm()
 
   const owner = await call('POST', '/admin/login', {
     username: process.env.ADMIN_USERNAME ?? 'event.control',
@@ -435,14 +421,31 @@ async function main() {
   report()
 }
 
+/*
+  The crash path.
+
+  The restore used to be inside a `catch {}` with a comment saying a cleanup
+  failure must not mask the real error. For the guest list that is backwards:
+  the restore is the thing that matters, and swallowing its failure means a
+  crash prints "crashed" over a silently empty database. It runs on its own now,
+  and its failure is printed in full.
+*/
 main().catch(async (error) => {
-  console.error('\n  crashed:', error.message, '\n')
+  console.error(`\n  crashed: ${error.message}\n`)
+
   try {
     await purgeTestAttendees(db)
-    await restore()
-    if (db) await db.end()
   } catch {
-    // The cleanup failure must not mask the real error.
+    console.error('  (fixture attendees could not be purged)')
   }
+
+  try {
+    await restore()
+    console.error('  Guest list restored.')
+  } catch (restoreError) {
+    console.error(`\n  ${restoreError.message}`)
+  }
+
+  if (db) await db.end().catch(() => {})
   process.exitCode = 1
 })

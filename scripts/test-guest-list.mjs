@@ -32,6 +32,7 @@
 import { Client } from 'pg'
 import { loadEnv } from './_env.mjs'
 import { testSen, purgeTestAttendees } from './_fixtures.mjs'
+import { RosterGuard } from './_roster-guard.mjs'
 
 loadEnv()
 
@@ -83,33 +84,23 @@ const ALLOWED_SEN = testSen(`ALLOW${stamp}`)
 const BLOCKED_SEN = testSen(`BLOCK${stamp}`)
 
 let db = null
-let originalRoster = []
-let originalMode = 'open'
 
-async function restore() {
-  if (!db) return
-  // Uses the already-connected client. `db.connect()` on a live Client throws
-  // "Client has already been connected", which is what an earlier version did.
-  try {
-    await db.query('begin')
-    await db.query('delete from event_roster')
-    if (originalRoster.length > 0) {
-      await db.query(
-        `insert into event_roster (sen, name) select * from unnest($1::text[], $2::text[])`,
-        [
-          originalRoster.map((r) => r.sen),
-          originalRoster.map((r) => r.name),
-        ],
-      )
-    }
-    await db.query(
-      `update events set registration_mode = $1, roster_uploaded_at = $2 where id = 'evt_awakening_2026'`,
-      [originalMode, originalRoster.length > 0 ? new Date() : null],
-    )
-    await db.query('commit')
-  } catch {
-    await db.query('rollback').catch(() => {})
-  }
+/*
+  Replaced by `RosterGuard`.
+
+  This suite used to read the list into a variable, `delete from event_roster`,
+  and put it back at the end — with the restore wrapped in `catch {}`. A crash,
+  a Ctrl-C or a failed restore left the organiser's uploaded list permanently
+  gone, and a failed restore reported the suite as green. That is exactly what
+  happened to a real list of students' names and SENs.
+
+  The guard snapshots to disk first, refuses to run against a non-empty list
+  without an explicit override, restores in one transaction, and verifies the
+  result. See scripts/_roster-guard.mjs.
+*/
+let guard = null
+const restore = async () => {
+  await guard?.restore()
 }
 
 async function main() {
@@ -121,19 +112,14 @@ async function main() {
   })
   await db.connect()
 
-  const { rows: before } = await db.query(
-    `select registration_mode from events where id = 'evt_awakening_2026'`,
-  )
-  originalMode = before[0]?.registration_mode ?? 'open'
-
-  const { rows: existing } = await db.query('select sen, name from event_roster')
-  originalRoster = existing
-
-  // Start from a known state: no list, registration open.
-  await db.query('delete from event_roster')
-  await db.query(
-    `update events set registration_mode = 'open', roster_uploaded_at = null where id = 'evt_awakening_2026'`,
-  )
+  /*
+    Arm the guard. This snapshots to disk, refuses to clear a real list without
+    an explicit override, and leaves the list empty for the assertions below —
+    which genuinely need it empty, because they test what an upload DOES to a
+    list that already has rows in it.
+  */
+  guard = new RosterGuard(db, 'test:guestlist')
+  await guard.arm()
 
   const owner = await call('POST', '/admin/login', {
     username: process.env.ADMIN_USERNAME ?? 'event.control',
@@ -711,14 +697,34 @@ async function main() {
   report()
 }
 
+/*
+  The crash path.
+
+  The old one wrapped the restore in `catch {}`, on the reasoning that a cleanup
+  failure must not mask the real error. For the guest list that reasoning is
+  exactly backwards: the restore IS the thing that matters, and swallowing its
+  failure means a crash reports "crashed" while the database is silently empty.
+
+  So the restore runs first, on its own, and its failure is printed at full
+  length. `process.exitCode` is set by whichever failed.
+*/
 main().catch(async (error) => {
-  console.error('\n  crashed:', error.message, '\n')
+  console.error(`\n  crashed: ${error.message}\n`)
+
   try {
     await purgeTestAttendees(db)
-    await restore()
-    if (db) await db.end()
   } catch {
-    // The cleanup failure must not mask the real error.
+    console.error('  (fixture attendees could not be purged)')
   }
+
+  try {
+    await restore()
+    console.error('  Guest list restored.')
+  } catch (restoreError) {
+    console.error(`\n  ${restoreError.message}`)
+    process.exitCode = 1
+  }
+
+  if (db) await db.end().catch(() => {})
   process.exitCode = 1
 })
