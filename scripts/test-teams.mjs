@@ -206,6 +206,70 @@ check(
   `checkin ${checkinBlank.status}, team ${blankName.status}`,
 )
 
+/* -- the pass document ------------------------------------------------------- */
+
+/*
+  Rendered and READ, not merely generated.
+
+  The pass had a bug that every other check in this repository passed: the member
+  count line read `rows.length` where `rows` was the joined HTML string, so every
+  pass said "1555 members" for a team of three. It typechecked, because the length
+  of a string is a number. The API tests missed it, because they assert the
+  response and not this document. It was caught by rendering a pass and looking at
+  it.
+
+  So the assertions here are on the rendered string, and they are the only ones in
+  the suite that would have failed for that bug.
+*/
+const { teamPassHtml, teamPassSubject, teamPassText } = await import(
+  '../server/_lib/teamPass.ts'
+)
+
+const PASS_TEAM = {
+  name: 'Render Check Squad',
+  leaderName: 'Pass Leader',
+  leaderEmail: 'leader@example.com',
+  leaderPhone: '9845012345',
+  members: [
+    { name: 'Pass Leader', sen: 'A866P000000001', isLeader: true },
+    { name: 'Pass Member One', sen: 'A866P000000002', isLeader: false },
+    { name: 'Pass Member Two', sen: 'A866P000000003', isLeader: false },
+  ],
+}
+
+const pass = teamPassHtml(PASS_TEAM)
+
+check('the pass says how many members there are, and it is right', /3 members/.test(pass),
+  (pass.match(/(\d+) members/) ?? ['no count line'])[0])
+check(
+  'and the count is not the length of the document it was rendered into',
+  !/1\d{3} members/.test(pass),
+  (pass.match(/(\d+) members/) ?? [''])[0] + ' — that looks like a string length',
+)
+check('every SEN appears on the pass', PASS_TEAM.members.every((m) => pass.includes(m.sen)))
+check('the team name appears on the pass', pass.includes(PASS_TEAM.name))
+check('the leader is flagged on the pass', pass.includes('Team leader'))
+check('the leader is listed first', pass.indexOf('Pass Leader') < pass.indexOf('Pass Member One'))
+check('the subject names the team', teamPassSubject(PASS_TEAM).startsWith('Render Check Squad'))
+check('the subject carries no newline, which some clients render literally',
+  !/[\r\n]/.test(teamPassSubject(PASS_TEAM)))
+
+/* -- user input is never live HTML -------------------------------------------- */
+
+const hostile = teamPassHtml({
+  ...PASS_TEAM,
+  name: '<script>alert(1)</script> "Quoted" & Co',
+  leaderEmail: 'a"b@example.com',
+})
+check('a <script> in a team name does not reach the document', !hostile.includes('<script>'))
+check('a quote in an email is escaped', hostile.includes('&quot;') || !hostile.includes('a"b@'))
+check('an ampersand in a team name is escaped', hostile.includes('&amp;'))
+
+const plainText = teamPassText(PASS_TEAM)
+check('the text part lists every SEN too', PASS_TEAM.members.every((m) => plainText.includes(m.sen)))
+check('the text part is not empty of the essentials',
+  plainText.includes('TEAM LEADER') && plainText.includes(PASS_TEAM.leaderEmail))
+
 /* -- the gate is owner-only, and the list is not public ---------------------- */
 
 const anonTeams = await fetch((process.env.TEST_BASE_URL ?? 'http://localhost:3000') + '/admin/teams')

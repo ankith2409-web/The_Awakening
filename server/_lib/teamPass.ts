@@ -65,7 +65,21 @@ function orderedMembers(team: TeamPassInput) {
 }
 
 export function teamPassHtml(team: TeamPassInput): string {
-  const rows = orderedMembers(team)
+  /*
+    THE MEMBERS AND THE MARKUP ARE TWO DIFFERENT VARIABLES, on purpose.
+
+    They were one. `rows` was the array mapped and joined into a string, and the
+    count line then read `rows.length` — the character length of the generated
+    HTML. Every pass said "1555 members" where a team of three was registered.
+
+    It survived a typecheck because `rows` really was a string and `.length` on a
+    string is a number. It survived the API tests because the response, not this
+    document, is what those assert. It was caught by rendering one pass and reading
+    it, which is the only check that ever would have.
+  */
+  const members = orderedMembers(team)
+
+  const rows = members
     .map(
       (member) => `
             <tr>
@@ -115,7 +129,7 @@ export function teamPassHtml(team: TeamPassInput): string {
                 ${esc(team.name)}
               </h1>
               <p style="margin:8px 0 0 0;font-size:14px;color:${INK};opacity:.7;">
-                ${rows.length} members &middot; registered
+                ${members.length} members &middot; registered
               </p>
             </td>
           </tr>
